@@ -564,16 +564,17 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
                                                  !! as the depth-integrated transports [L T-1 ~> m s-1].
 
   ! Local variables
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)) :: duhdu ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
-  real, dimension(SZIB_(G),SZJ_(G)) :: &
+  real, dimension(SZK_(GV)) :: duhdu ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
+  real :: &
     du, &         ! Corrective barotropic change in the velocity to give uhbt [L T-1 ~> m s-1].
     du_min_CFL, & ! Lower limit on du correction to avoid CFL violations [L T-1 ~> m s-1]
     du_max_CFL, & ! Upper limit on du correction to avoid CFL violations [L T-1 ~> m s-1]
     duhdu_tot_0, & ! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
     uh_tot_0, &   ! Summed transport with no barotropic correction [H L2 T-1 ~> m3 s-1 or kg s-1].
     visc_rem_max  ! The column maximum of visc_rem [nondim].
-  real, dimension(SZIB_(G),SZJ_(G), SZK_(GV)) :: &
-    visc_rem_u_tmp      ! A 2-D copy of visc_rem_u or an array of 1's [nondim].
+  logical :: do_I
+  real, dimension(SZK_(GV)) :: &
+    visc_rem      ! A 2-D copy of visc_rem_u or an array of 1's [nondim].
   real :: FAuI  ! A sum of zonal face areas [H L ~> m2 or kg m-1].
   real :: FA_u    ! A sum of zonal face areas [H L ~> m2 or kg m-1].
   real :: I_vrm   ! 1.0 / visc_rem_max [nondim]
@@ -586,7 +587,9 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
   integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
   integer :: l_seg ! The OBC segment number
   logical :: use_visc_rem, set_BT_cont
-  logical :: local_specified_BC, local_open_BC, any_simple_OBC  ! OBC-related logicals
+  logical :: local_specified_BC, local_Flather_OBC, local_open_BC  ! OBC-related logicals
+  logical :: simple_OBC_pt  ! Indicates points in a row with specified transport OBCs
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)) :: uh_tmp
 
   call cpu_clock_begin(id_clock_correct)
 
@@ -594,11 +597,18 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
 
   set_BT_cont = .false. ; if (present(BT_cont)) set_BT_cont = (associated(BT_cont))
 
-  local_specified_BC = .false. ; local_open_BC = .false.
+  local_specified_BC = .false. ; local_Flather_OBC = .false. ;  local_open_BC = .false.
   if (associated(OBC)) then ; if (OBC%OBC_pe) then
     local_specified_BC = OBC%specified_u_BCs_exist_globally
+    local_Flather_OBC = OBC%Flather_u_BCs_exist_globally
     local_open_BC = OBC%open_u_BCs_exist_globally
   endif ; endif
+
+  if (present(du_cor)) then
+    do concurrent (j=G%jsd:G%jed, i=G%isdB:G%iedB)
+      du_cor(i,j) = 0.0
+    enddo
+  endif
 
   if (present(LB_in)) then
     LB = LB_in
@@ -611,316 +621,186 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
   I_dt = 1.0 / dt
   if (CS%aggress_adjust) CFL_dt = I_dt
 
-  !$omp target enter data &
-  !$omp   map(alloc: visc_rem_u_tmp, duhdu, du, du_min_CFL, du_max_CFL, duhdu_tot_0, uh_tot_0, &
-  !$omp     visc_rem_max)
+  !$omp target enter data map(alloc: visc_rem, duhdu, uh_tmp)
 
-  do concurrent (j=jsh:jeh)
-
-    if (present(du_cor)) then
-      do concurrent (i=ish-1:ieh)
-        du_cor(i,j) = 0.0
-      enddo
-    endif
-
-    if (.not.use_visc_rem) then
-      do concurrent (k=1:nz, i=ish-1:ieh)
-        visc_rem_u_tmp(i,j,k) = 1.0
-      enddo
-    else
-      ! this is expensive
-      do concurrent (k=1:nz, i=ish-1:ieh)
-        visc_rem_u_tmp(i,j,k) = visc_rem_u(i,j,k)
-      enddo
-    end if
-
+  !$omp target teams loop collapse(2) thread_limit(32) &
+  !$omp   private(k, l_seg, I_vrm, dx_W, dx_E, du_lim, simple_OBC_pt, du, du_max_CFL, du_min_CFL, &
+  !$omp     uh_tot_0, duhdu_tot_0, visc_rem_max, do_I, duhdu, visc_rem, FAuI)
+  do j=jsh,jeh ; do I=ish-1,ieh
+    do_I = .true.
     ! Set uh and duhdu.
-    do concurrent (k=1:nz , I=ish-1:ieh)
+    !$acc loop seq
+    do k=1,nz
+      if (use_visc_rem) then
+        visc_rem(k) = visc_rem_u(I,j,k)
+      else
+        visc_rem(k) = 1.0
+      endif
       call flux_elem(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
-                     h_E(I+1,j,k), uh(I,j,k), duhdu(I,j,k), visc_rem_u_tmp(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(i+1,j), dt, G, GV, US, &
+                     h_E(I+1,j,k), uh(I,j,k), duhdu(k), visc_rem(k), G%dy_Cu(I,j), &
+                     G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, &
                      CS%vol_CFL, por_face_areaU(I,j,k))
+      if (local_open_BC) then
+        call flux_elem_OBC(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), uh(I,j,k), duhdu(k), &
+                           visc_rem(k), por_face_areaU(I,j,k), G%dy_Cu(I,j), OBC, OBC%segnum_u(I,j))
+      endif
+      if (local_specified_BC) then
+        if (OBC%segnum_u(I,j) /= 0) then
+          l_seg = abs(OBC%segnum_u(I,j))
+          if (OBC%segment(l_seg)%specified) uh(I,j,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
+        endif
+      endif
     enddo
-    if (local_open_BC) then
-      do concurrent (k=1:nz, I=ish-1:ieh)
-        call flux_elem_OBC(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), uh(I,j,k), duhdu(I,j,k), &
-                           visc_rem_u_tmp(I,j,k), G, GV, por_face_areaU(I,j,k), G%dy_Cu(I,j), &
-                           OBC, OBC%segnum_u(I,j))
-      enddo
-    endif
-
-    ! untested!
-    if (local_specified_BC) then
-      do concurrent (k=1:nz, I=ish-1:ieh, OBC%segnum_u(I,j) /= 0)
-        l_seg = abs(OBC%segnum_u(I,j))
-        if (OBC%segment(l_seg)%specified) uh(I,j,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
-      enddo
-    endif
 
     if (present(uhbt) .or. set_BT_cont) then
-      if (use_visc_rem.and.CS%use_visc_rem_max) then
-        ! poor performance for nvfortran + do concurrent if k is inside loop
-        do concurrent (I=ish-1:ieh)
-          visc_rem_max(I,j) = visc_rem_u_tmp(I,j,1)
+      if (use_visc_rem .and. CS%use_visc_rem_max) then
+        visc_rem_max = 0.0
+        !$acc loop seq
+        do k=1,nz
+          visc_rem_max = max(visc_rem_max, visc_rem(k))
         enddo
-        do k=2,nz ; do concurrent (I=ish-1:ieh)
-          visc_rem_max(I,j) = max(visc_rem_max(I,j), visc_rem_u_tmp(I,j,k))
-        enddo ; enddo
       else
-        do concurrent (i=ish-1:ieh)
-          visc_rem_max(i, j) = 1.0
-        enddo
+        visc_rem_max = 1.0
       endif
       !   Set limits on du that will keep the CFL number between -1 and 1.
       ! This should be adequate to keep the root bracketed in all cases.
-      do concurrent (I=ish-1:ieh)
-        I_vrm = 0.0
-        if (visc_rem_max(I,j) > 0.0) I_vrm = 1.0 / visc_rem_max(I,j)
-        if (CS%vol_CFL) then
-          dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-          dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-        else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
-        du_max_CFL(I,j) = 2.0* (CFL_dt * dx_W) * I_vrm
-        du_min_CFL(I,j) = -2.0 * (CFL_dt * dx_E) * I_vrm
-        uh_tot_0(I,j) = 0.0 ; duhdu_tot_0(I,j) = 0.0
+      I_vrm = 0.0
+      if (visc_rem_max > 0.0) I_vrm = 1.0 / visc_rem_max
+      if (CS%vol_CFL) then
+        dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+        dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+      else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+      du_max_CFL = 2.0* (CFL_dt * dx_W) * I_vrm
+      du_min_CFL = -2.0 * (CFL_dt * dx_E) * I_vrm
+      uh_tot_0 = 0.0 ; duhdu_tot_0 = 0.0
+      !$acc loop seq
+      do k=1,nz
+        duhdu_tot_0 = duhdu_tot_0 + duhdu(k)
       enddo
-      ! poor performance for nvfortran + do concurrent if k is inside loop
-      do k=1,nz ; do concurrent (I=ish-1:ieh)
-        duhdu_tot_0(I,j) = duhdu_tot_0(I,j) + duhdu(I, j, k)
-        uh_tot_0(I,j) = uh_tot_0(I,j) + uh(I,j,k)
-      enddo ; enddo
-
+      !$acc loop seq
+      do k=1,nz
+        uh_tot_0 = uh_tot_0 + uh(I,j,k)
+      enddo
       if (use_visc_rem) then
         if (CS%aggress_adjust) then
-          ! untested!
-          do k=1,nz ; do concurrent (I=ish-1:ieh)
-            if (CS%vol_CFL) then
-              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          if (CS%vol_CFL) then
+            dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+            dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+          else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          !$acc loop seq
+          do k=1,nz
 
             du_lim = 0.499*((dx_W*I_dt - u(I,j,k)) + MIN(0.0,u(I-1,j,k)))
-            if (du_max_CFL(I,j) * visc_rem_u_tmp(I,j,k) > du_lim) &
-              du_max_CFL(I,j) = du_lim / visc_rem_u_tmp(I,j,k)
+            if (du_max_CFL * visc_rem(k) > du_lim) &
+              du_max_CFL = du_lim / visc_rem(k)
 
             du_lim = 0.499*((-dx_E*I_dt - u(I,j,k)) + MAX(0.0,u(I+1,j,k)))
-            if (du_min_CFL(I,j) * visc_rem_u_tmp(I,j,k) < du_lim) &
-              du_min_CFL(I,j) = du_lim / visc_rem_u_tmp(I,j,k)
-          enddo ; enddo
+            if (du_min_CFL * visc_rem(k) < du_lim) &
+              du_min_CFL = du_lim / visc_rem(k)
+          enddo
         else
-          do k=1,nz ; do concurrent (I=ish-1:ieh)
-            if (CS%vol_CFL) then
-              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          if (CS%vol_CFL) then
+            dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+            dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+          else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          !$acc loop seq
+          do k=1,nz
 
-            if (du_max_CFL(I,j) * visc_rem_u_tmp(I,j,k) > dx_W*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
-              du_max_CFL(I,j) = (dx_W*CFL_dt - u(I,j,k)) / visc_rem_u_tmp(I,j,k)
-            if (du_min_CFL(I,j) * visc_rem_u_tmp(I,j,k) < -dx_E*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
-              du_min_CFL(I,j) = -(dx_E*CFL_dt + u(I,j,k)) / visc_rem_u_tmp(I,j,k)
-          enddo ; enddo
+            if (du_max_CFL * visc_rem(k) > dx_W*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
+              du_max_CFL = (dx_W*CFL_dt - u(I,j,k)) / visc_rem(k)
+            if (du_min_CFL * visc_rem(k) < -dx_E*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
+              du_min_CFL = -(dx_E*CFL_dt + u(I,j,k)) / visc_rem(k)
+          enddo
         endif
       else
-        ! untested!
         if (CS%aggress_adjust) then
-          do k=1,nz ; do concurrent (I=ish-1:ieh)
-            if (CS%vol_CFL) then
-              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          if (CS%vol_CFL) then
+            dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+            dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+          else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          !$acc loop seq
+          do k=1,nz
 
-            du_max_CFL(I,j) = MIN(du_max_CFL(I,j), 0.499 * &
+            du_max_CFL = MIN(du_max_CFL, 0.499 * &
                         ((dx_W*I_dt - u(I,j,k)) + MIN(0.0,u(I-1,j,k))) )
-            du_min_CFL(I,j) = MAX(du_min_CFL(I,j), 0.499 * &
+            du_min_CFL = MAX(du_min_CFL, 0.499 * &
                         ((-dx_E*I_dt - u(I,j,k)) + MAX(0.0,u(I+1,j,k))) )
-          enddo ; enddo
-        else
-          do k=1,nz ; do concurrent (I=ish-1:ieh)
-            if (CS%vol_CFL) then
-              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
-
-            du_max_CFL(I,j) = MIN(du_max_CFL(I,j), dx_W*CFL_dt - u(I,j,k))
-            du_min_CFL(I,j) = MAX(du_min_CFL(I,j), -(dx_E*CFL_dt + u(I,j,k)))
-          enddo ; enddo
-        endif ! CS%agress_adjust
-      endif ! use_visc_rem
-      do concurrent (I=ish-1:ieh)
-        du_max_CFL(I,j) = max(du_max_CFL(I,j),0.0)
-        du_min_CFL(I,j) = min(du_min_CFL(I,j),0.0)
-      enddo
-    endif ! present(uhbt) .or. set_BT_cont
-  enddo
-
-  call present_uhbt_or_set_BT_cont(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0, du, du_max_CFL, &
-                                   du_min_CFL, visc_rem_u_tmp, visc_rem_max, por_face_areaU, uhbt, &
-                                   uh, u_cor, du_cor, BT_cont, dt, G, GV, US, CS, OBC, LB)
-
-  !$omp target exit data &
-  !$omp   map(release: visc_rem_u_tmp, duhdu, du, du_min_CFL, du_max_CFL, duhdu_tot_0, uh_tot_0, &
-  !$omp     visc_rem_max)
-
-  call cpu_clock_end(id_clock_correct)
-
-end subroutine zonal_mass_flux
-
-subroutine present_uhbt_or_set_BT_cont(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0, du, du_max_CFL, &
-                                       du_min_CFL, visc_rem_u, visc_rem_max, por_face_areaU, uhbt, &
-                                       uh, u_cor, du_cor, BT_cont, dt, G, GV, US, CS, OBC, LB)
-  type(ocean_grid_type),   intent(in)    :: G    !< Ocean's grid structure.
-  type(verticalGrid_type), intent(in)    :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in)    :: u    !< Zonal velocity [L T-1 ~> m s-1].
-  real,  dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in)    :: h_in !< Layer thickness used to calculate fluxes [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in)    :: h_W !< Western edge thicknesses [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in)    :: h_E !< Eastern edge thicknesses [H ~> m or kg m-2].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in)    :: uh_tot_0 !< Summed transport with no barotropic correction
-                                                     !! [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in)    :: duhdu_tot_0 !< Summed partial derivative of uh with u
-                                                        !! [H L ~> m2 or kg m-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(inout) :: du !< Corrective barotropic change in the velocity to give uhbt
-                                               !! [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in)    :: du_max_CFL !< Upper limit on du correction to avoid CFL violations
-                                                       !! [L T-1 ~> m s-1]
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in)    :: du_min_CFL !< Lower limit on du correction to avoid CFL violations
-                                                       !![L T-1 ~> m s-1]
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(inout) :: uh   !< Volume flux through zonal faces = u*h*dy
-                                                 !! [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in)    :: visc_rem_u
-                     !< The fraction of zonal momentum originally in a layer that remains after a
-                     !! time-step of viscosity, and the fraction of a time-step's worth of a barotropic
-                     !! acceleration that a layer experiences after viscosity is applied [nondim].
-                     !! Visc_rem_u is between 0 (at the bottom) and 1 (far above the bottom).
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in)    :: visc_rem_max !< The column maximum of visc_rem [nondim].
-  real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), &
-                           intent(in)    :: por_face_areaU !< fractional open area of U-faces [nondim]
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                 optional, intent(out)   :: u_cor !< The zonal velocities (u with a barotropic correction)
-                                      !! that give uhbt as the depth-integrated transport [L T-1 ~> m s-1]
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                 optional, intent(out)   :: du_cor !< The zonal velocity increments from u that give uhbt
-                                                 !! as the depth-integrated transports [L T-1 ~> m s-1].
-  type(BT_cont_type), optional, pointer  :: BT_cont !< A structure with elements that describe the
-                     !! effective open face areas as a function of barotropic flow.
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                 optional, intent(in)    :: uhbt !< The summed volume flux through zonal faces
-                                                 !! [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real,                    intent(in)    :: dt  !< Time increment [T ~> s].
-  type(unit_scale_type),   intent(in)    :: US  !< A dimensional unit scaling type
-  type(continuity_PPM_CS), intent(in)    :: CS  !< This module's control structure.
-  type(ocean_OBC_type),      pointer     :: OBC !< Open boundaries control structure.
-  type(cont_loop_bounds_type), intent(in) :: LB !< Loop boundary variable.
-  ! Local variables
-  logical, dimension(SZIB_(G), SZJ_(G)) :: do_I
-  logical, dimension(SZIB_(G), SZJ_(G)) :: simple_OBC_pt  ! Indicates points in a row with specified transport OBCs
-  logical:: set_BT_cont
-  logical:: local_specified_BC, local_Flather_OBC, local_open_BC, any_simple_OBC  ! OBC-related logicals
-  integer:: l_seg, i, j, k, n, ish, ieh, jsh, jeh, nz
-  real :: FAuI, FA_u
-
-  ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
-
-  set_BT_cont = .false. ; if (present(BT_cont)) set_BT_cont = (associated(BT_cont))
-
-  local_specified_BC = .false. ; local_Flather_OBC = .false. ; local_open_BC = .false.
-  if (associated(OBC)) then ; if (OBC%OBC_pe) then
-    local_specified_BC = OBC%specified_u_BCs_exist_globally
-    local_Flather_OBC = OBC%Flather_u_BCs_exist_globally
-    local_open_BC = OBC%open_u_BCs_exist_globally
-  endif ; endif
-
-  if (present(uhbt) .or. set_BT_cont) then
-    !$omp target enter data map(alloc: do_I, simple_OBC_pt)
-    any_simple_OBC = .false.
-    if (local_specified_BC .or. local_Flather_OBC) then
-      do concurrent (j=jsh:jeh, I=ish-1:ieh)
-        l_seg = abs(OBC%segnum_u(I,j))
-        ! Avoid reconciling barotropic/baroclinic transports if transport is specified
-        simple_OBC_pt(I,j) = .false.
-        if (l_seg /= OBC_NONE) simple_OBC_pt(I,j) = OBC%segment(l_seg)%specified
-        do_I(I, j) = .not.simple_OBC_pt(I,j)
-        any_simple_OBC = any_simple_OBC .or. simple_OBC_pt(I,j)
-      enddo
-    else
-      do concurrent (j=jsh:jeh, I=ish-1:ieh)
-        do_I(I, j) = .true.
-      enddo
-    endif
-
-    if (present(uhbt)) then
-      ! Find du and uh.
-      call zonal_flux_adjust(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0, du, &
-                            du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem_u, &
-                            ish, ieh, jsh, jeh, do_I, por_face_areaU, uhbt, uh, OBC=OBC)
-
-      do concurrent (j=jsh:jeh)
-        if (present(u_cor)) then
-          do concurrent (k=1:nz, I=ish-1:ieh)
-            u_cor(I,j,k) = u(I,j,k) + du(I,j) * visc_rem_u(I,j,k)
           enddo
-          if (any_simple_OBC) then
-            ! untested
-            do concurrent (k=1:nz, I=ish-1:ieh, simple_OBC_pt(I,j))
-              u_cor(I,j,k) = OBC%segment(abs(OBC%segnum_u(I,j)))%normal_vel(I,j,k)
-            enddo
+        else
+          if (CS%vol_CFL) then
+            dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+            dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+          else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          do k=1,nz
+
+            du_max_CFL = MIN(du_max_CFL, dx_W*CFL_dt - u(I,j,k))
+            du_min_CFL = MAX(du_min_CFL, -(dx_E*CFL_dt + u(I,j,k)))
+          enddo
+        endif
+      endif
+      du_max_CFL = max(du_max_CFL,0.0)
+      du_min_CFL = min(du_min_CFL,0.0)
+
+      simple_OBC_pt = .false.
+      if (present(uhbt) .or. set_BT_cont) then
+        if (local_specified_BC .or. local_Flather_OBC) then
+          l_seg = abs(OBC%segnum_u(I,j))
+
+          ! Avoid reconciling barotropic/baroclinic transports if transport is specified
+          if (l_seg /= OBC_NONE) simple_OBC_pt = OBC%segment(l_seg)%specified
+          do_I = .not.simple_OBC_pt
+        else
+          do_I = .true.
+        endif
+      endif
+
+      if (present(uhbt)) then
+        ! Find du and uh.
+        call zonal_flux_adjust(u, h_in, h_W, h_E, uhbt(I,j), uh_tot_0, duhdu_tot_0, du, &
+                               du_max_CFL, du_min_CFL, dt, G, GV, CS, visc_rem, &
+                               j, i, nz, do_I, por_face_areaU, uh, OBC=OBC)
+
+        if (present(u_cor)) then
+          !$acc loop seq
+          do k=1,nz
+          u_cor(I,j,k) = u(I,j,k) + du * visc_rem(k) ; enddo
+          if (simple_OBC_pt) then
+            u_cor(I,j,k) = OBC%segment(abs(OBC%segnum_u(I,j)))%normal_vel(I,j,k)
           endif
         endif ! u-corrected
 
         if (present(du_cor)) then
-          do concurrent (I=ish-1:ieh)
-            du_cor(I,j) = du(I,j)
-          enddo
-        endif ! du-corrected
-      enddo
-    endif
-    if (set_BT_cont) then
-      ! Diagnose the zero-transport correction, du0.
-      call zonal_flux_adjust(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0, du, &
-                            du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem_u, &
-                            ish, ieh, jsh, jeh, do_I, por_face_areaU)
-      call set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, du, uh_tot_0, duhdu_tot_0,&
-                              du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem_u, &
-                              visc_rem_max, ish, ieh, jsh, jeh, do_I, por_face_areaU)
-      if (any_simple_OBC) then
-        ! untested
-        do concurrent (j=jsh:jeh, I=ish-1:ieh)
-          ! NOTE: simple_OBC_pt(I, j) should prevent access to segment OBC_NONE
-          if (simple_OBC_pt(I,j)) then
-            FAuI = GV%H_subroundoff*G%dy_Cu(I,j)
-            do k=1,nz
-              l_seg = abs(OBC%segnum_u(I,j))
-              if ((abs(OBC%segment(l_seg)%normal_vel(I,j,k)) > 0.0) .and. (OBC%segment(l_seg)%specified)) &
-                FAuI = FAuI + OBC%segment(l_seg)%normal_trans(I,j,k) / OBC%segment(l_seg)%normal_vel(I,j,k)
-            enddo
-            BT_cont%FA_u_W0(I,j) = FAuI ; BT_cont%FA_u_E0(I,j) = FAuI
-            BT_cont%FA_u_WW(I,j) = FAuI ; BT_cont%FA_u_EE(I,j) = FAuI
-            BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
-          endif
-        enddo
+          du_cor(I,j) = du
+        endif
       endif
-    endif
-    !$omp target exit data map(release: do_I, simple_OBC_pt)
-  endif
 
-  ! untested!
+      if (set_BT_cont) then
+        call set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, &
+                               du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
+                               visc_rem_max, j, i, nz, do_I, por_face_areaU, uh_tmp)
+        if (simple_OBC_pt) then
+          FAuI = GV%H_subroundoff*G%dy_Cu(I,j)
+          ! NOTE: simple_OBC_pt(I,j) should prevent access to segment OBC_NONE
+          !$acc loop seq
+          do k=1,nz
+            l_seg = abs(OBC%segnum_u(I,j))
+            if ((abs(OBC%segment(l_seg)%normal_vel(I,j,k)) > 0.0) .and. (OBC%segment(l_seg)%specified)) &
+              FAuI = FAuI + OBC%segment(l_seg)%normal_trans(I,j,k) / OBC%segment(l_seg)%normal_vel(I,j,k)
+          enddo
+          BT_cont%FA_u_W0(I,j) = FAuI ; BT_cont%FA_u_E0(I,j) = FAuI
+          BT_cont%FA_u_WW(I,j) = FAuI ; BT_cont%FA_u_EE(I,j) = FAuI
+          BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
+        endif
+      endif ! set_BT_cont
+    endif ! present(uhbt) or set_BT_cont
+  enddo ; enddo ! ij-loop
+
   if (local_open_BC .and. set_BT_cont) then
     do n = 1, OBC%number_of_segments
       if (OBC%segment(n)%open .and. OBC%segment(n)%is_E_or_W) then
         I = OBC%segment(n)%HI%IsdB
         if (OBC%segment(n)%direction == OBC_DIRECTION_E) then
-          do concurrent (j = OBC%segment(n)%HI%Jsd:OBC%segment(n)%HI%Jed)
+          do j = OBC%segment(n)%HI%Jsd, OBC%segment(n)%HI%Jed
             FA_u = 0.0
             do k=1,nz ; FA_u = FA_u + h_in(i,j,k)*(G%dy_Cu(I,j)*por_face_areaU(I,j,k)) ; enddo
             BT_cont%FA_u_W0(I,j) = FA_u ; BT_cont%FA_u_E0(I,j) = FA_u
@@ -928,7 +808,7 @@ subroutine present_uhbt_or_set_BT_cont(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0,
             BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
           enddo
         else
-          do concurrent (j = OBC%segment(n)%HI%Jsd:OBC%segment(n)%HI%Jed)
+          do j = OBC%segment(n)%HI%Jsd, OBC%segment(n)%HI%Jed
             FA_u = 0.0
             do k=1,nz ; FA_u = FA_u + h_in(i+1,j,k)*(G%dy_Cu(I,j)*por_face_areaU(I,j,k)) ; enddo
             BT_cont%FA_u_W0(I,j) = FA_u ; BT_cont%FA_u_E0(I,j) = FA_u
@@ -950,7 +830,11 @@ subroutine present_uhbt_or_set_BT_cont(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0,
     endif
   endif ; endif
 
-end subroutine present_uhbt_or_set_BT_cont
+  !$omp target exit data map(release: visc_rem, duhdu, uh_tmp)
+
+  call cpu_clock_end(id_clock_correct)
+
+end subroutine zonal_mass_flux
 
 
 !> Calculates the vertically integrated mass or volume fluxes through the zonal faces.
@@ -1010,10 +894,10 @@ subroutine zonal_BT_mass_flux(u, h_in, h_W, h_E, uhbt, dt, G, GV, US, CS, OBC, p
   do concurrent (k=1:nz, j=jsh:jeh, I=ish-1:ieh)
     call flux_elem(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
                    h_E(I+1,j,k), uh(I,j,k), duhdu(I,j,k), 1.0, G%dy_Cu(I,j), G%IareaT(I,j), &
-                   G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, G, GV, US, CS%vol_CFL, &
+                   G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, CS%vol_CFL, &
                    por_face_areaU(I,j,k))
     if (local_specified_BC) &
-      call flux_elem_OBC(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), uh(I,j,k), duhdu(I,j,k), 1.0, G, GV, &
+      call flux_elem_OBC(u(I,j,k), h_in(I,j,k), h_in(I+1,j,k), uh(I,j,k), duhdu(I,j,k), 1.0, &
                          por_face_areaU(I,j,k), G%dy_Cu(I,j), OBC, OBC%segnum_u(I,j))
   enddo
 
@@ -1035,10 +919,8 @@ end subroutine zonal_BT_mass_flux
 
 !> Evaluates the zonal mass or volume fluxes in an element.
 elemental subroutine flux_elem(u, h, h_p1, h_L, h_L_p1, h_R, h_R_p1, uh, duhdu, visc_rem, &
-                               G_dy_Cu, G_IareaT, G_IareaT_p1, G_IdxT, G_IdxT_p1, dt, G, GV, &
-                               US, vol_CFL, por_face_area)
-  type(ocean_grid_type),   intent(in)  :: G        !< Ocean's grid structure.
-  type(verticalGrid_type), intent(in)  :: GV       !< Ocean's vertical grid structure.
+                               G_dy_Cu, G_IareaT, G_IareaT_p1, G_IdxT, G_IdxT_p1, dt, &
+                               vol_CFL, por_face_area)
   real,                    intent(in)  :: u        !< Zonal or meridional velocity [L T-1 ~> m s-1].
   real,                    intent(in)  :: visc_rem !< Both the fraction of the
                         !! momentum originally in a layer that remains after a time-step
@@ -1056,7 +938,6 @@ elemental subroutine flux_elem(u, h, h_p1, h_L, h_L_p1, h_R, h_R_p1, uh, duhdu, 
   real,                    intent(out) :: duhdu    !< Partial derivative of uh
                                                    !! with u [H L ~> m2 or kg m-1].
   real,                    intent(in)  :: dt       !< Time increment [T ~> s]
-  type(unit_scale_type),   intent(in)  :: US       !< A dimensional unit scaling type.
   logical,                 intent(in)  :: vol_CFL  !< If true, rescale the ratio of face areas to the
                                                    !! cell areas when estimating the CFL number.
   real,                    intent(in)  :: por_face_area !< fractional open area of U/V-faces [nondim].
@@ -1099,10 +980,8 @@ elemental subroutine flux_elem(u, h, h_p1, h_L, h_L_p1, h_R, h_R_p1, uh, duhdu, 
 
 end subroutine flux_elem
 
-elemental subroutine flux_elem_OBC(u, h, h_p1, uh, duhdu, visc_rem, G, GV, por_face_area, &
+elemental subroutine flux_elem_OBC(u, h, h_p1, uh, duhdu, visc_rem, por_face_area, &
                                      G_dy_Cu, OBC, l_seg)
-  type(ocean_grid_type),    intent(in)    :: G        !< Ocean's grid structure.
-  type(verticalGrid_type),  intent(in)    :: GV       !< Ocean's vertical grid structure.
   real,                     intent(in)    :: u        !< Zonal/meridional velocity [L T-1 ~> m s-1].
   real,                     intent(in)    :: visc_rem !< Both the fraction of the
                         !! momentum originally in a layer that remains after a time-step
@@ -1256,261 +1135,199 @@ end subroutine zonal_flux_thickness
 
 !> Returns the barotropic velocity adjustment that gives the
 !! desired barotropic (layer-summed) transport.
-subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uh_tot_0, duhdu_tot_0, &
-                             du, du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             ish, ieh, jsh, jeh, do_I_in, por_face_areaU, uhbt, uh_3d, OBC)
+subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
+                             du, du_max_CFL, du_min_CFL, dt, G, GV, CS, visc_rem, &
+                             j, i, nz, do_I_in, por_face_areaU, uh_3d, OBC)
 
   type(ocean_grid_type),                      intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type),                    intent(in)    :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)    :: u     !< Zonal velocity [L T-1 ~> m s-1].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)    :: u    !< Zonal velocity [L T-1 ~> m s-1].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h_in !< Layer thickness used to
                                                                     !! calculate fluxes [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h_W  !< West edge thickness in the
                                                                     !! reconstruction [H ~> m or kg m-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h_E  !< East edge thickness in the
                                                                     !! reconstruction [H ~> m or kg m-2].
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)    :: visc_rem !< Both the fraction of the
+  real, dimension(SZK_(GV)),                  intent(in)    :: visc_rem !< Both the fraction of the
                        !! momentum originally in a layer that remains after a time-step of viscosity, and
                        !! the fraction of a time-step's worth of a barotropic acceleration that a layer
                        !! experiences after viscosity is applied [nondim].
                        !! Visc_rem is between 0 (at the bottom) and 1 (far above the bottom).
-  real, dimension(SZIB_(G),SZJ_(G)), optional, intent(in)    :: uhbt !< The summed volume flux
+  real,                                       intent(in)    :: uhbt !< The summed volume flux
                        !! through zonal faces [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real, dimension(SZIB_(G),SZJ_(G)),          intent(in)    :: du_max_CFL  !< Maximum acceptable
+
+  real,                                       intent(in)    :: du_max_CFL  !< Maximum acceptable
                        !! value of du [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G),SZJ_(G)),          intent(in)    :: du_min_CFL  !< Minimum acceptable
+  real,                                       intent(in)    :: du_min_CFL  !< Minimum acceptable
                        !! value of du [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G),SZJ_(G)),          intent(in)    :: uh_tot_0    !< The summed transport
+  real,                                       intent(in)    :: uh_tot_0    !< The summed transport
                        !! with 0 adjustment [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real, dimension(SZIB_(G),SZJ_(G)),          intent(in)    :: duhdu_tot_0 !< The partial derivative
+  real,                                       intent(in)    :: duhdu_tot_0 !< The partial derivative
                        !! of du_err with du at 0 adjustment [H L ~> m2 or kg m-1].
-  real, dimension(SZIB_(G),SZJ_(G)),          intent(inout) :: du !<
+  real,                                       intent(out)   :: du !<
                        !! The barotropic velocity adjustment [L T-1 ~> m s-1].
   real,                                       intent(in)    :: dt  !< Time increment [T ~> s].
-  type(unit_scale_type),                      intent(in)    :: US  !< A dimensional unit scaling type.
   type(continuity_PPM_CS),                    intent(in)    :: CS  !< This module's control structure.
-  integer,                                    intent(in)    :: ish !< Start of i index range.
-  integer,                                    intent(in)    :: jsh !< Start of j index range.
-  integer,                                    intent(in)    :: ieh !< End of i index range.
-  integer,                                    intent(in)    :: jeh !< End of j index range.
-  logical, dimension(SZIB_(G),SZJ_(G)),       intent(in)    :: do_I_in !< A logical flag indicating
-                                                                       !! which I values to work on.
-  real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), intent(in)   :: por_face_areaU !< fractional open area
-                                                                              !! of U-faces [nondim].
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                                    optional, intent(inout) :: uh_3d !< Volume flux through zonal
-                                                 !! faces = u*h*dy [H L2 T-1 ~> m3 s-1 or kg s-1].
+  integer,                                    intent(in)    :: j   !< Meridional spatial index.
+  integer,                                    intent(in)    :: i   !< Zonal spatial index.
+  integer,                                    intent(in)    :: nz  !< Number of vertical layers
+  logical,                                    intent(in)    :: do_I_in     !< A logical flag indicating which I values to work on.
+  real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), intent(in)   :: por_face_areaU !< fractional open area of U-faces [nondim]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: uh_3d !<
+                       !! Volume flux through zonal faces = u*h*dy [H L2 T-1 ~> m3 s-1 or kg s-1].
   type(ocean_OBC_type),             optional, pointer       :: OBC !< Open boundaries control structure.
   ! Local variables
-  real, dimension(SZIB_(G),SZK_(GV)) :: &
-    uh_aux         ! An auxiliary zonal volume flux [H L2 T-1 ~> m3 s-1 or kg s-1].
   real :: &
-    duhdu, &       ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
-    u_new          ! The velocity with the correction added [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G)) :: &
-    uh_err, &      ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
+    duhdu, &      ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
+    uh_err, &  ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
     uh_err_best, & ! The smallest value of uh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
-    duhdu_tot,&    ! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
-    du_min, &      ! Lower limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-    du_max         ! Upper limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-  real :: du_prev  ! The previous value of du [L T-1 ~> m s-1].
-  real :: ddu      ! The change in du from the previous iteration [L T-1 ~> m s-1].
-  real :: tol_eta  ! The tolerance for the current iteration [H ~> m or kg m-2].
-  real :: tol_vel  ! The tolerance for velocity in the current iteration [L T-1 ~> m s-1].
-  integer :: i, j, k, nz, itt
-  logical :: do_I(SZIB_(G)), local_OBC, use_uhbt
-  integer, parameter:: max_itts = 20
+    u_new, &   ! The velocity with the correction added [L T-1 ~> m s-1].
+    duhdu_tot,&! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
+    du_min, &  ! Lower limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+    du_max     ! Upper limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  real :: du_prev ! The previous value of du [L T-1 ~> m s-1].
+  real :: ddu     ! The change in du from the previous iteration [L T-1 ~> m s-1].
+  real :: tol_eta ! The tolerance for the current iteration [H ~> m or kg m-2].
+  integer :: k, itt
+  integer, parameter :: max_itts = 20
+  logical :: do_I, local_open_BC
+  !$omp declare target
+  !$acc routine seq
+  
+  local_open_BC = .false.
+  if (present(OBC)) then ; if (associated(OBC)) then
+    local_open_BC = OBC%open_u_BCs_exist_globally
+  endif ; endif
 
-  local_OBC = .false.
-  if (present(OBC)) then
-    if (associated(OBC)) then
-      local_OBC = OBC%open_u_BCs_exist_globally
-    endif
-  endif
+  du = 0.0 ; do_I = do_I_in
+  du_max = du_max_CFL ; du_min = du_min_CFL
+  uh_err = uh_tot_0 - uhbt ; duhdu_tot = duhdu_tot_0
+  uh_err_best = abs(uh_err)
 
-  use_uhbt = present(uhbt)
+  do itt=1,max_itts
+    select case (itt)
+      case (:1) ; tol_eta = 1e-6 * CS%tol_eta
+      case (2)  ; tol_eta = 1e-4 * CS%tol_eta
+      case (3)  ; tol_eta = 1e-2 * CS%tol_eta
+      case default ; tol_eta = CS%tol_eta
+    end select
 
-  nz = GV%ke
-
-  tol_vel = CS%tol_vel
-
-  ! NVIDIA needs private arrays to be alloc'ed to prevent data transfers.
-  ! GCC doesn't understand map(alloc: ...) for variables also marked private
-  !$omp target enter data map(alloc: do_I, du_max, du_min, duhdu_tot, uh_err, uh_err_best, uh_aux)
-
-  ! NVIDIA do concurrent doesn't work with private arrays (private scalars OK)
-  !$omp target teams loop &
-  !$omp   private(uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I, uh_aux, itt, tol_eta)
-  do j=jsh,jeh
-
-    if (present(uh_3d)) then
-      do concurrent (k=1:nz, I=ish-1:ieh)
-        uh_aux(I,k) = uh_3d(I,j,k)
-      enddo
-    endif
-
-    do concurrent (I=ish-1:ieh)
-      du(I,j) = 0.0 ; do_I(I) = do_I_in(I,j)
-      du_max(I) = du_max_CFL(I,j) ; du_min(I) = du_min_CFL(I,j)
-      uh_err(I) = uh_tot_0(I,j)
-      if (use_uhbt) uh_err(I) = uh_err(I) - uhbt(I,j)
-      duhdu_tot(I) = duhdu_tot_0(I,j)
-      uh_err_best(I) = abs(uh_err(I))
-    enddo
-
-    do itt=1,max_itts
-      select case (itt)
-        case (:1) ; tol_eta = 1e-6 * CS%tol_eta
-        case (2)  ; tol_eta = 1e-4 * CS%tol_eta
-        case (3)  ; tol_eta = 1e-2 * CS%tol_eta
-        case default ; tol_eta = CS%tol_eta
-      end select
-
-      do concurrent (I=ish-1:ieh, do_I(I)) &
-          & DO_LOCALITY(local(ddu, du_prev))
-        if (uh_err(I) > 0.0) then ; du_max(I) = du(I,j)
-        elseif (uh_err(I) < 0.0) then ; du_min(I) = du(I,j)
-        else ; do_I(I) = .false. ; endif
-        if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err(I)) > tol_eta) .or. &
-            (CS%better_iter .and. ((abs(uh_err(I)) > tol_vel * duhdu_tot(I)) .or. &
-                                  (abs(uh_err(I)) > uh_err_best(I))) )) then
-        !   Use Newton's method, provided it stays bounded.  Otherwise bisect
-        ! the value with the appropriate bound.
-          ddu = -uh_err(I) / duhdu_tot(I)
-          du_prev = du(I,j)
-          du(I,j) = du(I,j) + ddu
-          if (abs(ddu) < 1.0e-15*abs(du(I,j))) then
-            do_I(I) = .false. ! ddu is small enough to quit.
-          elseif (ddu > 0.0) then
-            if (du(I,j) >= du_max(I)) then
-              du(I,j) = 0.5*(du_prev + du_max(I))
-              if (du_max(I) - du_prev < 1.0e-15*abs(du(I,j))) do_I(I) = .false.
-            endif
-          else ! ddu < 0.0
-            if (du(I,j) <= du_min(I)) then
-              du(I,j) = 0.5*(du_prev + du_min(I))
-              if (du_prev - du_min(I) < 1.0e-15*abs(du(I,j))) do_I(I) = .false.
-            endif
+    if (uh_err > 0.0) then ; du_max = du
+    elseif (uh_err < 0.0) then ; du_min = du
+    else ; do_I = .false. ; endif
+    if (do_I) then
+      if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err) > tol_eta) .or. &
+          (CS%better_iter .and. ((abs(uh_err) > CS%tol_vel * duhdu_tot) .or. &
+                                 (abs(uh_err) > uh_err_best)) )) then
+      !   Use Newton's method, provided it stays bounded.  Otherwise bisect
+      ! the value with the appropriate bound.
+        ddu = -uh_err / duhdu_tot
+        du_prev = du
+        du = du + ddu
+        if (abs(ddu) < 1.0e-15*abs(du)) then
+          do_I = .false. ! ddu is small enough to quit.
+        elseif (ddu > 0.0) then
+          if (du >= du_max) then
+            du = 0.5*(du_prev + du_max)
+            if (du_max - du_prev < 1.0e-15*abs(du)) do_I = .false.
           endif
-        else
-          do_I(I) = .false.
+        else ! ddu < 0.0
+          if (du <= du_min) then
+            du = 0.5*(du_prev + du_min)
+            if (du_prev - du_min < 1.0e-15*abs(du)) do_I = .false.
+          endif
         endif
-      enddo
-
-      ! Below conditional compilation is to control whether early exit happens when compiled with
-      ! OpenMP - compiling with OpenMP prevents early exit. Without OpenMP, enables early exit.
-      ! Early exit saves time on CPU, but causes other loops to be serialized on GPU.
-      !$ if (.false.) then
-      if (.not. any(do_I(ish-1:ieh))) exit
-      !$ endif
-
-      if ((itt < max_itts) .or. present(uh_3d)) then
-        do concurrent (I=ish-1:ieh)
-          uh_err(I) = 0.0 ; duhdu_tot(I) = 0.0
-          if (use_uhbt) uh_err(I) = -uhbt(I,j)
-        enddo
-        do k=1,nz ; do concurrent (I=ish-1:ieh, do_I(I)) DO_LOCALITY(local(u_new, duhdu))
-          u_new = u(I,j,k) + du(I,j) * visc_rem(I,j,k)
-          call flux_elem(u_new, h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
-                         h_E(I+1,j,k), uh_aux(I,k), duhdu, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                         G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(i+1,j), dt, G, GV, US, &
-                         CS%vol_CFL, por_face_areaU(I,j,k))
-          ! Below if statement looks expensive in profiling results, but I believe it's
-          ! masking the expensive update of uh_err beneath
-          if (local_OBC) &
-            call flux_elem_OBC(u_new, h_in(I,j,k), h_in(I+1,j,k), uh_aux(I,k), duhdu, &
-                               visc_rem(I,j,k), G, GV, por_face_areaU(I,j,k), G%dy_Cu(I,j), OBC, &
-                               OBC%segnum_u(I,j))
-          uh_err(I) = uh_err(I) + uh_aux(I,k)
-          duhdu_tot(I) = duhdu_tot(I) + duhdu
-        enddo ; enddo
-        do concurrent (I=ish-1:ieh)
-          uh_err_best(I) = min(uh_err_best(I), abs(uh_err(I)))
-        enddo
+      else
+        do_I = .false.
       endif
-
-    enddo ! itt-loop
-    if (present(uh_3d)) then
-      do concurrent (k=1:nz, I=ish-1:ieh)
-        uh_3d(I,j,k) = uh_aux(I,k)
-      enddo
     endif
-  enddo ! j-loop
+
+    if (do_I) then
+
+      uh_err = -uhbt ; duhdu_tot = 0.0
+      do k=1,nz
+        u_new = u(I,j,k) + du * visc_rem(k)
+        call flux_elem(u_new, h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
+                        h_E(I+1,j,k), uh_3d(I,j,k), duhdu, visc_rem(k), G%dy_Cu(I,j), &
+                        G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, &
+                        CS%vol_CFL, por_face_areaU(I,j,k))
+        if (local_open_BC) then
+          call flux_elem_OBC(u_new, h_in(I,j,k), h_in(I+1,j,k), uh_3d(I,j,k), duhdu, &
+                              visc_rem(k), por_face_areaU(I,j,k), G%dy_Cu(I,j), OBC, OBC%segnum_u(I,j))
+        endif
+        uh_err = uh_err + uh_3d(I,j,k)
+        duhdu_tot = duhdu_tot + duhdu
+      enddo
+      uh_err_best = min(uh_err_best, abs(uh_err))
+
+  endif
+  enddo ! itt-loop
   ! If there are any faces which have not converged to within the tolerance,
   ! so-be-it, or else use a final upwind correction?
   ! This never seems to happen with 20 iterations as max_itt.
 
-  !$omp target exit data map(release: do_I, du_max, du_min, duhdu_tot, uh_err, uh_err_best, uh_aux)
-
 end subroutine zonal_flux_adjust
-
 
 !> Sets a structure that describes the zonal barotropic volume or mass fluxes as a
 !! function of barotropic flow to agree closely with the sum of the layer's transports.
-subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, du0, uh_tot_0, duhdu_tot_0, &
+subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, &
                              du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             visc_rem_max, ish, ieh, jsh, jeh, do_I, por_face_areaU)
-  type(ocean_grid_type),   intent(in) :: G    !< Ocean's grid structure.
-  type(verticalGrid_type), intent(in) :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: u    !< Zonal velocity [L T-1 ~> m s-1].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_in !< Layer thickness used to calculate fluxes [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_W  !< West edge thickness in the reconstruction [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: h_E  !< East edge thickness in the reconstruction [H ~> m or kg m-2].
-  type(BT_cont_type),   intent(inout) :: BT_cont !< A structure with elements
+                             visc_rem_max, j, i, nz, do_I, por_face_areaU, uh_tmp)
+  type(ocean_grid_type),                     intent(in)    :: G    !< Ocean's grid structure.
+  type(verticalGrid_type),                   intent(in)    :: GV   !< Ocean's vertical grid structure.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)    :: u    !< Zonal velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_in !< Layer thickness used to
+                                                                   !! calculate fluxes [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_W  !< West edge thickness in the
+                                                                   !! reconstruction [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_E  !< East edge thickness in the
+                                                                   !! reconstruction [H ~> m or kg m-2].
+  type(BT_cont_type),                        intent(inout) :: BT_cont !< A structure with elements
                        !! that describe the effective open face areas as a function of barotropic flow.
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: du0  !< The barotropic velocity increment that gives 0 transport
-                                                 !! [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: uh_tot_0    !< The summed transport with 0 adjustment
-                                                        !! [H L2 T-1 ~> m3 s-1 or kg s-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: duhdu_tot_0 !< The partial derivative
+  real,                 intent(in)    :: uh_tot_0    !< The summed transport
+                       !! with 0 adjustment [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real,                 intent(in)    :: duhdu_tot_0 !< The partial derivative
                        !! of du_err with du at 0 adjustment [H L ~> m2 or kg m-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: du_max_CFL  !< Maximum acceptable value of du [L T-1 ~> m s-1].
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: du_min_CFL  !< Minimum acceptable value of du [L T-1 ~> m s-1].
-  real,                    intent(in) :: dt   !< Time increment [T ~> s].
-  type(unit_scale_type),   intent(in) :: US   !< A dimensional unit scaling type
-  type(continuity_PPM_CS), intent(in) :: CS   !< This module's control structure.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
-                           intent(in) :: visc_rem !< Both the fraction of the
+  real, intent(in)    :: du_max_CFL  !< Maximum acceptable
+                       !! value of du [L T-1 ~> m s-1].
+  real, intent(in)    :: du_min_CFL  !< Minimum acceptable
+                       !! value of du [L T-1 ~> m s-1].
+  real,                                      intent(in)    :: dt   !< Time increment [T ~> s].
+  type(unit_scale_type),                     intent(in)    :: US   !< A dimensional unit scaling type
+  type(continuity_PPM_CS),                   intent(in)    :: CS   !< This module's control structure.
+  real, dimension(SZK_(GV)),        intent(in)    :: visc_rem !< Both the fraction of the
                        !! momentum originally in a layer that remains after a time-step of viscosity, and
                        !! the fraction of a time-step's worth of a barotropic acceleration that a layer
                        !! experiences after viscosity is applied [nondim].
                        !! Visc_rem is between 0 (at the bottom) and 1 (far above the bottom).
-  real, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: visc_rem_max !< Maximum allowable visc_rem [nondim].
-  integer,                 intent(in) :: ish      !< Start of i index range.
-  integer,                 intent(in) :: ieh      !< End of i index range.
-  integer,                 intent(in) :: jsh      !< Start of j index range.
-  integer,                 intent(in) :: jeh      !< End of j index range.
-  logical, dimension(SZIB_(G),SZJ_(G)), &
-                           intent(in) :: do_I     !< A logical flag indicating which I values to work on.
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
-                           intent(in) :: por_face_areaU !< fractional open area of U-faces [nondim]
+  real,                  intent(in)    :: visc_rem_max !< Maximum allowable visc_rem [nondim].
+  integer,                                   intent(in)    :: j        !< Meridional spatial index.
+  integer,                                   intent(in)    :: i        !< Zonal spatial index.
+  integer, intent(in):: nz !< Number of vertical layers.
+  logical,              intent(in)    :: do_I     !< A logical flag indicating
+                       !! which I values to work on.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(out):: uh_tmp !< A temporary array that helps 
+                       !! with GPU performance
+  real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), &
+                                    intent(in) :: por_face_areaU !< fractional open area of U-faces [nondim]
   ! Local variables
-  real, dimension(SZIB_(G)) :: &
-    duL, duR, &       ! The barotropic velocity increments that give the westerly
-    du_CFL, &         ! The velocity increment that corresponds to CFL_min [L T-1 ~> m s-1].
-                      ! (duL) and easterly (duR) test velocities [L T-1 ~> m s-1].
-    FAmt_L, FAmt_R, & ! The summed effective marginal face areas for the 3
-    FAmt_0, &         ! test velocities [H L ~> m2 or kg m-1].
-    uhtot_L, &        ! The summed transport with the westerly (uhtot_L) and
-    uhtot_R           ! and easterly (uhtot_R) test velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
   real :: &
+    du0, &        ! The barotropic velocity increment that gives 0 transport [L T-1 ~> m s-1].
+    duL, duR, &   ! The barotropic velocity increments that give the westerly
+                  ! (duL) and easterly (duR) test velocities [L T-1 ~> m s-1].
+    zeros, &      ! An array of full of 0 transports [H L2 T-1 ~> m3 s-1 or kg s-1]
+    du_CFL, &     ! The velocity increment that corresponds to CFL_min [L T-1 ~> m s-1].
     u_L, u_R, &   ! The westerly (u_L), easterly (u_R), and zero-barotropic
     u_0, &        ! transport (u_0) layer test velocities [L T-1 ~> m s-1].
     duhdu_L, &    ! The effective layer marginal face areas with the westerly
     duhdu_R, &    ! (_L), easterly (_R), and zero-barotropic (_0) test
     duhdu_0, &    ! velocities [H L ~> m2 or kg m-1].
     uh_L, uh_R, & ! The layer transports with the westerly (_L), easterly (_R),
-    uh_0       ! and zero-barotropic (_0) test velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+    uh_0, &       ! and zero-barotropic (_0) test velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+    FAmt_L, FAmt_R, & ! The summed effective marginal face areas for the 3
+    FAmt_0, &     ! test velocities [H L ~> m2 or kg m-1].
+    uhtot_L, &    ! The summed transport with the westerly (uhtot_L) and
+    uhtot_R       ! and easterly (uhtot_R) test velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
   real :: FA_0    ! The effective face area with 0 barotropic transport [L H ~> m2 or kg m-1].
   real :: FA_avg  ! The average effective face area [L H ~> m2 or kg m-1], nominally given by
                   ! the realized transport divided by the barotropic velocity.
@@ -1524,95 +1341,82 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, du0, uh_tot_0, duhdu_to
   real :: CFL_min ! A minimal increment in the CFL to try to ensure that the
                   ! flow is truly upwind [nondim]
   real :: Idt     ! The inverse of the time step [T-1 ~> s-1].
-  integer :: i, j, k, nz
-
-  nz = GV%ke ; Idt = 1.0 / dt
+  logical :: domore
+  integer :: k
+  !$omp declare target
+  !$acc routine seq
+  Idt = 1.0 / dt
   min_visc_rem = 0.1 ; CFL_min = 1e-6
 
-  !$omp target enter data map(alloc: duL, duR, du_CFL, FAmt_L, FAmT_R, FAmt_0, uhtot_L, uhtot_R)
+ ! Diagnose the zero-transport correction, du0.
+  call zonal_flux_adjust(u, h_in, h_W, h_E, 0.0, uh_tot_0, duhdu_tot_0, du0, &
+                         du_max_CFL, du_min_CFL, dt, G, GV, CS, visc_rem, &
+                         j, i, nz, do_I, por_face_areaU, uh_tmp)
 
-  !$omp target teams loop private(duL, duR, du_CFL, FAmt_L, FAmt_R, FAmt_0, uhtot_L, uhtot_R)
-  do j=jsh,jeh
-    ! Determine the westerly- and easterly- fluxes.  Choose a sufficiently
-    ! negative velocity correction for the easterly-flux, and a sufficiently
-    ! positive correction for the westerly-flux.
-    do concurrent (I=ish-1:ieh)
-      du_CFL(I) = (CFL_min * Idt) * G%dxCu(I,j)
-      duR(I) = min(0.0,du0(I,j) - du_CFL(I))
-      duL(I) = max(0.0,du0(I,j) + du_CFL(I))
-      FAmt_L(I) = 0.0 ; FAmt_R(I) = 0.0 ; FAmt_0(I) = 0.0
-      uhtot_L(I) = 0.0 ; uhtot_R(I) = 0.0
-    enddo
+  ! Determine the westerly- and easterly- fluxes.  Choose a sufficiently
+  ! negative velocity correction for the easterly-flux, and a sufficiently
+  ! positive correction for the westerly-flux.
+  du_CFL = (CFL_min * Idt) * G%dxCu(I,j)
+  duR = min(0.0,du0 - du_CFL)
+  duL = max(0.0,du0 + du_CFL)
+  FAmt_L = 0.0 ; FAmt_R = 0.0 ; FAmt_0 = 0.0
+  uhtot_L = 0.0 ; uhtot_R = 0.0
 
-    do k=1,nz ; do concurrent (I=ish-1:ieh, do_I(I,j)) DO_LOCALITY(local(visc_rem_lim))
-      visc_rem_lim = max(visc_rem(I,j,k), min_visc_rem*visc_rem_max(I,j))
+  if (do_I) then
+    do k=1,nz
+      visc_rem_lim = max(visc_rem(k), min_visc_rem*visc_rem_max)
       if (visc_rem_lim > 0.0) then ! This is almost always true for ocean points.
-        if (u(I,j,k) + duR(I)*visc_rem_lim > -du_CFL(I)*visc_rem(I,j,k)) &
-          duR(I) = -(u(I,j,k) + du_CFL(I)*visc_rem(I,j,k)) / visc_rem_lim
-        if (u(I,j,k) + duL(I)*visc_rem_lim < du_CFL(I)*visc_rem(I,j,k)) &
-          duL(I) = -(u(I,j,k) - du_CFL(I)*visc_rem(I,j,k)) / visc_rem_lim
-      endif
-    enddo ; enddo
-
-    do k=1,nz ; do concurrent (I=ish-1:ieh, do_I(I,j)) &
-        & DO_LOCALITY(local(u_0, u_L, u_R, uh_0, uh_L, uh_R, duhdu_0, duhdu_L, duhdu_R))
-      u_L = u(I,j,k) + duL(I) * visc_rem(I,j,k)
-      u_R = u(I,j,k) + duR(I) * visc_rem(I,j,k)
-      u_0 = u(I,j,k) + du0(I,j) * visc_rem(I,j,k)
-      call flux_elem(u_0, h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
-                     h_E(I+1,j,k), uh_0, duhdu_0, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(i+1,j), dt, G, GV, &
-                     US, CS%vol_CFL, por_face_areaU(I,j,k))
-      call flux_elem(u_L, h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
-                     h_E(I+1,j,k), uh_L, duhdu_L, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(i+1,j), dt, G, GV, &
-                     US, CS%vol_CFL, por_face_areaU(I,j,k))
-      call flux_elem(u_R, h_in(I,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), &
-                     h_E(I+1,j,k), uh_R, duhdu_R, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(i+1,j), dt, G, GV, &
-                     US, CS%vol_CFL, por_face_areaU(I,j,k))
-      FAmt_0(I) = FAmt_0(I) + duhdu_0
-      FAmt_L(I) = FAmt_L(I) + duhdu_L
-      FAmt_R(I) = FAmt_R(I) + duhdu_R
-      uhtot_L(I) = uhtot_L(I) + uh_L
-      uhtot_R(I) = uhtot_R(I) + uh_R
-    enddo ; enddo
-
-    do concurrent (I=ish-1:ieh) DO_LOCALITY(local(FA_0, FA_avg))
-      if (do_I(I,j)) then
-        FA_0 = FAmt_0(I) ; FA_avg = FAmt_0(I)
-        if ((duL(I) - du0(I,j)) /= 0.0) &
-          FA_avg = uhtot_L(I) / (duL(I) - du0(I,j))
-        if (FA_avg > max(FA_0, FAmt_L(I))) then ; FA_avg = max(FA_0, FAmt_L(I))
-        elseif (FA_avg < min(FA_0, FAmt_L(I))) then ; FA_0 = FA_avg ; endif
-
-        BT_cont%FA_u_W0(I,j) = FA_0 ; BT_cont%FA_u_WW(I,j) = FAmt_L(I)
-        if (abs(FA_0-FAmt_L(I)) <= 1e-12*FA_0) then ; BT_cont%uBT_WW(I,j) = 0.0 ; else
-          BT_cont%uBT_WW(I,j) = (1.5 * (duL(I) - du0(I,j))) * &
-                                ((FAmt_L(I) - FA_avg) / (FAmt_L(I) - FA_0))
-        endif
-
-        FA_0 = FAmt_0(I) ; FA_avg = FAmt_0(I)
-        if ((duR(I) - du0(I,j)) /= 0.0) &
-          FA_avg = uhtot_R(I) / (duR(I) - du0(I,j))
-        if (FA_avg > max(FA_0, FAmt_R(I))) then ; FA_avg = max(FA_0, FAmt_R(I))
-        elseif (FA_avg < min(FA_0, FAmt_R(I))) then ; FA_0 = FA_avg ; endif
-
-        BT_cont%FA_u_E0(I,j) = FA_0 ; BT_cont%FA_u_EE(I,j) = FAmt_R(I)
-        if (abs(FAmt_R(I) - FA_0) <= 1e-12*FA_0) then ; BT_cont%uBT_EE(I,j) = 0.0 ; else
-          BT_cont%uBT_EE(I,j) = (1.5 * (duR(I) - du0(I,j))) * &
-                                ((FAmt_R(I) - FA_avg) / (FAmt_R(I) - FA_0))
-        endif
-      else
-        BT_cont%FA_u_W0(I,j) = 0.0 ; BT_cont%FA_u_WW(I,j) = 0.0
-        BT_cont%FA_u_E0(I,j) = 0.0 ; BT_cont%FA_u_EE(I,j) = 0.0
-        BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
+        if (u(I,j,k) + duR*visc_rem_lim > -du_CFL*visc_rem(k)) &
+          duR = -(u(I,j,k) + du_CFL*visc_rem(k)) / visc_rem_lim
+        if (u(I,j,k) + duL*visc_rem_lim < du_CFL*visc_rem(k)) &
+          duL = -(u(I,j,k) - du_CFL*visc_rem(k)) / visc_rem_lim
       endif
     enddo
-  enddo
+    do k=1,nz
+      u_L = u(I,j,k) + duL * visc_rem(k)
+      u_R = u(I,j,k) + duR * visc_rem(k)
+      u_0 = u(I,j,k) + du0 * visc_rem(k)
+      call flux_elem(u_0, h_in(i,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), h_E(I+1,j,k), uh_0, duhdu_0, &
+                    visc_rem(k), G%dy_Cu(I,j), G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, CS%vol_CFL, por_face_areaU(I,j,k))
+      call flux_elem(u_L, h_in(i,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), h_E(I+1,j,k), uh_L, duhdu_L, &
+                    visc_rem(k), G%dy_Cu(I,j), G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, CS%vol_CFL, por_face_areaU(I,j,k))
+      call flux_elem(u_R, h_in(i,j,k), h_in(I+1,j,k), h_W(I,j,k), h_W(I+1,j,k), h_E(I,j,k), h_E(I+1,j,k), uh_R, duhdu_R, &
+                    visc_rem(k), G%dy_Cu(I,j), G%IareaT(I,j), G%IareaT(I+1,j), G%IdxT(I,j), G%IdxT(I+1,j), dt, CS%vol_CFL, por_face_areaU(I,j,k))
+      FAmt_0 = FAmt_0 + duhdu_0
+      FAmt_L = FAmt_L + duhdu_L
+      FAmt_R = FAmt_R + duhdu_R
+      uhtot_L = uhtot_L + uh_L
+      uhtot_R = uhtot_R + uh_R
+    enddo
+  
+    FA_0 = FAmt_0 ; FA_avg = FAmt_0
+    if ((duL - du0) /= 0.0) &
+      FA_avg = uhtot_L / (duL - du0)
+    if (FA_avg > max(FA_0, FAmt_L)) then ; FA_avg = max(FA_0, FAmt_L)
+    elseif (FA_avg < min(FA_0, FAmt_L)) then ; FA_0 = FA_avg ; endif
 
-  !$omp target exit data map(release: duL, duR, du_CFL, FAmt_L, FAmT_R, FAmt_0, uhtot_L, uhtot_R)
+    BT_cont%FA_u_W0(I,j) = FA_0 ; BT_cont%FA_u_WW(I,j) = FAmt_L
+    if (abs(FA_0-FAmt_L) <= 1e-12*FA_0) then ; BT_cont%uBT_WW(I,j) = 0.0 ; else
+      BT_cont%uBT_WW(I,j) = (1.5 * (duL - du0)) * &
+                            ((FAmt_L - FA_avg) / (FAmt_L - FA_0))
+    endif
 
+    FA_0 = FAmt_0 ; FA_avg = FAmt_0
+    if ((duR - du0) /= 0.0) &
+      FA_avg = uhtot_R / (duR - du0)
+    if (FA_avg > max(FA_0, FAmt_R)) then ; FA_avg = max(FA_0, FAmt_R)
+    elseif (FA_avg < min(FA_0, FAmt_R)) then ; FA_0 = FA_avg ; endif
+
+    BT_cont%FA_u_E0(I,j) = FA_0 ; BT_cont%FA_u_EE(I,j) = FAmt_R
+    if (abs(FAmt_R - FA_0) <= 1e-12*FA_0) then ; BT_cont%uBT_EE(I,j) = 0.0 ; else
+      BT_cont%uBT_EE(I,j) = (1.5 * (duR - du0)) * &
+                            ((FAmt_R - FA_avg) / (FAmt_R - FA_0))
+    endif
+  else
+    BT_cont%FA_u_W0(I,j) = 0.0 ; BT_cont%FA_u_WW(I,j) = 0.0
+    BT_cont%FA_u_E0(I,j) = 0.0 ; BT_cont%FA_u_EE(I,j) = 0.0
+    BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
+  endif
 end subroutine set_zonal_BT_cont
 
 !> Calculates the mass or volume fluxes through the meridional faces, and other related quantities.
@@ -1728,14 +1532,14 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
     do concurrent (k=1:nz, i=ish:ieh)
       call flux_elem(v(i,J,k), h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), h_N(i,J,k), &
                      h_N(i,J+1,k), vh(i,J,k), dvhdv(i,J,k), visc_rem_v_tmp(i,J,k), G%dx_Cv(i,J), &
-                     G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), G%IdyT(i,J+1), dt, G, GV, US, &
+                     G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), G%IdyT(i,J+1), dt, &
                      CS%vol_CFL, por_face_areaV(i,J,k))
     enddo
     if (local_open_BC) then
       do concurrent (k=1:nz, i=ish:ieh)
         ! untested!
         call flux_elem_OBC(v(i,J,k), h_in(i,J,k), h_in(i,J+1,k), vh(i,J,k), dvhdv(i,J,k), &
-                           visc_rem_v_tmp(i,J,k), G, GV, por_face_areaV(i,J,k), &
+                           visc_rem_v_tmp(i,J,k), por_face_areaV(i,J,k), &
                            G%dx_Cv(i,J), OBC, OBC%segnum_v(i,J))
       enddo
     endif
@@ -2095,10 +1899,10 @@ subroutine meridional_BT_mass_flux(v, h_in, h_S, h_N, vhbt, dt, G, GV, US, CS, O
   do concurrent (k=1:nz, J=jsh-1:jeh, i=ish:ieh)
     call flux_elem(v(i,J,k), h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), &
                    h_N(i,J,k), h_N(i,J+1,k), vh(i,J,k), dvhdv(i,J,k), 1.0, G%dx_Cv(I,j), &
-                   G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), G%IdyT(i,J+1), dt, G, GV, &
-                   US, CS%vol_CFL, por_face_areaV(i,J,k))
+                   G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), G%IdyT(i,J+1), dt, &
+                   CS%vol_CFL, por_face_areaV(i,J,k))
     if (local_specified_BC) &
-      call flux_elem_OBC(v(i,J,k), h_in(i,J,k), h_in(i,J+1,k), vh(i,J,k), dvhdv(i,J,k), 1.0, G, GV, &
+      call flux_elem_OBC(v(i,J,k), h_in(i,J,k), h_in(i,J+1,k), vh(i,J,k), dvhdv(i,J,k), 1.0, &
                          por_face_areaV(i,J,k), G%dx_Cv(i,J), OBC, OBC%segnum_v(i,J))
   enddo
 
@@ -2404,10 +2208,10 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vh_tot_0, dvhdv_tot_0, &
           call flux_elem(v_new, h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), &
                          h_N(i,J,k), h_N(i,J+1,k), vh_aux(i,k), dvhdv, visc_rem(i,J,k), &
                          G%dx_Cv(i,J), G%IareaT(i,J), G%IareaT(i,J+1), G%idyT(i,J), G%IdyT(i,J+1), &
-                         dt, G, GV, US, CS%vol_CFL, por_face_areaV(i,J,k))
+                         dt, CS%vol_CFL, por_face_areaV(i,J,k))
           if (local_OBC) &
             call flux_elem_OBC(v_new, h_in(i,J,k), h_in(i,J+1,k), vh_aux(i,k), &
-                               dvhdv, visc_rem(i,J,k), G, GV, por_face_areaV(i,J,k), &
+                               dvhdv, visc_rem(i,J,k), por_face_areaV(i,J,k), &
                                G%dx_Cv(i,J), OBC, OBC%segnum_v(i,J))
           vh_err(i) = vh_err(i) + vh_aux(i,k)
           dvhdv_tot(i) = dvhdv_tot(i) + dvhdv
@@ -2547,15 +2351,15 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, dv0, vh_tot_0, dvhdv_to
       call flux_elem(v_0, h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), &
                      h_N(i,J,k), h_N(i,J+1,k), vh_0, dvhdv_0, visc_rem(i,J,k), &
                      G%dx_Cv(i,J), G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), &
-                     G%IdyT(i,J+1), dt, G, GV, US, CS%vol_CFL, por_face_areaV(i,J,k))
+                     G%IdyT(i,J+1), dt, CS%vol_CFL, por_face_areaV(i,J,k))
       call flux_elem(v_L, h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), &
                      h_N(i,J,k), h_N(i,J+1,k), vh_L, dvhdv_L, visc_rem(i,J,k), &
                      G%dx_Cv(i,J), G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), &
-                     G%IdyT(i,J+1), dt, G, GV, US, CS%vol_CFL, por_face_areaV(i,J,k))
+                     G%IdyT(i,J+1), dt, CS%vol_CFL, por_face_areaV(i,J,k))
       call flux_elem(v_R, h_in(i,J,k), h_in(i,J+1,k), h_S(i,J,k), h_S(i,J+1,k), &
                      h_N(i,J,k), h_N(i,J+1,k), vh_R, dvhdv_R, visc_rem(i,J,k), &
                      G%dx_Cv(i,J), G%IareaT(i,J), G%IareaT(i,J+1), G%IdyT(i,J), &
-                     G%IdyT(i,J+1), dt, G, GV, US, CS%vol_CFL, por_face_areaV(i,J,k))
+                     G%IdyT(i,J+1), dt, CS%vol_CFL, por_face_areaV(i,J,k))
       FAmt_0(i) = FAmt_0(i) + dvhdv_0
       FAmt_L(i) = FAmt_L(i) + dvhdv_L
       FAmt_R(i) = FAmt_R(i) + dvhdv_R
