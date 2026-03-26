@@ -307,6 +307,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   logical :: do_i(SZIB_(G), SZJB_(G))
   integer, dimension(2) :: EOSdom ! The computational domain for the equation of state
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, m, n, K2, nkmb, nkml
+  integer, parameter :: TILE_SIZE_Y = 4
   integer :: jstart, jend, istart, iend, ii, jj
   integer :: is_OBC, ie_OBC, js_OBC, je_OBC
   type(ocean_OBC_type), pointer :: OBC => NULL()
@@ -449,27 +450,31 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   !!$OMP                                     cdrag_sqrt,cdrag_sqrt_H,cdrag_sqrt_H_RL, &
   !!$OMP                                     cdrag_L_to_H,cdrag_RL_to_H,use_BBL_EOS,BBL_thick_max, &
   !!$OMP                                     OBC,D_u,D_v,mask_u,mask_v,pbv)
-  do j=Jsq,Jeq ; do m=1,2
+  do jstart=Jsq,Jeq,TILE_SIZE_Y ; do m=1,2
+    jend = min(Jeq, jstart + TILE_SIZE_Y - 1)
 
     if (m==1) then
       ! m=1 refers to u-points
-      if (j<G%Jsc) cycle
       is = Isq ; ie = Ieq
-      do i=is,ie
-        do_i(i,j) = (G%mask2dCu(I,j) > 0.0)
-      enddo
+      do j=jstart,jend ; do i=is,ie
+        if (j < G%Jsc) then
+          do_i(i,j) = .false.
+        else
+          do_i(i,j) = (G%mask2dCu(I,j) > 0.0)
+        endif
+      enddo ; enddo
     else
       ! m=2 refers to v-points
       is = G%isc ; ie = G%iec
-      do i=is,ie
+      do j=jstart,jend ; do i=is,ie
         do_i(i,j) = (G%mask2dCv(i,J) > 0.0)
-      enddo
+      enddo ; enddo
     endif
 
     ! Calculate thickness at velocity points (u or v depending on value of m).
     ! Also interpolate the ML density or T/S properties.
     if (m==1) then ! u-points
-      do k=1,nz ; do I=is,ie
+      do k=1,nz ; do j=jstart,jend ; do I=is,ie
         if (do_i(I,j)) then
           if (u(I,j,k) * (h(i+1,j,k) - h(i,j,k)) >= 0) then
             ! If the flow is from thin to thick then bias towards the thinner thickness
@@ -485,19 +490,19 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         endif
         h_vel(I,j,k) = 0.5 * (h(i,j,k) + h(i+1,j,k))
         dz_vel(I,j,k) = 0.5 * (dz(i,j,k) + dz(i+1,j,k))
-      enddo ; enddo
-      if (use_BBL_EOS) then ; do k=1,nz ; do I=is,ie
+      enddo ; enddo ; enddo
+      if (use_BBL_EOS) then ; do k=1,nz ; do j=jstart,jend ; do I=is,ie
         ! Perhaps these should be thickness weighted.
         T_vel(I,j,k) = 0.5 * (tv%T(i,j,k) + tv%T(i+1,j,k))
         S_vel(I,j,k) = 0.5 * (tv%S(i,j,k) + tv%S(i+1,j,k))
-      enddo ; enddo ; else ; do k=1,nkmb ; do I=is,ie
+      enddo ; enddo ; enddo ; else ; do k=1,nkmb ; do j=jstart,jend ; do I=is,ie
         Rml_vel(I,j,k) = 0.5 * (Rml(i,j,k) + Rml(i+1,j,k))
-      enddo ; enddo ; endif
-      if (allocated(tv%SpV_avg)) then ; do k=1,nz ; do I=is,ie
+      enddo ; enddo ; enddo ; endif
+      if (allocated(tv%SpV_avg)) then ; do k=1,nz ; do j=jstart,jend ; do I=is,ie
         SpV_vel(I,j,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i+1,j,k))
-      enddo ; enddo ; endif
+      enddo ; enddo ; enddo ; endif
     else ! v-points
-      do k=1,nz ; do i=is,ie
+      do k=1,nz ; do j=jstart,jend ; do i=is,ie
         if (do_i(i,j)) then
           if (v(i,J,k) * (h(i,j+1,k) - h(i,j,k)) >= 0) then
             ! If the flow is from thin to thick then bias towards the thinner thickness
@@ -513,23 +518,23 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         endif
         h_vel(i,j,k) = 0.5 * (h(i,j,k) + h(i,j+1,k))
         dz_vel(i,j,k) = 0.5 * (dz(i,j,k) + dz(i,j+1,k))
-      enddo ; enddo
-      if (use_BBL_EOS) then ; do k=1,nz ; do i=is,ie
+      enddo ; enddo ; enddo
+      if (use_BBL_EOS) then ; do k=1,nz ; do j=jstart,jend ; do i=is,ie
         ! Perhaps these should be thickness weighted.
         T_vel(i,j,k) = 0.5 * (tv%T(i,j,k) + tv%T(i,j+1,k))
         S_vel(i,j,k) = 0.5 * (tv%S(i,j,k) + tv%S(i,j+1,k))
-      enddo ; enddo ; else ; do k=1,nkmb ; do i=is,ie
+      enddo ; enddo ; enddo ; else ; do k=1,nkmb ; do j=jstart,jend ; do i=is,ie
         Rml_vel(i,j,k) = 0.5 * (Rml(i,j,k) + Rml(i,j+1,k))
-      enddo ; enddo ; endif
-      if (allocated(tv%SpV_avg)) then ; do k=1,nz ; do i=is,ie
+      enddo ; enddo ; enddo ; endif
+      if (allocated(tv%SpV_avg)) then ; do k=1,nz ; do j=jstart,jend ; do i=is,ie
         SpV_vel(i,j,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i,j+1,k))
-      enddo ; enddo ; endif
+      enddo ; enddo ; enddo ; endif
     endif
 
     if (associated(OBC)) then ; if (OBC%number_of_segments > 0) then
       ! Apply a zero gradient projection of thickness across OBC points.
       if (m==1) then
-        do I=is,ie ; if (do_i(I,j) .and. (OBC%segnum_u(I,j) /= 0)) then
+        do j=jstart,jend ; do I=is,ie ; if (do_i(I,j) .and. (OBC%segnum_u(I,j) /= 0)) then
           if (OBC%segnum_u(I,j) > 0) then  ! OBC_DIRECTION_E
             do k=1,nz
               h_at_vel(I,j,k) = h(i,j,k) ; h_vel(I,j,k) = h(i,j,k)
@@ -565,9 +570,9 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
               SpV_vel(I,j,k) = tv%SpV_avg(i+1,j,k)
             enddo ; endif
           endif
-        endif ; enddo
+        endif ; enddo ; enddo
       else
-        do i=is,ie ; if (do_i(i,j) .and. (OBC%segnum_v(i,J) /= 0)) then
+        do j=jstart,jend ; do i=is,ie ; if (do_i(i,j) .and. (OBC%segnum_v(i,J) /= 0)) then
           if (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
             do k=1,nz
               h_at_vel(i,j,k) = h(i,j,k) ; h_vel(i,j,k) = h(i,j,k)
@@ -603,30 +608,30 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
               SpV_vel(i,j,k) = tv%SpV_avg(i,j+1,k)
             enddo ; endif
           endif
-        endif ; enddo
+        endif ; enddo ; enddo
       endif
     endif ; endif
 
     ! Set the "back ground" friction velocity scale to either the tidal amplitude or place-holder constant
     if (CS%BBL_use_tidal_bg) then
-      do i=is,ie ; if (do_i(i,j)) then ; if (m==1) then
+      do j=jstart,jend ; do i=is,ie ; if (do_i(i,j)) then ; if (m==1) then
         u2_bg(I,j) = 0.5*( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                          G%mask2dT(i+1,j)*(CS%tideamp(i+1,j)*CS%tideamp(i+1,j)) )
       else
         u2_bg(i,j) = 0.5*( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                          G%mask2dT(i,j+1)*(CS%tideamp(i,j+1)*CS%tideamp(i,j+1)) )
-      endif ; endif ; enddo
+      endif ; endif ; enddo ; enddo
     else
-      do i=is,ie ; if (do_i(i,j)) then
+      do j=jstart,jend ; do i=is,ie ; if (do_i(i,j)) then
         u2_bg(i,j) = CS%drag_bg_vel * CS%drag_bg_vel
-      endif ; enddo
+      endif ; enddo ; enddo
     endif
 
     if (use_BBL_EOS .or. CS%body_force_drag .or. .not.CS%linear_drag) then
       ! Calculate the mean velocity magnitude over the bottommost CS%Hbbl of
       ! the water column for determining the quadratic bottom drag.
       ! Used in ustar(i)
-      do i=is,ie ; if (do_i(i,j)) then
+      do j=jstart,jend ; do i=is,ie ; if (do_i(i,j)) then
         htot_vel = 0.0 ; hwtot = 0.0 ; hutot = 0.0
         dztot_vel = 0.0 ; dzwtot = 0.0
         Thtot = 0.0 ; Shtot = 0.0 ; SpV_htot = 0.0
@@ -692,24 +697,29 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
           if (hwtot > 0.0) CS%bbl_v(i,J) = hutot/hwtot
         endif
 
-      endif ; enddo
+      endif ; enddo ; enddo
     else
-      do i=is,ie ; ustar(i,j) = cdrag_sqrt_H*CS%drag_bg_vel ; enddo
+      do j=jstart,jend ; do i=is,ie ; ustar(i,j) = cdrag_sqrt_H*CS%drag_bg_vel ; enddo ; enddo
     endif ! Not linear_drag
 
     if (use_BBL_EOS) then
       if (associated(tv%p_surf)) then
-        if (m==1) then ; do i=is,ie ; press(I,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i+1,j)) ; enddo
-        else ; do i=is,ie ; press(i,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1)) ; enddo ; endif
+        if (m==1) then
+          do j=jstart,jend ; do i=is,ie ; press(I,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i+1,j)) ; enddo ; enddo
+        else
+          do j=jstart,jend ; do i=is,ie ; press(i,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1)) ; enddo ; enddo
+        endif
       else
-        do i=is,ie ; press(i,j) = 0.0 ; enddo
+        do j=jstart,jend ; do i=is,ie ; press(i,j) = 0.0 ; enddo ; enddo
       endif
-      do i=is,ie ; if (.not.do_i(i,j)) then ; T_EOS(i,j) = 0.0 ; S_EOS(i,j) = 0.0 ; endif ; enddo
-      do k=1,nz ; do i=is,ie
+      do j=jstart,jend ; do i=is,ie ; if (.not.do_i(i,j)) then ; T_EOS(i,j) = 0.0 ; S_EOS(i,j) = 0.0 ; endif ; enddo ; enddo
+      do k=1,nz ; do j=jstart,jend ; do i=is,ie
         press(i,j) = press(i,j) + (GV%H_to_RZ*GV%g_Earth) * h_vel(i,j,k)
-      enddo ; enddo
-      call calculate_density_derivs(T_EOS(:,j), S_EOS(:,j), press(:,j), dR_dT(:,j), dR_dS(:,j), &
-                                    tv%eqn_of_state, (/is-G%IsdB+1,ie-G%IsdB+1/) )
+      enddo ; enddo ; enddo
+      do j=jstart,jend
+        call calculate_density_derivs(T_EOS(:,j), S_EOS(:,j), press(:,j), dR_dT(:,j), dR_dS(:,j), &
+                                      tv%eqn_of_state, (/is-G%IsdB+1,ie-G%IsdB+1/) )
+      enddo
     endif
 
     ! Find a BBL thickness given by equation 2.20 of Killworth and Edwards, 1999:
@@ -719,7 +729,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
     ! rotation (h_f) and stratification (h_N):
     !    ( h / h_f )^2 + ( h / h_N ) = 1
     ! When stratification dominates h_N<<h_f, and vice versa.
-    do i=is,ie ; if (do_i(i,j)) then
+    do j=jstart,jend ; do i=is,ie ; if (do_i(i,j)) then
       ! The 400.0 in this expression is the square of a Ci introduced in KW99, eq. 2.22.
       ustarsq = Rho0x400_G * ustar(i,j)**2 ! Note not in units of u*^2 but [H R ~> kg m-2 or kg2 m-5]
       htot = 0.0
@@ -1081,8 +1091,8 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         visc%bbl_thick_v(i,J) = bbl_thick
         if (allocated(visc%Kv_bbl_v)) visc%Kv_bbl_v(i,J) = kv_bbl
       endif
-    endif ; enddo ! end of i loop
-  enddo ; enddo ! end of m & j loops
+    endif ; enddo ; enddo ! end of i and j loop
+  enddo ; enddo ! end of m & tile loops
 
 ! Offer diagnostics for averaging
   if (CS%id_bbl_thick_u > 0) &
