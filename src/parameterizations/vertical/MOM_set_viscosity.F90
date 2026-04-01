@@ -133,6 +133,8 @@ type, public :: set_visc_CS ; private
   !>@}
 end type set_visc_CS
 
+  integer :: id_clock_set_viscous_ML
+
 contains
 
 !> Calculates the thickness of the bottom boundary layer and the viscosity within that layer.
@@ -2114,6 +2116,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, K2, nkmb, nkml, n
   type(ocean_OBC_type), pointer :: OBC => NULL()
 
+  call cpu_clock_begin(id_clock_set_viscous_ML)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   Isq = G%isc-1 ; Ieq = G%IecB ; Jsq = G%jsc-1 ; Jeq = G%JecB
   nkmb = GV%nk_rho_varies ; nkml = GV%nkml
@@ -2768,6 +2771,8 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   if (CS%id_nkml_visc_u > 0) call post_data(CS%id_nkml_visc_u, visc%nkml_visc_u, CS%diag)
   if (CS%id_nkml_visc_v > 0) call post_data(CS%id_nkml_visc_v, visc%nkml_visc_v, CS%diag)
 
+  call cpu_clock_end(id_clock_set_viscous_ML)
+
 end subroutine set_viscous_ML
 
 !> Register any fields associated with the vertvisc_type.
@@ -3280,6 +3285,8 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
 
   call register_restart_field_as_obsolete('Kd_turb','Kd_shear', restart_CS)
   call register_restart_field_as_obsolete('Kv_turb','Kv_shear', restart_CS)
+
+  id_clock_set_viscous_ML = cpu_clock_id("set_viscous_ML", grain=CLOCK_ROUTINE)
 
 end subroutine set_visc_init
 
