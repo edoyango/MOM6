@@ -1122,6 +1122,8 @@ subroutine define_axes_group(diag_cs, handles, axes, nz, vertical_coordinate_num
     endif
   endif
 
+  !$omp target enter data map(to: axes, axes%mask3d)
+
 end subroutine define_axes_group
 
 !> Defines a group of downsampled "axes" from list of handles
