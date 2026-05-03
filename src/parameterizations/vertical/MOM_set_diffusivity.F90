@@ -300,6 +300,9 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
     N2_lay        !< Squared buoyancy frequency associated with layers [T-2 ~> s-2]
 
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
+    Kd_lay_bkgnd  !< Background layer diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
+
   real, dimension(SZI_(G),SZK_(GV)) :: &
     Kd_lay_2d, &  !< The layer diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
     dz, &         !< Height change across layers [Z ~> m]
@@ -314,11 +317,12 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: &
     N2_int,   &   !< squared buoyancy frequency associated at interfaces [T-2 ~> s-2]
-    dRho_int      !< Locally referenced potential density difference across interfaces [R ~> kg m-3]
+    dRho_int, &   !< Locally referenced potential density difference across interfaces [R ~> kg m-3]
+    Kd_int_bkgnd, & !< Background interface diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
+    Kv_bkgnd      !< Background interface viscosities [H Z T-1 ~> m2 s-1 or Pa s]
 
   real, dimension(SZI_(G),SZK_(GV)+1) :: &
     Kd_int_2d, &  !< The interface diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
-    Kv_bkgnd, &   !< The background diffusion related interface viscosities [H Z T-1 ~> m2 s-1 or Pa s]
     Kd_leak_2d, & !< internal tides leakage diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
     Kd_quad_2d, & !< internal tides bottom drag diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
     Kd_itidal_2d, & !< internal tides wave drag diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
@@ -493,23 +497,33 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, G, GV, US, CS, &
                 dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot)
 
+    ! Add background mixing
+    call calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, &
+                                istart, iend, jstart, jend, G, GV, US, CS%bkgnd_mixing_csp)
+
+    if (associated(dd%N2_3d)) then
+      do K=1,nz+1 ; do j=jstart,jend ; do i=istart,iend
+        dd%N2_3d(i,j,K) = N2_int(i,j,K)
+      enddo ; enddo ; enddo
+    endif
+
   enddo ; enddo
 
   do j=js,je
 
-    if (associated(dd%N2_3d)) then
-      do K=1,nz+1 ; do i=is,ie ; dd%N2_3d(i,j,K) = N2_int(i,j,K) ; enddo ; enddo
-    endif
+    do k=1,nz ; do i=is,ie
+      Kd_lay_2d(i,k) = Kd_lay_bkgnd(i,j,k)
+    enddo ; enddo
+    do K=1,nz+1 ; do i=is,ie
+      Kd_int_2d(i,K) = Kd_int_bkgnd(i,j,K)
+    enddo ; enddo
 
-    ! Add background mixing
-    call calculate_bkgnd_mixing(h, tv, N2_lay(:,j,:), Kd_lay_2d, Kd_int_2d, Kv_bkgnd, &
-                                j, G, GV, US, CS%bkgnd_mixing_csp)
     ! Update Kv and 3-d diffusivity diagnostics.
     if (associated(visc%Kv_slow)) then ; do K=1,nz+1 ; do i=is,ie
-      visc%Kv_slow(i,j,K) = visc%Kv_slow(i,j,K) + Kv_bkgnd(i,K)
+      visc%Kv_slow(i,j,K) = visc%Kv_slow(i,j,K) + Kv_bkgnd(i,j,K)
     enddo ; enddo ; endif
     if (CS%id_Kv_bkgnd > 0) then ; do K=1,nz+1 ; do i=is,ie
-      dd%Kv_bkgnd(i,j,K) = Kv_bkgnd(i,K)
+      dd%Kv_bkgnd(i,j,K) = Kv_bkgnd(i,j,K)
     enddo ; enddo ; endif
     if (CS%id_Kd_bkgnd > 0) then ; do K=1,nz+1 ; do i=is,ie
       dd%Kd_bkgnd(i,j,K) = Kd_int_2d(i,K)
