@@ -492,14 +492,13 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   ! parameterization of Kd.
 
   !$omp target enter data &
-  !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp) &
+  !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp, visc, visc%Kd_shear) &
   !$omp   map(alloc: dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, &
-  !$omp     Kd_int_bkgnd, Kv_bkgnd, Kd_lay_2d, Kd_int_2d, kb, maxTKE, TKE_to_Kd)
+  !$omp     Kd_int_bkgnd, Kv_bkgnd, Kd_lay_2d, Kd_int_2d, kb, maxTKE, TKE_to_Kd, dz)
 
   do jstart = js, je, TILE_SIZE_Y ; do istart = is, ie, TILE_SIZE_X
     jend = min(je, jstart + TILE_SIZE_Y - 1)
     iend = min(ie, istart + TILE_SIZE_X - 1)
-    write_row_loop_branches = (jstart == js) .and. (istart == is) .and. is_root_pe()
 
     ! Set up variables related to the stratification.
     call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, G, GV, US, CS, &
@@ -613,32 +612,38 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
       enddo ; endif
     endif
 
-    !$omp target update from(dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_2d,&
-    !$omp    Kd_int_2d, kb, maxTKE, TKE_to_Kd)
-
     ! Add the input turbulent diffusivity.
     if (CS%useKappaShear .or. CS%use_CVMix_shear) then
+      !$omp target
+      !$omp loop collapse(3)
       do K=2,nz ; do j=jstart,jend ; do i=istart,iend
         Kd_int_2d(i,j,K) = visc%Kd_shear(i,j,K) + 0.5 * (Kd_lay_2d(i,j,k-1) + Kd_lay_2d(i,j,k))
       enddo ; enddo ; enddo
+      !$omp loop collapse(2)
       do j=jstart,jend ; do i=istart,iend
         Kd_int_2d(i,j,1) = visc%Kd_shear(i,j,1) ! This isn't actually used. It could be 0.
         Kd_int_2d(i,j,nz+1) = 0.0
       enddo ; enddo
-      do k=1,nz ; do j=jstart,jend ; do i=istart,iend
+      !$omp end target
+      do concurrent (k=1:nz, j=jstart:jend, i=istart:iend)
         Kd_lay_2d(i,j,k) = Kd_lay_2d(i,j,k) + 0.5 * (visc%Kd_shear(i,j,K) + visc%Kd_shear(i,j,K+1))
-      enddo ; enddo ; enddo
+      enddo
     else
+      !$omp target
+      !$omp loop collapse(2)
       do j=jstart,jend ; do i=istart,iend
         Kd_int_2d(i,j,1) = Kd_lay_2d(i,j,1) ; Kd_int_2d(i,j,nz+1) = 0.0
       enddo ; enddo
+      !$omp loop collapse(3)
       do K=2,nz ; do j=jstart,jend ; do i=istart,iend
         Kd_int_2d(i,j,K) = 0.5 * (Kd_lay_2d(i,j,k-1) + Kd_lay_2d(i,j,k))
       enddo ; enddo ; enddo
+      !$omp end target
     endif
 
     if (CS%ML_radiation .or. CS%use_tidal_mixing .or. associated(dd%Kd_Work)) then
-      call thickness_to_dz(h, tv, dz, G, GV, US, is=istart, ie=iend, js=jstart, je=jend)
+      call thickness_to_dz(h, tv, dz, G, GV, US, is=istart, ie=iend, js=jstart, je=jend, do_offload=.true.)
+      !$omp target update from(dz)
     endif
 
     ! Add the ML_Rad diffusivity.
@@ -724,6 +729,9 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
         enddo ; enddo ; endif
       enddo
     endif
+
+    !$omp target update from(dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_2d,&
+    !$omp    Kd_int_2d, kb, maxTKE, TKE_to_Kd)
 
     ! This adds the diffusion sustained by the energy extracted from the flow by the bottom drag.
     if (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0)) then
@@ -821,7 +829,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   !$omp target exit data &
   !$omp   map(release: T_f, S_f, tv, tv%T, tv%S,dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, &
   !$omp     k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, CS, CS%bkgnd_mixing_csp, Kd_lay_2d, &
-  !$omp     Kd_int_2d, kb, maxTKE, TKE_to_Kd)
+  !$omp     Kd_int_2d, kb, maxTKE, TKE_to_Kd, visc, visc%Kd_shear, dz)
 
   if (CS%user_change_diff) then
     call user_change_diff(h, tv, G, GV, US, CS%user_change_diff_CSp, Kd_lay, Kd_int, &
@@ -1091,7 +1099,9 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, dt, G, GV, US
   do concurrent (k=2:nz-1, j=js:je, i=is:ie)
     dsp1_ds(i,j,k) = 1.0 / ds_dsp1(i,j,k)
   enddo
-  do concurrent (j=js:je, i=is:ie) ; dsp1_ds(i,j,nz) = 0.0 ; enddo
+  do concurrent (j=js:je, i=is:ie)
+    dsp1_ds(i,j,nz) = 0.0
+  enddo
 
   if (CS%bulkmixedlayer) then
     kmb = GV%nk_rho_varies
@@ -1623,14 +1633,16 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, TKE_t
 
   R0_g = GV%H_to_RZ / GV%g_Earth_Z_T2
 
-  do K=2,nz ; Rint(K) = 0.5*(GV%Rlay(k-1)+GV%Rlay(k)) ; enddo
+  do concurrent (K=2:nz)
+    Rint(K) = 0.5*(GV%Rlay(k-1)+GV%Rlay(k))
+  enddo
 
   kb_min = max(GV%nk_rho_varies+1,2)
 
   ! The turbulence decay scale is 0.5*ustar/f from K&E & MOM_vertvisc.F90
   ! Any turbulence that makes it into the mixed layers is assumed
   ! to be relatively small and is discarded.
-  do j=js,je ; do i=is,ie
+  do concurrent (j=js:je, i=is:ie)
     ustar_h = visc%ustar_BBL(i,j)
     if (associated(fluxes%ustar_tidal)) then
       if (allocated(tv%SpV_avg)) then
@@ -1671,9 +1683,14 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, TKE_t
     rho_htot(i,j) = GV%Rlay(nz)*(h(i,j,nz))
     Rho_top(i,j) = GV%Rlay(1)
     if (CS%bulkmixedlayer .and. do_i(i,j)) Rho_top(i,j) = GV%Rlay(kb(i,j)-1)
-  enddo ; enddo
+  enddo
 
-  do k=nz-1,2,-1 ; domore = .false.
+  !$omp target
+  do k=nz-1,2,-1
+#ifndef __NVCOMPILER_OPENMP_GPU
+    domore = .false.
+#endif
+    !$omp loop collapse(2)
     do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
       htot(i,j) = htot(i,j) + h(i,j,k)
       rho_htot(i,j) = rho_htot(i,j) + GV%Rlay(k)*(h(i,j,k))
@@ -1682,10 +1699,16 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, TKE_t
         Rho_top(i,j) = (rho_htot(i,j) - gh_sum_top(i,j)) / htot(i,j)
         do_i(i,j) = .false.
       elseif (k <= kb(i,j)) then ; do_i(i,j) = .false.
-      else ; domore = .true. ; endif
+#ifndef __NVCOMPILER_OPENMP_GPU
+      else ; domore = .true.
+#endif
+      endif
     endif ; enddo ; enddo
+#ifndef __NVCOMPILER_OPENMP_GPU
     if (.not.domore) exit
+#endif
   enddo ! k-loop
+  !$omp end target
 
   do j=js,je ; do i=is,ie ; do_i(i,j) = (G%mask2dT(i,j) > 0.0) ; enddo ; enddo
   do k=nz-1,kb_min,-1
