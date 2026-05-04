@@ -723,13 +723,16 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
 
   use_EOS = associated(tv%T) .and. associated(tv%S) .and. associated(tv%eqn_of_state)
 
+  !$omp target enter data &
+  !$omp   map(alloc: hb, SpV_h_bot, dz_bbl_rem, h_bbl_frac, T_bbl, S_bbl, P_bbl, dp, SpV_bbl, do_i)
+
   if (GV%Boussinesq .or. GV%semi_Boussinesq .or. .not.allocated(tv%SpV_avg)) then
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       rho_bot(i,j) = GV%Rho0
-    enddo ; enddo
+    enddo
 
     ! Obtain bottom boundary layer thickness and index of top layer
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       hb(i,j) = 0.0 ; h_bot(i,j) = 0.0 ; k_bot(i,j) = nz
       dz_bbl_rem(i,j) = G%mask2dT(i,j) * max(0.0, dz_avg(i,j))
       do_i(i,j) = .true.
@@ -737,17 +740,23 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
         h_bbl_frac(i,j) = 0.0
         do_i(i,j) = .false.
       endif
-    enddo ; enddo
+    enddo
 
+    !$omp target
     do k=nz,1,-1
+#ifndef __NVCOMPILER_OPENMP_GPU
       do_any = .false.
+#endif
+      !$omp loop collapse(2)
       do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
         if (dz(i,j,k) < dz_bbl_rem(i,j)) then
           ! This layer is fully within the averaging depth.
           dz_bbl_rem(i,j) = dz_bbl_rem(i,j) - dz(i,j,k)
           hb(i,j) = hb(i,j) + h(i,j,k)
           k_bot(i,j) = k
+#ifndef __NVCOMPILER_OPENMP_GPU
           do_any = .true.
+#endif
         else
           if (dz(i,j,k) > 0.0) then
             frac_in = dz_bbl_rem(i,j) / dz(i,j,k)
@@ -760,19 +769,22 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
           do_i(i,j) = .false.
         endif
       endif ; enddo ; enddo
+#ifndef __NVCOMPILER_OPENMP_GPU
       if (.not.do_any) exit
+#endif
     enddo
-    do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
+    !$omp end target
+    do concurrent (j=js:je, i=is:ie, do_i(i,j))
       ! The nominal bottom boundary layer is thicker than the water column, but layer 1 is
       ! already included in the averages.  These values are set so that the call to find
       ! the layer-average specific volume will behave sensibly.
       h_bbl_frac(i,j) = 0.0
-    endif ; enddo ; enddo
+    enddo
 
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       if (hb(i,j) + h_bbl_frac(i,j) < GV%H_subroundoff) h_bbl_frac(i,j) = GV%H_subroundoff
       h_bot(i,j) = hb(i,j) + h_bbl_frac(i,j)
-    enddo ; enddo
+    enddo
 
   else
     ! Check that SpV_avg has been set.
@@ -782,7 +794,7 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
     ! Set the bottom density to the inverse of the in situ specific volume averaged over the
     ! specified distance, with care taken to avoid having compressibility lead to an imprint
     ! of the layer thicknesses on this density.
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       hb(i,j) = 0.0 ; SpV_h_bot(i,j) = 0.0 ; h_bot(i,j) = 0.0 ; k_bot(i,j) = nz
       dz_bbl_rem(i,j) = G%mask2dT(i,j) * max(0.0, dz_avg(i,j))
       do_i(i,j) = .true.
@@ -793,10 +805,14 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
         h_bbl_frac(i,j) = 0.0
         do_i(i,j) = .false.
       endif
-    enddo ; enddo
+    enddo
 
+    !$omp target
     do k=nz,1,-1
+#ifndef __NVCOMPILER_OPENMP_GPU
       do_any = .false.
+#endif
+      !$omp loop collapse(2)
       do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
         if (dz(i,j,k) < dz_bbl_rem(i,j)) then
           ! This layer is fully within the averaging depth.
@@ -804,7 +820,9 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
           dz_bbl_rem(i,j) = dz_bbl_rem(i,j) - dz(i,j,k)
           hb(i,j) = hb(i,j) + h(i,j,k)
           k_bot(i,j) = k
+#ifndef __NVCOMPILER_OPENMP_GPU
           do_any = .true.
+#endif
         else
           if (dz(i,j,k) > 0.0) then
             frac_in = dz_bbl_rem(i,j) / dz(i,j,k)
@@ -826,9 +844,12 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
           do_i(i,j) = .false.
         endif
       endif ; enddo ; enddo
+#ifndef __NVCOMPILER_OPENMP_GPU
       if (.not.do_any) exit
+#endif
     enddo
-    do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
+    !$omp end target
+    do concurrent (j=js:je, i=is:ie, do_i(i,j))
       ! The nominal bottom boundary layer is thicker than the water column, but layer 1 is
       ! already included in the averages.  These values are set so that the call to find
       ! the layer-average specific volume will behave sensibly.
@@ -840,9 +861,10 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
         SpV_bbl(i,j) = tv%SpV_avg(i,j,1)
       endif
       h_bbl_frac(i,j) = 0.0
-    endif ; enddo ; enddo
+    enddo
 
     if (use_EOS) then
+      !$omp target update from(T_bbl, S_bbl, P_bbl, dp, SpV_bbl)
       ! Find the average specific volume of the fractional layer atop the BBL.
       EOSdom(1) = 1
       EOSdom(2) = ie - is + 1
@@ -850,15 +872,19 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
         call average_specific_vol(T_bbl(:,j), S_bbl(:,j), P_bbl(:,j), dp(:,j), &
                                   SpV_bbl(:,j), tv%eqn_of_state, EOSdom)
       enddo
+      !$omp target update to(SpV_bbl)
     endif
 
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       if (hb(i,j) + h_bbl_frac(i,j) < GV%H_subroundoff) h_bbl_frac(i,j) = GV%H_subroundoff
       rho_bot(i,j) = G%mask2dT(i,j) * (hb(i,j) + h_bbl_frac(i,j)) / &
                      (SpV_h_bot(i,j) + h_bbl_frac(i,j)*SpV_bbl(i,j))
       h_bot(i,j) = hb(i,j) + h_bbl_frac(i,j)
-    enddo ; enddo
+    enddo
   endif
+
+  !$omp target exit data &
+    !$omp   map(release: hb, SpV_h_bot, dz_bbl_rem, h_bbl_frac, T_bbl, S_bbl, P_bbl, dp, SpV_bbl, do_i)
 
 end subroutine find_rho_bottom_2d
 
