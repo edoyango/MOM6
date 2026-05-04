@@ -491,7 +491,10 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   ! be an appropriate place to add a depth-dependent parameterization or another explicit
   ! parameterization of Kd.
 
-  !$omp target enter data map(to: T_f, S_f, tv, tv%T, tv%S)
+  !$omp target enter data &
+  !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp) &
+  !$omp   map(alloc: dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, &
+  !$omp     Kd_int_bkgnd, Kv_bkgnd)
 
   do jstart = js, je, TILE_SIZE_Y ; do istart = is, ie, TILE_SIZE_X
     jend = min(je, jstart + TILE_SIZE_Y - 1)
@@ -505,6 +508,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     ! Add background mixing
     call calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, &
                                 istart, iend, jstart, jend, G, GV, US, CS%bkgnd_mixing_csp)
+
+    !$omp target update from(dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd)
 
     if (associated(dd%N2_3d)) then
       do K=1,nz+1 ; do j=jstart,jend ; do i=istart,iend
@@ -809,7 +814,9 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   enddo ; enddo ! ij-loop
 
-  !$omp target exit data map(release: T_f, S_f, tv, tv%T, tv%S)
+  !$omp target exit data &
+  !$omp   map(release: T_f, S_f, tv, tv%T, tv%S,dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, &
+  !$omp     k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, CS, CS%bkgnd_mixing_csp)
 
   if (CS%user_change_diff) then
     call user_change_diff(h, tv, G, GV, US, CS%user_change_diff_CSp, Kd_lay, Kd_int, &

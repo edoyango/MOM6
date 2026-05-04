@@ -354,13 +354,15 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
   deg_to_rad = atan(1.0)/45.0 ! = PI/180
   min_sinlat = 1.e-10
 
+  !$omp target enter data map(alloc: Kd_sfc, depth)
+
   ! Start with a constant value that may be replaced below.
-  do k=1,nz ; do j=js,je ; do i=is,ie
+  do concurrent (k=1:nz, j=js:je, i=is:ie)
     Kd_lay(i,j,k) = CS%Kd
-  enddo ; enddo ; enddo
-  do K=1,nz+1 ; do j=js,je ; do i=is,ie
+  enddo
+  do concurrent (K=1:nz+1, j=js:je, i=is:ie)
     Kv_bkgnd(i,j,K) = 0.0
-  enddo ; enddo ; enddo
+  enddo
 
   ! Set up the background diffusivity.
   if (CS%Bryan_Lewis_diffusivity) then
@@ -394,9 +396,11 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
       enddo
     enddo ; enddo
 
+    !$omp target update to(Kv_bkgnd, Kd_int, Kd_lay)
+
   elseif (CS%horiz_varying_background) then
     !### Note that there are lots of hard-coded parameters (mostly latitudes and longitudes) here.
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       bckgrnd_vdc_psis = CS%bckgrnd_vdc_psim * exp(-(0.4*(G%geoLatT(i,j)+28.9))**2)
       bckgrnd_vdc_psin = CS%bckgrnd_vdc_psim * exp(-(0.4*(G%geoLatT(i,j)-28.9))**2)
       Kd_int(i,j,1) = (CS%bckgrnd_vdc_eq + bckgrnd_vdc_psin) + bckgrnd_vdc_psis
@@ -430,38 +434,41 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
         Kd_int(i,j,1) = CS%bckgrnd_vdc_Banda
       endif
 
-    enddo ; enddo
+    enddo
     ! Update interior values of Kd and Kv (uniform profile; no interpolation needed).
-    do K=1,nz+1 ; do j=js,je ; do i=is,ie
+    do concurrent (K=1:nz+1, j=js:je, i=is:ie)
       Kd_int(i,j,K) = Kd_int(i,j,1)
       Kv_bkgnd(i,j,K) = Kd_int(i,j,1) * CS%prandtl_bkgnd
-    enddo ; enddo ; enddo
-    do k=1,nz ; do j=js,je ; do i=is,ie
+    enddo
+    do concurrent (k=1:nz, j=js:je, i=is:ie)
       Kd_lay(i,j,k) = Kd_int(i,j,1)
-    enddo ; enddo ; enddo
+    enddo
 
   else
     ! Set a potentially spatially varying surface value of diffusivity.
     if (CS%Henyey_IGW_background) then
       I_x30 = 2.0 / invcosh(CS%N0_2Omega*2.0) ! This is evaluated at 30 deg.
+      ! invcosh not bitwise identical between CPU and GPU.
+      ! keep below calculation on CPU for now.
       do j=js,je ; do i=is,ie
         abs_sinlat = abs(sin(G%geoLatT(i,j)*deg_to_rad))
         if (abs(G%geoLatT(i,j))>CS%Henyey_max_lat) abs_sinlat = min_sinlat
         Kd_sfc(i,j) = max(CS%Kd_min, CS%Kd * &
              ((abs_sinlat * invcosh(CS%N0_2Omega / max(min_sinlat, abs_sinlat))) * I_x30) )
       enddo ; enddo
+      !$omp target update to(Kd_sfc)
     elseif (CS%Kd_tanh_lat_fn) then
-      do j=js,je ; do i=is,ie
+      do concurrent (j=js:je, i=is:ie)
         ! The transition latitude and latitude range are hard-scaled here, since
         ! this is not really intended for wide-spread use, but rather for
         ! comparison with CM2M / CM2.1 settings.
         Kd_sfc(i,j) = max(CS%Kd_min, CS%Kd * (1.0 + &
             CS%Kd_tanh_lat_scale * 0.5*tanh((abs(G%geoLatT(i,j)) - 35.0)/5.0) ))
-      enddo ; enddo
+      enddo
     else ! Use a spatially constant surface value.
-      do j=js,je ; do i=is,ie
+      do concurrent (j=js:je, i=is:ie)
         Kd_sfc(i,j) = CS%Kd
-      enddo ; enddo
+      enddo
     endif
 
     ! Now set background diffusivities based on these surface values, possibly with vertical structure.
@@ -469,35 +476,44 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
       ! This is a crude way to put in a diffusive boundary layer without an explicit boundary
       ! layer turbulence scheme.  It should not be used for any realistic ocean models.
       I_Hmix = 1.0 / (CS%Hmix + GV%H_subroundoff)
-      do j=js,je ; do i=is,ie ; depth(i,j) = 0.0 ; enddo ; enddo
-      do k=1,nz ; do j=js,je ; do i=is,ie
-        depth_c = depth(i,j) + 0.5*h(i,j,k)
-        if (depth_c <= CS%Hmix) then ; Kd_lay(i,j,k) = CS%Kd_tot_ml
-        elseif (depth_c >= 2.0*CS%Hmix) then ; Kd_lay(i,j,k) = Kd_sfc(i,j)
-        else
-          Kd_lay(i,j,k) = ((Kd_sfc(i,j) - CS%Kd_tot_ml) * I_Hmix) * depth_c + &
-                          (2.0*CS%Kd_tot_ml - Kd_sfc(i,j))
-        endif
+      !$omp target
+      !$omp loop collapse(2)
+      do j=js,je ; do i=is,ie
+        depth(i,j) = 0.0
+      enddo ; enddo
+      do k=1,nz
+        !$omp loop collapse(2)
+        do j=js,je ; do i=is,ie
+          depth_c = depth(i,j) + 0.5*h(i,j,k)
+          if (depth_c <= CS%Hmix) then ; Kd_lay(i,j,k) = CS%Kd_tot_ml
+          elseif (depth_c >= 2.0*CS%Hmix) then ; Kd_lay(i,j,k) = Kd_sfc(i,j)
+          else
+            Kd_lay(i,j,k) = ((Kd_sfc(i,j) - CS%Kd_tot_ml) * I_Hmix) * depth_c + &
+                            (2.0*CS%Kd_tot_ml - Kd_sfc(i,j))
+          endif
 
-        depth(i,j) = depth(i,j) + h(i,j,k)
-      enddo ; enddo ; enddo
-
+          depth(i,j) = depth(i,j) + h(i,j,k)
+        enddo ; enddo
+      enddo
+      !$omp end target
     else ! There is no vertical structure to the background diffusivity.
-      do k=1,nz ; do j=js,je ; do i=is,ie
+      do concurrent (k=1:nz, j=js:je, i=is:ie)
         Kd_lay(i,j,k) = Kd_sfc(i,j)
-      enddo ; enddo ; enddo
+      enddo
     endif
 
     ! Update Kd_int and Kv_bkgnd, based on Kd_lay. These might be just used for diagnostics.
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       Kd_int(i,j,1) = 0.0 ; Kv_bkgnd(i,j,1) = 0.0
       Kd_int(i,j,nz+1) = 0.0 ; Kv_bkgnd(i,j,nz+1) = 0.0
-    enddo ; enddo
-    do K=2,nz ; do j=js,je ; do i=is,ie
+    enddo
+    do concurrent (K=2:nz, j=js:je, i=is:ie)
       Kd_int(i,j,K) = 0.5*(Kd_lay(i,j,k-1) + Kd_lay(i,j,k))
       Kv_bkgnd(i,j,K) = Kd_int(i,j,K) * CS%prandtl_bkgnd
-    enddo ; enddo ; enddo
+    enddo
   endif
+
+  !$omp target exit data map(release: Kd_sfc, depth)
 
 end subroutine calculate_bkgnd_mixing
 
