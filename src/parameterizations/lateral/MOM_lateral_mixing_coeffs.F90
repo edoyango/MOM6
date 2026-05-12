@@ -2163,7 +2163,7 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
   ! Re-enable variable mixing if one of the schemes was enabled
   CS%use_variable_mixing = in_use .or. CS%use_variable_mixing
 
-  CS%id_clock_isoneutral_slopes = cpu_clock_id('(VarMix isoneutral slopes)', grain=CLOCK_ROUTINE)
+  CS%id_clock_isoneutral_slopes = cpu_clock_id('(MOM_calc_isoneutral_slopes)', grain=CLOCK_ROUTINE)
 end subroutine VarMix_init
 
 !> Destructor for VarMix control structure

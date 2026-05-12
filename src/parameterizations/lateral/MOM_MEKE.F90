@@ -1716,7 +1716,7 @@ logical function MEKE_init(Time, G, GV, US, param_file, diag, dbcomms_CS, CS, ME
   endif
 
   CS%id_clock_pass = cpu_clock_id('(Ocean continuity halo updates)', grain=CLOCK_ROUTINE)
-  CS%id_clock_isoneutral_slopes = cpu_clock_id('(MEKE isoneutral slopes)', grain=CLOCK_ROUTINE)
+  CS%id_clock_isoneutral_slopes = cpu_clock_id('(MOM_calc_isoneutral_slopes)', grain=CLOCK_ROUTINE)
 
 
   ! Detect whether this instance of MEKE_init() is at the beginning of a run
@@ -1883,7 +1883,7 @@ subroutine ML_MEKE_calculate_features(G, GV, US, CS, Rd_dx_h, u, v, tv, h, dt, f
   ! Note the hard-coded dimenisional constant in the following line.
   call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
   ! UMW: Below is untested
-  !$omp target enter data map(to: tv, tv%T, tv%S, slope_x, slope_y, e))
+  !$omp target enter data map(to: tv, tv%T, tv%S, slope_x, slope_y, e)
   !$omp target enter data map(to: tv%SpV_avg) if (allocated(tv%SpV_avg))
   call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*1.e-7*GV%m2_s_to_HZ_T, .false., slope_x, slope_y)
   !$omp target exit data map(release: tv, tv%T, tv%S, e)
