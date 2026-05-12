@@ -688,13 +688,14 @@ subroutine calc_sqg_struct(h, tv, G, GV, US, CS, dt, MEKE, OBC)
       !$omp target enter data map(alloc: e)
       call find_eta(h, tv, G, GV, US, e, halo_size=2)  !### Could be halo_size=1?
       call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
-      !$omp target enter data map(to: tv%T, tv%S)
+      !$omp target enter data map(to: tv, tv%T, tv%S, N2_u, N2_v, dzu, dzv, dzSxN, dzSyN)
       !$omp target enter data map(to: tv%SpV_avg) if (allocated(tv%SpV_avg))
       call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, dzu=dzu, dzv=dzv, &
                                   dzSxN=dzSxN, dzSyN=dzSyN, halo=1, OBC=OBC, OBC_N2=CS%OBC_friendly)
       !$omp target exit data map(release: tv%T, tv%S, e)
       !$omp target exit data map(release: tv%SpV_avg) if (allocated(tv%SpV_avg))
+      !$omp target exit data map(from: N2_u, N2_v, dzu, dzv, dzSxN, dzSyN)
       call cpu_clock_end(CS%id_clock_isoneutral_slopes)
       do k=2,nz ; do j=js,je ; do i=is,ie
         N2 = max(0.25 * ((N2_u(I-1,j,K) + N2_u(I,j,K)) + (N2_v(i,J-1,K) + N2_v(i,J,K))), 0.0)
@@ -792,27 +793,28 @@ subroutine calc_slope_functions(h, tv, dt, G, GV, US, CS, OBC)
     !$omp target update to(h)
     !$omp target enter data map(alloc: e)
     call find_eta(h, tv, G, GV, US, e, halo_size=2)
-    ! UMW TODO: Transfer other vars as well
     call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
-    !$omp target enter data map(to: tv%T, tv%S)
+    !$omp target enter data map(to: tv, tv%T, tv%S, N2_u, N2_v, dzu, dzv, dzSxN, dzSyN, &
+    !$omp & CS%slope_x, CS%slope_y)
     !$omp target enter data map(to: tv%SpV_avg) if (allocated(tv%SpV_avg))
     if (CS%use_simpler_Eady_growth_rate) then
       call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, dzu=dzu, dzv=dzv, &
                                   dzSxN=dzSxN, dzSyN=dzSyN, halo=1, OBC=OBC, OBC_N2=CS%OBC_friendly)
-      !$omp target exit data map(from: e)
+      !$omp target exit data map(from: e, dzu, dzv, dzSxN, dzSyN)
       call calc_Eady_growth_rate_2D(CS, G, GV, US, h, e, dzu, dzv, dzSxN, dzSyN, CS%SN_u, CS%SN_v)
     elseif (CS%use_stored_slopes) then
       call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, halo=1, OBC=OBC, &
                                   OBC_N2=CS%OBC_friendly)
-      !$omp target exit data map(from: e)
+      !$omp target exit data map(from: CS%slope_x, CS%slope_y, N2_u, N2_v)
       call calc_Visbeck_coeffs_old(h, CS%slope_x, CS%slope_y, N2_u, N2_v, G, GV, US, CS, OBC)
     else
       !$omp target exit data map(from: e)
       call calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
     endif
-    !$omp target exit data map(release: tv%T, tv%S, e)
+    !$omp target exit data map(release: tv, tv%T, tv%S, e, N2_u, N2_v, dzu, dzv, dzSxN, dzSyN, &
+    !$omp & CS%slope_x, CS%slope_y)
     !$omp target exit data map(release: tv%SpV_avg) if (allocated(tv%SpV_avg))
     call cpu_clock_end(CS%id_clock_isoneutral_slopes)
   endif
