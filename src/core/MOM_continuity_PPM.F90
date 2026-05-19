@@ -194,7 +194,6 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+2
       !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+1
     !$ endif
-
     call zonal_edge_thickness(hin, h_W, h_E, G, GV, US, CS, OBC, LB)
     call zonal_mass_flux(u, hin, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
                          niblock, njblock, LB, uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
@@ -207,7 +206,6 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+1
       !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+2
     !$ endif
-
     call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, LB)
     call meridional_mass_flux(v, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
                               niblock, njblock, LB, vhbt, visc_rem_v, v_cor, BT_cont, dv_cor)
@@ -540,8 +538,10 @@ subroutine zonal_edge_thickness(h_in, h_W, h_E, G, GV, US, CS, OBC, LB_in)
       h_W(i,j,k) = h_in(i,j,k) ; h_E(i,j,k) = h_in(i,j,k)
     enddo
   else
-    call PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, &
-                              2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
+    do k=1,nz
+      call PPM_reconstruction_x(h_in(:,:,k), h_W(:,:,k), h_E(:,:,k), G, LB, &
+                                2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
+    enddo
   endif
 
   call cpu_clock_end(id_clock_reconstruct)
@@ -584,8 +584,10 @@ subroutine meridional_edge_thickness(h_in, h_S, h_N, G, GV, US, CS, OBC, LB_in)
       h_S(i,j,k) = h_in(i,j,k) ; h_N(i,j,k) = h_in(i,j,k)
     enddo
   else
-    call PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, &
-                              2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
+    do k=1,nz
+      call PPM_reconstruction_y(h_in(:,:,k), h_S(:,:,k), h_N(:,:,k), G, LB, &
+                                2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
+    enddo
   endif
 
   call cpu_clock_end(id_clock_reconstruct)
@@ -2142,7 +2144,7 @@ subroutine meridional_BT_mass_flux(v, h_in, h_S, h_N, vhbt, dt, G, GV, US, CS, O
                                                                   !! faces [H L2 T-1 ~> m3 s-1 or kg s-1].
   real,                                       intent(in)  :: dt   !< Time increment [T ~> s].
   type(unit_scale_type),                      intent(in)  :: US   !< A dimensional unit scaling type
-  type(continuity_PPM_CS),                    intent(in)  :: CS   !< This module's control structure.
+  type(continuity_PPM_CS),                    intent(in)  :: CS   !< This module's control structure.G
   type(ocean_OBC_type),                       pointer     :: OBC  !< Open boundary condition type
                                                                   !! specifies whether, where, and what
                                                                   !! open boundary conditions are used.
@@ -2702,13 +2704,12 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, vh_tot_0, dvhdv_tot_0, 
 end subroutine set_merid_BT_cont
 
 !> Calculates left/right edge values for PPM reconstruction.
-subroutine PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, h_min, monotonic, simple_2nd, OBC)
+subroutine PPM_reconstruction_x(h_in, h_W, h_E, G, LB, h_min, monotonic, simple_2nd, OBC)
   type(ocean_grid_type),             intent(in)  :: G    !< Ocean's grid structure.
-  type(verticalGrid_type),           intent(in)  :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)  :: h_in !< Layer thickness [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(out) :: h_W  !< West edge thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(in)  :: h_in !< Layer thickness [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)),  intent(out) :: h_W  !< West edge thickness in the reconstruction,
                                                          !! [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(out) :: h_E  !< East edge thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(out) :: h_E  !< East edge thickness in the reconstruction,
                                                          !! [H ~> m or kg m-2].
   type(cont_loop_bounds_type),       intent(in)  :: LB   !< Active loop bounds structure.
   real,                              intent(in)  :: h_min !< The minimum thickness
@@ -2720,16 +2721,15 @@ subroutine PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, h_min, monotonic, sim
                     !! arithmetic mean thicknesses as the default edge values
                     !! for a simple 2nd order scheme.
   type(ocean_OBC_type),              pointer     :: OBC !< Open boundaries control structure.
-  integer :: k      !< vertical grid index
 
   ! Local variables with useful mnemonic names.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))  :: slp ! The slopes per grid point [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G))  :: slp ! The slopes per grid point [H ~> m or kg m-2]
   real, parameter :: oneSixth = 1./6.  ! [nondim]
   real :: h_ip1, h_im1 ! Neighboring thicknesses or sensibly extrapolated values [H ~> m or kg m-2]
   real :: dMx, dMn     ! The difference between the local thickness and the maximum (dMx) or
                        ! minimum (dMn) of the surrounding values [H ~> m or kg m-2]
   character(len=256) :: mesg
-  integer :: i, j, isl, iel, jsl, jel, nz, n, stencil
+  integer :: i, j, isl, iel, jsl, jel, n, stencil
   logical :: local_open_BC
   type(OBC_segment_type), pointer :: segment => NULL()
 
@@ -2738,121 +2738,119 @@ subroutine PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, h_min, monotonic, sim
     local_open_BC = OBC%open_u_BCs_exist_globally
   endif
 
-  isl = LB%ish-1 ; iel = LB%ieh+1 ; jsl = LB%jsh ; jel = LB%jeh ; nz = GV%ke
+  isl = LB%ish-1 ; iel = LB%ieh+1 ; jsl = LB%jsh ; jel = LB%jeh
 
   ! This is the stencil of the reconstruction, not the scheme overall.
   stencil = 2 ; if (simple_2nd) stencil = 1
 
   if ((isl-stencil < G%isd) .or. (iel+stencil > G%ied)) then
     write(mesg,'("In MOM_continuity_PPM, PPM_reconstruction_x called with a ", &
-               & "x-halo that needs to be increased by ",I0,".")') &
+               & "x-halo that needs to be increased by ",i2,".")') &
                stencil + max(G%isd-isl,iel-G%ied)
     call MOM_error(FATAL,mesg)
   endif
   if ((jsl < G%jsd) .or. (jel > G%jed)) then
     write(mesg,'("In MOM_continuity_PPM, PPM_reconstruction_x called with a ", &
-               & "y-halo that needs to be increased by ",I0,".")') &
+               & "y-halo that needs to be increased by ",i2,".")') &
                max(G%jsd-jsl,jel-G%jed)
     call MOM_error(FATAL,mesg)
   endif
 
-  !$omp target enter data map(alloc: slp)
-
   if (simple_2nd) then
-    ! untested
-    do concurrent (k =1:nz, j=jsl:jel, i=isl:iel)
-      h_im1 = G%mask2dT(i-1,j) * h_in(i-1,j,k) + (1.0-G%mask2dT(i-1,j)) * h_in(i,j,k)
-      h_ip1 = G%mask2dT(i+1,j) * h_in(i+1,j,k) + (1.0-G%mask2dT(i+1,j)) * h_in(i,j,k)
-      h_W(i,j,k) = 0.5*( h_im1 + h_in(i,j,k) )
-      h_E(i,j,k) = 0.5*( h_ip1 + h_in(i,j,k) )
+    do concurrent (j=jsl:jel, i=isl:iel)
+      h_im1 = G%mask2dT(i-1,j) * h_in(i-1,j) + (1.0-G%mask2dT(i-1,j)) * h_in(i,j)
+      h_ip1 = G%mask2dT(i+1,j) * h_in(i+1,j) + (1.0-G%mask2dT(i+1,j)) * h_in(i,j)
+      h_W(i,j) = 0.5*( h_im1 + h_in(i,j) )
+      h_E(i,j) = 0.5*( h_ip1 + h_in(i,j) )
     enddo
   else
-    do concurrent (k=1:nz, j=jsl:jel, i=isl-1:iel+1)
+    !$omp target enter data map(alloc: slp)
+    do concurrent (j=jsl:jel, i=isl-1:iel+1)
       if ((G%mask2dT(i-1,j) * G%mask2dT(i,j) * G%mask2dT(i+1,j)) == 0.0) then
-        slp(i,j,k) = 0.0
+        slp(i,j) = 0.0
       else
         ! This uses a simple 2nd order slope.
-        slp(i,j,k) = 0.5 * (h_in(i+1,j,k) - h_in(i-1,j,k))
+        slp(i,j) = 0.5 * (h_in(i+1,j) - h_in(i-1,j))
         ! Monotonic constraint, see Eq. B2 in Lin 1994, MWR (132)
-        dMx = max(h_in(i+1,j,k), h_in(i-1,j,k), h_in(i,j,k)) - h_in(i,j,k)
-        dMn = h_in(i,j,k) - min(h_in(i+1,j,k), h_in(i-1,j,k), h_in(i,j,k))
-        slp(i,j,k) = sign(1.,slp(i,j,k)) * min(abs(slp(i,j,k)), 2. * min(dMx, dMn))
+        dMx = max(h_in(i+1,j), h_in(i-1,j), h_in(i,j)) - h_in(i,j)
+        dMn = h_in(i,j) - min(h_in(i+1,j), h_in(i-1,j), h_in(i,j))
+        slp(i,j) = sign(1.,slp(i,j)) * min(abs(slp(i,j)), 2. * min(dMx, dMn))
                 ! * (G%mask2dT(i-1,j) * G%mask2dT(i,j) * G%mask2dT(i+1,j))
       endif
     enddo
 
     if (local_open_BC) then
-      ! untested
+      !$omp target update from(slp)
       do n=1, OBC%number_of_segments
         segment => OBC%segment(n)
         if (.not. segment%on_pe) cycle
         if (segment%is_E_or_W) then
           I=segment%HI%IsdB
-          do concurrent (k=1:nz, j=segment%HI%jsd:segment%HI%jed)
-            slp(i+1,j,k) = 0.0
-            slp(i,j,k) = 0.0
+          do j=segment%HI%jsd,segment%HI%jed
+            slp(i+1,j) = 0.0
+            slp(i,j) = 0.0
           enddo
         endif
       enddo
+      !$omp target update to(slp)
     endif
 
-    do concurrent (k=1:nz, j=jsl:jel, i=isl:iel)
+    do concurrent (j=jsl:jel, i=isl:iel)
       ! Neighboring values should take into account any boundaries.  The 3
       ! following sets of expressions are equivalent.
     ! h_im1 = h_in(i-1,j,k) ; if (G%mask2dT(i-1,j) < 0.5) h_im1 = h_in(i,j)
     ! h_ip1 = h_in(i+1,j,k) ; if (G%mask2dT(i+1,j) < 0.5) h_ip1 = h_in(i,j)
-      h_im1 = G%mask2dT(i-1,j) * h_in(i-1,j,k) + (1.0-G%mask2dT(i-1,j)) * h_in(i,j,k)
-      h_ip1 = G%mask2dT(i+1,j) * h_in(i+1,j,k) + (1.0-G%mask2dT(i+1,j)) * h_in(i,j,k)
+      h_im1 = G%mask2dT(i-1,j) * h_in(i-1,j) + (1.0-G%mask2dT(i-1,j)) * h_in(i,j)
+      h_ip1 = G%mask2dT(i+1,j) * h_in(i+1,j) + (1.0-G%mask2dT(i+1,j)) * h_in(i,j)
       ! Left/right values following Eq. B2 in Lin 1994, MWR (132)
-      h_W(i,j,k) = 0.5*( h_im1 + h_in(i,j,k) ) + oneSixth*( slp(i-1,j,k) - slp(i,j,k) )
-      h_E(i,j,k) = 0.5*( h_ip1 + h_in(i,j,k) ) + oneSixth*( slp(i,j,k) - slp(i+1,j,k) )
+      h_W(i,j) = 0.5*( h_im1 + h_in(i,j) ) + oneSixth*( slp(i-1,j) - slp(i,j) )
+      h_E(i,j) = 0.5*( h_ip1 + h_in(i,j) ) + oneSixth*( slp(i,j) - slp(i+1,j) )
     enddo
+    !$omp target exit data map(release: slp)
   endif
 
   if (local_open_BC) then
-    ! untested
+    !$omp target update from(h_in, h_W, h_E)
     do n=1, OBC%number_of_segments
       segment => OBC%segment(n)
       if (.not. segment%on_pe) cycle
       if (segment%direction == OBC_DIRECTION_E) then
         I=segment%HI%IsdB
-        do concurrent (k=1:nz, j=segment%HI%jsd:segment%HI%jed)
-          h_W(i+1,j,k) = h_in(i,j,k)
-          h_E(i+1,j,k) = h_in(i,j,k)
-          h_W(i,j,k) = h_in(i,j,k)
-          h_E(i,j,k) = h_in(i,j,k)
+        do j=segment%HI%jsd,segment%HI%jed
+          h_W(i+1,j) = h_in(i,j)
+          h_E(i+1,j) = h_in(i,j)
+          h_W(i,j) = h_in(i,j)
+          h_E(i,j) = h_in(i,j)
         enddo
       elseif (segment%direction == OBC_DIRECTION_W) then
         I=segment%HI%IsdB
-        do concurrent (k=1:nz, j=segment%HI%jsd:segment%HI%jed)
-          h_W(i,j,k) = h_in(i+1,j,k)
-          h_E(i,j,k) = h_in(i+1,j,k)
-          h_W(i+1,j,k) = h_in(i+1,j,k)
-          h_E(i+1,j,k) = h_in(i+1,j,k)
+        do j=segment%HI%jsd,segment%HI%jed
+          h_W(i,j) = h_in(i+1,j)
+          h_E(i,j) = h_in(i+1,j)
+          h_W(i+1,j) = h_in(i+1,j)
+          h_E(i+1,j) = h_in(i+1,j)
         enddo
       endif
     enddo
+    !$omp target update to(h_W, h_E)
   endif
 
   if (monotonic) then
-    ! untested
-    call PPM_limit_CW84(h_in, h_W, h_E, G, GV, isl, iel, jsl, jel, nz)
+    call PPM_limit_CW84(h_in, h_W, h_E, G, isl, iel, jsl, jel)
   else
-    call PPM_limit_pos(h_in, h_W, h_E, h_min, G, GV, isl, iel, jsl, jel, nz)
+    call PPM_limit_pos(h_in, h_W, h_E, h_min, G, isl, iel, jsl, jel)
   endif
 
-  !$omp target exit data map(release: slp)
-
+  return
 end subroutine PPM_reconstruction_x
 
 !> Calculates left/right edge values for PPM reconstruction.
-subroutine PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, h_min, monotonic, simple_2nd, OBC)
+subroutine PPM_reconstruction_y(h_in, h_S, h_N, G, LB, h_min, monotonic, simple_2nd, OBC)
   type(ocean_grid_type),             intent(in)  :: G    !< Ocean's grid structure.
-  type(verticalGrid_type),           intent(in)  :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)  :: h_in !< Layer thickness [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(out) :: h_S  !< South edge thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(in)  :: h_in !< Layer thickness [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)),  intent(out) :: h_S  !< South edge thickness in the reconstruction,
                                                          !! [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(out) :: h_N  !< North edge thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(out) :: h_N  !< North edge thickness in the reconstruction,
                                                          !! [H ~> m or kg m-2].
   type(cont_loop_bounds_type),       intent(in)  :: LB   !< Active loop bounds structure.
   real,                              intent(in)  :: h_min !< The minimum thickness
@@ -2864,16 +2862,15 @@ subroutine PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, h_min, monotonic, sim
                     !! arithmetic mean thicknesses as the default edge values
                     !! for a simple 2nd order scheme.
   type(ocean_OBC_type),              pointer     :: OBC !< Open boundaries control structure.
-  integer :: k      !< vertical grid index
 
   ! Local variables with useful mnemonic names.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))  :: slp ! The slopes per grid point [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G))  :: slp ! The slopes per grid point [H ~> m or kg m-2]
   real, parameter :: oneSixth = 1./6.      ! [nondim]
   real :: h_jp1, h_jm1 ! Neighboring thicknesses or sensibly extrapolated values [H ~> m or kg m-2]
   real :: dMx, dMn     ! The difference between the local thickness and the maximum (dMx) or
                        ! minimum (dMn) of the surrounding values [H ~> m or kg m-2]
   character(len=256) :: mesg
-  integer :: i, j, isl, iel, jsl, jel, nz, n, stencil
+  integer :: i, j, isl, iel, jsl, jel, n, stencil
   logical :: local_open_BC
   type(OBC_segment_type), pointer :: segment => NULL()
 
@@ -2882,153 +2879,147 @@ subroutine PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, h_min, monotonic, sim
     local_open_BC = OBC%open_v_BCs_exist_globally
   endif
 
-  isl = LB%ish ; iel = LB%ieh ; jsl = LB%jsh-1 ; jel = LB%jeh+1 ; nz = G%ke
+  isl = LB%ish ; iel = LB%ieh ; jsl = LB%jsh-1 ; jel = LB%jeh+1
 
   ! This is the stencil of the reconstruction, not the scheme overall.
   stencil = 2 ; if (simple_2nd) stencil = 1
 
   if ((isl < G%isd) .or. (iel > G%ied)) then
     write(mesg,'("In MOM_continuity_PPM, PPM_reconstruction_y called with a ", &
-               & "x-halo that needs to be increased by ",I0,".")') &
+               & "x-halo that needs to be increased by ",i2,".")') &
                max(G%isd-isl,iel-G%ied)
     call MOM_error(FATAL,mesg)
   endif
   if ((jsl-stencil < G%jsd) .or. (jel+stencil > G%jed)) then
     write(mesg,'("In MOM_continuity_PPM, PPM_reconstruction_y called with a ", &
-                 & "y-halo that needs to be increased by ",I0,".")') &
+                 & "y-halo that needs to be increased by ",i2,".")') &
                  stencil + max(G%jsd-jsl,jel-G%jed)
     call MOM_error(FATAL,mesg)
   endif
 
-  !$omp target enter data map(alloc: slp)
-
   if (simple_2nd) then
-    ! untested
-    do concurrent (k=1:nz, j=jsl:jel, i=isl:iel)
-      h_jm1 = G%mask2dT(i,j-1) * h_in(i,j-1,k) + (1.0-G%mask2dT(i,j-1)) * h_in(i,j,k)
-      h_jp1 = G%mask2dT(i,j+1) * h_in(i,j+1,k) + (1.0-G%mask2dT(i,j+1)) * h_in(i,j,k)
-      h_S(i,j,k) = 0.5*( h_jm1 + h_in(i,j,k) )
-      h_N(i,j,k) = 0.5*( h_jp1 + h_in(i,j,k) )
+    do concurrent (j=jsl:jel, i=isl:iel)
+      h_jm1 = G%mask2dT(i,j-1) * h_in(i,j-1) + (1.0-G%mask2dT(i,j-1)) * h_in(i,j)
+      h_jp1 = G%mask2dT(i,j+1) * h_in(i,j+1) + (1.0-G%mask2dT(i,j+1)) * h_in(i,j)
+      h_S(i,j) = 0.5*( h_jm1 + h_in(i,j) )
+      h_N(i,j) = 0.5*( h_jp1 + h_in(i,j) )
     enddo
   else
-    do concurrent (k=1:nz, j=jsl-1:jel+1, i=isl:iel)
+    !$omp target enter data map(alloc: slp)
+    do concurrent (j=jsl-1:jel+1, i=isl:iel)
       if ((G%mask2dT(i,j-1) * G%mask2dT(i,j) * G%mask2dT(i,j+1)) == 0.0) then
-        slp(i,j,k) = 0.0
+        slp(i,j) = 0.0
       else
         ! This uses a simple 2nd order slope.
-        slp(i,j,k) = 0.5 * (h_in(i,j+1,k) - h_in(i,j-1,k))
+        slp(i,j) = 0.5 * (h_in(i,j+1) - h_in(i,j-1))
         ! Monotonic constraint, see Eq. B2 in Lin 1994, MWR (132)
-        dMx = max(h_in(i,j+1,k), h_in(i,j-1,k), h_in(i,j,k)) - h_in(i,j,k)
-        dMn = h_in(i,j,k) - min(h_in(i,j+1,k), h_in(i,j-1,k), h_in(i,j,k))
-        slp(i,j,k) = sign(1.,slp(i,j,k)) * min(abs(slp(i,j,k)), 2. * min(dMx, dMn))
+        dMx = max(h_in(i,j+1), h_in(i,j-1), h_in(i,j)) - h_in(i,j)
+        dMn = h_in(i,j) - min(h_in(i,j+1), h_in(i,j-1), h_in(i,j))
+        slp(i,j) = sign(1.,slp(i,j)) * min(abs(slp(i,j)), 2. * min(dMx, dMn))
                 ! * (G%mask2dT(i,j-1) * G%mask2dT(i,j) * G%mask2dT(i,j+1))
       endif
     enddo
 
     if (local_open_BC) then
-      ! untested
+      !$omp target update from(slp)
       do n=1, OBC%number_of_segments
         segment => OBC%segment(n)
         if (.not. segment%on_pe) cycle
         if (segment%is_N_or_S) then
           J=segment%HI%JsdB
-          do concurrent (k=1:nz, i=segment%HI%isd:segment%HI%ied)
-            slp(i,j+1,k) = 0.0
-            slp(i,j,k) = 0.0
+          do i=segment%HI%isd,segment%HI%ied
+            slp(i,j+1) = 0.0
+            slp(i,j) = 0.0
           enddo
         endif
       enddo
+      !$omp target update to(slp)
     endif
 
-    do concurrent (k=1:nz, j=jsl:jel, i=isl:iel)
+    do concurrent (j=jsl:jel, i=isl:iel)
       ! Neighboring values should take into account any boundaries.  The 3
       ! following sets of expressions are equivalent.
-      h_jm1 = G%mask2dT(i,j-1) * h_in(i,j-1,k) + (1.0-G%mask2dT(i,j-1)) * h_in(i,j,k)
-      h_jp1 = G%mask2dT(i,j+1) * h_in(i,j+1,k) + (1.0-G%mask2dT(i,j+1)) * h_in(i,j,k)
+      h_jm1 = G%mask2dT(i,j-1) * h_in(i,j-1) + (1.0-G%mask2dT(i,j-1)) * h_in(i,j)
+      h_jp1 = G%mask2dT(i,j+1) * h_in(i,j+1) + (1.0-G%mask2dT(i,j+1)) * h_in(i,j)
       ! Left/right values following Eq. B2 in Lin 1994, MWR (132)
-      h_S(i,j,k) = 0.5*( h_jm1 + h_in(i,j,k) ) + oneSixth*( slp(i,j-1,k) - slp(i,j,k) )
-      h_N(i,j,k) = 0.5*( h_jp1 + h_in(i,j,k) ) + oneSixth*( slp(i,j,k) - slp(i,j+1,k) )
+      h_S(i,j) = 0.5*( h_jm1 + h_in(i,j) ) + oneSixth*( slp(i,j-1) - slp(i,j) )
+      h_N(i,j) = 0.5*( h_jp1 + h_in(i,j) ) + oneSixth*( slp(i,j) - slp(i,j+1) )
     enddo
+    !$omp target exit data map(release: slp)
   endif
 
   if (local_open_BC) then
-    ! untested
+    !$omp target update from(h_in, h_S, h_N)
     do n=1, OBC%number_of_segments
       segment => OBC%segment(n)
       if (.not. segment%on_pe) cycle
       if (segment%direction == OBC_DIRECTION_N) then
         J=segment%HI%JsdB
-        do concurrent (k=1:nz, i=segment%HI%isd:segment%HI%ied)
-          h_S(i,j+1,k) = h_in(i,j,k)
-          h_N(i,j+1,k) = h_in(i,j,k)
-          h_S(i,j,k) = h_in(i,j,k)
-          h_N(i,j,k) = h_in(i,j,k)
+        do i=segment%HI%isd,segment%HI%ied
+          h_S(i,j+1) = h_in(i,j)
+          h_N(i,j+1) = h_in(i,j)
+          h_S(i,j) = h_in(i,j)
+          h_N(i,j) = h_in(i,j)
         enddo
       elseif (segment%direction == OBC_DIRECTION_S) then
         J=segment%HI%JsdB
-        do concurrent (k=1:nz, i=segment%HI%isd:segment%HI%ied)
-          h_S(i,j,k) = h_in(i,j+1,k)
-          h_N(i,j,k) = h_in(i,j+1,k)
-          h_S(i,j+1,k) = h_in(i,j+1,k)
-          h_N(i,j+1,k) = h_in(i,j+1,k)
+        do i=segment%HI%isd,segment%HI%ied
+          h_S(i,j) = h_in(i,j+1)
+          h_N(i,j) = h_in(i,j+1)
+          h_S(i,j+1) = h_in(i,j+1)
+          h_N(i,j+1) = h_in(i,j+1)
         enddo
       endif
     enddo
+    !$omp target update to(h_S, h_N)
   endif
 
   if (monotonic) then
-    ! untested
-    call PPM_limit_CW84(h_in, h_S, h_N, G, GV, isl, iel, jsl, jel, nz)
+    call PPM_limit_CW84(h_in, h_S, h_N, G, isl, iel, jsl, jel)
   else
-    call PPM_limit_pos(h_in, h_S, h_N, h_min, G, GV, isl, iel, jsl, jel, nz)
+    call PPM_limit_pos(h_in, h_S, h_N, h_min, G, isl, iel, jsl, jel)
   endif
 
-  !$omp target exit data map(release: slp)
-
+  return
 end subroutine PPM_reconstruction_y
 
 !> This subroutine limits the left/right edge values of the PPM reconstruction
 !! to give a reconstruction that is positive-definite.  Here this is
 !! reinterpreted as giving a constant thickness if the mean thickness is less
 !! than h_min, with a minimum of h_min otherwise.
-subroutine PPM_limit_pos(h_in, h_L, h_R, h_min, G, GV, iis, iie, jis, jie, nz)
-  type(ocean_grid_type),             intent(in)    :: G    !< Ocean's grid structure.
-  type(verticalGrid_type),           intent(in)    :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                     intent(in)    :: h_in !< Layer thickness [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                     intent(inout) :: h_L !< Left thickness in the reconstruction [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
-                                     intent(inout) :: h_R !< Right thickness in the reconstruction [H ~> m or kg m-2].
-  real,                              intent(in)    :: h_min !< The minimum thickness
+subroutine PPM_limit_pos(h_in, h_L, h_R, h_min, G, iis, iie, jis, jie)
+  type(ocean_grid_type),             intent(in)  :: G    !< Ocean's grid structure.
+  real, dimension(SZI_(G),SZJ_(G)),  intent(in)  :: h_in !< Layer thickness [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)),  intent(inout) :: h_L !< Left thickness in the reconstruction [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)),  intent(inout) :: h_R !< Right thickness in the reconstruction [H ~> m or kg m-2].
+  real,                              intent(in)  :: h_min !< The minimum thickness
                     !! that can be obtained by a concave parabolic fit [H ~> m or kg m-2]
-  integer,                           intent(in)    :: iis      !< Start of i index range.
-  integer,                           intent(in)    :: iie      !< End of i index range.
-  integer,                           intent(in)    :: jis      !< Start of j index range.
-  integer,                           intent(in)    :: jie      !< End of j index range.
-  integer,                           intent(in)    :: nz       !< End of k index range.
+  integer,                           intent(in)  :: iis      !< Start of i index range.
+  integer,                           intent(in)  :: iie      !< End of i index range.
+  integer,                           intent(in)  :: jis      !< Start of j index range.
+  integer,                           intent(in)  :: jie      !< End of j index range.
 
 ! Local variables
   real    :: curv  ! The grid-normalized curvature of the three thicknesses  [H ~> m or kg m-2]
   real    :: dh    ! The difference between the edge thicknesses             [H ~> m or kg m-2]
   real    :: scale ! A scaling factor to reduce the curvature of the fit               [nondim]
-  integer :: i,j,k
+  integer :: i,j
 
-  do concurrent (k=1:nz, j=jis:jie, i=iis:iie)
+  do concurrent(j=jis:jie, i=iis:iie)
     ! This limiter prevents undershooting minima within the domain with
     ! values less than h_min.
-    curv = 3.0*((h_L(i,j,k) + h_R(i,j,k)) - 2.0*h_in(i,j,k))
+    curv = 3.0*((h_L(i,j) + h_R(i,j)) - 2.0*h_in(i,j))
     if (curv > 0.0) then ! Only minima are limited.
-      dh = h_R(i,j,k) - h_L(i,j,k)
+      dh = h_R(i,j) - h_L(i,j)
       if (abs(dh) < curv) then ! The parabola's minimum is within the cell.
-        if (h_in(i,j,k) <= h_min) then
-          h_L(i,j,k) = h_in(i,j,k) ; h_R(i,j,k) = h_in(i,j,k)
-        elseif (12.0*curv*(h_in(i,j,k) - h_min) < (curv**2 + 3.0*dh**2)) then
+        if (h_in(i,j) <= h_min) then
+          h_L(i,j) = h_in(i,j) ; h_R(i,j) = h_in(i,j)
+        elseif (12.0*curv*(h_in(i,j) - h_min) < (curv**2 + 3.0*dh**2)) then
           ! The minimum value is h_in - (curv^2 + 3*dh^2)/(12*curv), and must
           ! be limited in this case.  0 < scale < 1.
-          scale = 12.0*curv*(h_in(i,j,k) - h_min) / (curv**2 + 3.0*dh**2)
-          h_L(i,j,k) = h_in(i,j,k) + scale*(h_L(i,j,k) - h_in(i,j,k))
-          h_R(i,j,k) = h_in(i,j,k) + scale*(h_R(i,j,k) - h_in(i,j,k))
+          scale = 12.0*curv*(h_in(i,j) - h_min) / (curv**2 + 3.0*dh**2)
+          h_L(i,j) = h_in(i,j) + scale*(h_L(i,j) - h_in(i,j))
+          h_R(i,j) = h_in(i,j) + scale*(h_R(i,j) - h_in(i,j))
         endif
       endif
     endif
@@ -3038,19 +3029,17 @@ end subroutine PPM_limit_pos
 
 !> This subroutine limits the left/right edge values of the PPM reconstruction
 !! according to the monotonic prescription of Colella and Woodward, 1984.
-subroutine PPM_limit_CW84(h_in, h_L, h_R, G, GV, iis, iie, jis, jie, nz)
+subroutine PPM_limit_CW84(h_in, h_L, h_R, G, iis, iie, jis, jie)
   type(ocean_grid_type),             intent(in)  :: G     !< Ocean's grid structure.
-  type(verticalGrid_type),           intent(in)  :: GV   !< Ocean's vertical grid structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)  :: h_in  !< Layer thickness [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h_L !< Left thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(in)  :: h_in  !< Layer thickness [H ~> m or kg m-2].
+  real, dimension(SZI_(G),SZJ_(G)),  intent(inout) :: h_L !< Left thickness in the reconstruction,
                                                           !! [H ~> m or kg m-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h_R !< Right thickness in the reconstruction,
+  real, dimension(SZI_(G),SZJ_(G)),  intent(inout) :: h_R !< Right thickness in the reconstruction,
                                                           !! [H ~> m or kg m-2].
   integer,                           intent(in)  :: iis   !< Start of i index range.
   integer,                           intent(in)  :: iie   !< End of i index range.
   integer,                           intent(in)  :: jis   !< Start of j index range.
   integer,                           intent(in)  :: jie   !< End of j index range.
-  integer,                           intent(in)  :: nz    !< End of k index range.
 
   ! Local variables
   real    :: h_i      ! A copy of the cell-average layer thickness                [H ~> m or kg m-2]
@@ -3058,22 +3047,21 @@ subroutine PPM_limit_CW84(h_in, h_L, h_R, G, GV, iis, iie, jis, jie, nz)
   real    :: RLdiff2  ! The squared difference between the input edge values   [H2 ~> m2 or kg2 m-4]
   real    :: RLmean   ! The average of the input edge thicknesses                 [H ~> m or kg m-2]
   real    :: FunFac   ! A curious product of the thickness slope and curvature [H2 ~> m2 or kg2 m-4]
-  integer :: i, j, k
+  integer :: i, j
 
-  ! untested
-  do concurrent (k=1:nz, j=jis:jie, i=iis:iie)
+  do concurrent (j=jis:jie, i=iis:iie)
     ! This limiter monotonizes the parabola following
     ! Colella and Woodward, 1984, Eq. 1.10
-    h_i = h_in(i,j,k)
-    if ( ( h_R(i,j,k) - h_i ) * ( h_i - h_L(i,j,k) ) <= 0. ) then
-      h_L(i,j,k) = h_i ; h_R(i,j,k) = h_i
+    h_i = h_in(i,j)
+    if ( ( h_R(i,j) - h_i ) * ( h_i - h_L(i,j) ) <= 0. ) then
+      h_L(i,j) = h_i ; h_R(i,j) = h_i
     else
-      RLdiff = h_R(i,j,k) - h_L(i,j,k)            ! Difference of edge values
-      RLmean = 0.5 * ( h_R(i,j,k) + h_L(i,j,k) )  ! Mean of edge values
+      RLdiff = h_R(i,j) - h_L(i,j)            ! Difference of edge values
+      RLmean = 0.5 * ( h_R(i,j) + h_L(i,j) )  ! Mean of edge values
       FunFac = 6. * RLdiff * ( h_i - RLmean ) ! Some funny factor
       RLdiff2 = RLdiff * RLdiff               ! Square of difference
-      if ( FunFac >  RLdiff2 ) h_L(i,j,k) = 3. * h_i - 2. * h_R(i,j,k)
-      if ( FunFac < -RLdiff2 ) h_R(i,j,k) = 3. * h_i - 2. * h_L(i,j,k)
+      if ( FunFac >  RLdiff2 ) h_L(i,j) = 3. * h_i - 2. * h_R(i,j)
+      if ( FunFac < -RLdiff2 ) h_R(i,j) = 3. * h_i - 2. * h_L(i,j)
     endif
   enddo
 
@@ -3085,6 +3073,7 @@ pure function ratio_max(a, b, maxrat) result(ratio)
   real, intent(in) :: b       !< Denominator, in arbitrary units [B]
   real, intent(in) :: maxrat  !< Maximum value of ratio [A B-1]
   real :: ratio               !< Return value [A B-1]
+  !$omp declare target
 
   if (abs(a) > abs(maxrat*b)) then
     ratio = maxrat
