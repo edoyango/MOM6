@@ -381,6 +381,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
                    (CS%bottomdraglaw .and. .not.CS%use_LOTW_BBL_diffusivity))
 
   ! Set Kd_lay, Kd_int and Kv_slow to constant values, mostly to fill the halos.
+  ! TODO: tile/port whole-domain output and viscosity initializations.
   if (present(Kd_lay)) Kd_lay(:,:,:) = CS%Kd
   Kd_int(:,:,:) = CS%Kd
   if (present(Kd_extra_T)) Kd_extra_T(:,:,:) = 0.0
@@ -388,6 +389,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   if (associated(visc%Kv_slow)) visc%Kv_slow(:,:,:) = CS%Kv
 
   ! Set up arrays for diagnostics.
+  ! TODO: tile/port diagnostic allocation source initializations for device coverage.
 
   if (CS%id_N2 > 0) allocate(dd%N2_3d(isd:ied,jsd:jed,nz+1), source=0.0)
   if (CS%id_Kd_user > 0) allocate(dd%Kd_user(isd:ied,jsd:jed,nz+1), source=0.0)
@@ -435,6 +437,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
       call calc_kappa_shear_vertex(u, v, h, T_f, S_f, tv, fluxes%p_surf, visc%Kd_shear, &
                                    visc%TKE_turb, visc%Kv_shear_Bu, dt, G, GV, US, CS%kappaShear_CSp)
+      ! TODO: tile/port whole-domain Kv_shear initialization.
       if (associated(visc%Kv_shear)) visc%Kv_shear(:,:,:) = 0.0 ! needed for other parameterizations
       if (CS%debug) then
         call hchksum(visc%Kd_shear, "after calc_KS_vert visc%Kd_shear", G%HI, unscale=GV%HZ_T_to_m2_s)
@@ -453,7 +456,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
     call cpu_clock_end(id_clock_kappaShear)
     if (showCallTree) call callTree_waypoint("done with calculate_kappa_shear (set_diffusivity)")
-    ! TODO: tile
+    ! TODO: tile/port VBF Kd_KS copy.
     if (associated(VBF%Kd_KS)) then ; do K=1,nz+1 ; do i=is,ie ; do j=js,je
       VBF%Kd_KS(i,j,K) = visc%Kd_shear(i,j,K)
     enddo ; enddo ; enddo ; endif
@@ -465,6 +468,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
       call hchksum(visc%Kv_shear, "after CVMix_shear visc%Kv_shear", G%HI, unscale=GV%HZ_T_to_m2_s)
     endif
   elseif (associated(visc%Kv_shear)) then
+    ! TODO: tile/port whole-domain Kv_shear initialization.
     visc%Kv_shear(:,:,:) = 0.0 ! needed if calculate_kappa_shear is not enabled
   endif
 
@@ -536,7 +540,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     enddo ; endif
 
     ! Double-diffusion (old method)
-    ! TODO: tile
+    ! TODO: tile/port old double-diffusion path and row-local work arrays.
     if (CS%double_diffusion) then
       !$omp target update from(Kd_lay_2d, Kd_extra_T, Kd_extra_S, KT_extra, KS_extra)
       do j=jstart,jend
@@ -578,7 +582,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
     ! Apply double diffusion via CVMix
     ! GMM, we need to pass HBL to compute_ddiff_coeffs, but it is not yet available.
-    ! TODO: tile
+    ! TODO: tile/port CVMix double-diffusion row path and diagnostics.
     if (CS%use_CVMix_ddiff) then
       !$omp target update from(KD_extra_T, KD_extra_S, KT_extra)
       call cpu_clock_begin(id_clock_CVMix_ddiff)
@@ -647,7 +651,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Add the ML_Rad diffusivity.
-    ! TODO: tile
+    ! TODO: tile/port ML radiation row routine.
     if (CS%ML_radiation) then
       do j=jstart,jend
         call add_MLrad_diffusivity(dz(:,j,:), fluxes, tv, j, Kd_int_2d(:,j,:), G, GV, US, CS, &
@@ -656,7 +660,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Add the Nikurashin and / or tidal bottom-driven mixing
-    ! TODO: tile
+    ! TODO: tile/port tidal mixing row routine.
     if (CS%use_tidal_mixing) then
       do j=jstart,jend
         call calculate_tidal_mixing(dz(:,j,:), j, N2_bot(:,j), rho_bot(:,j), N2_lay(:,j,:), N2_int(:,j,:), &
@@ -666,7 +670,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Add diffusivity from internal tides ray tracing
-    ! TODO: tile
+    ! TODO: tile/port internal tide row routine and diagnostics.
     if (CS%use_int_tides) then
       do j=jstart,jend
         call get_lowmode_diffusivity(G, GV, h, tv, US, h_bot(:,j), k_bot(:,j), j, N2_lay(:,j,:), &
@@ -741,17 +745,19 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
           call add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int(:,j,:), Rho_bot(:,j), Kd_int_2d(:,j,:), &
                                         G, GV, US, CS, dd%Kd_BBL, Kd_lay_2d(:,j,:))
         enddo
+        !$omp target update to(Kd_lay_2d, Kd_int_2d)
       else
         call add_drag_diffusivity(h, u, v,  tv, fluxes, visc, istart, iend, jstart, jend, TKE_to_Kd, &
                                   maxTKE, kb, rho_bot, G, GV, US, CS, &
                                   Kd_lay_2d, Kd_int_2d, dd%Kd_BBL)
       endif
+      ! TODO: tile/port BBL VBF diagnostic copy loop.
       if (associated(VBF%Kd_BBL)) then ; do K=1,nz+1 ; do j=jstart,jend ; do i=istart,iend
         VBF%Kd_BBL(i,j,K) = dd%Kd_BBL(i,j,K)
       enddo ; enddo ; enddo ; endif
     endif
 
-    ! TODO: tile
+    ! TODO: tile/port interface dissipation floor loop.
     if (CS%limit_dissipation) then
       ! This calculates the dissipation ONLY from Kd calculated in this routine
       ! dissip has units of W/m3 (= kg/m3 * m2/s * 1/s2)
@@ -768,7 +774,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Optionally add a uniform diffusivity at the interfaces.
-    ! TODO: tile
+    ! TODO: tile/port interface Kd_add loop.
     if (CS%Kd_add > 0.0) then
       do K=1,nz+1 ; do j=jstart,jend ; do i=istart,iend
         Kd_int_2d(i,j,K) = Kd_int_2d(i,j,K) + CS%Kd_add
@@ -777,11 +783,11 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Copy the 2-d slices into the 3-d array that is exported.
-    do K=1,nz+1 ; do j=jstart,jend ; do i=istart,iend
+    do concurrent (K=1:nz+1, j=jstart:jend, i=istart:iend)
       Kd_int(i,j,K) = Kd_int_2d(i,j,K)
-    enddo ; enddo ; enddo
+    enddo
 
-    ! TODO: tile
+    ! TODO: tile/port layer dissipation floor loop.
     if (CS%limit_dissipation) then
       ! This calculates the layer dissipation ONLY from Kd calculated in this routine
       ! dissip has units of W/m3 (= kg/m3 * m2/s * 1/s2)
@@ -797,7 +803,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
       enddo ; enddo ; enddo
     endif
 
-    ! TODO: tile
+    ! TODO: tile/port Kd work diagnostic loop.
     if (associated(dd%Kd_Work)) then
       do k=1,nz ; do j=jstart,jend ; do i=istart,iend
         dd%Kd_Work(i,j,k) = GV%H_to_RZ * Kd_lay_2d(i,j,k) * N2_lay(i,j,k) * dz(i,j,k)  ! Watt m-2 = kg s-3
@@ -805,14 +811,14 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Optionally add a uniform diffusivity to the layers.
-    ! TODO: tile
+    ! TODO: tile/port layer Kd_add loop.
     if ((CS%Kd_add > 0.0) .and. (present(Kd_lay))) then
       do k=1,nz ; do j=jstart,jend ; do i=istart,iend
         Kd_lay_2d(i,j,k) = Kd_lay_2d(i,j,k) + CS%Kd_add
       enddo ; enddo ; enddo
     endif
 
-    ! TODO: tile
+    ! TODO: tile/port added-work diagnostic loop.
     if (associated(dd%Kd_Work_added)) then
       do k=1,nz ; do j=jstart,jend ; do i=istart,iend
         dd%Kd_Work_added(i,j,k) = GV%H_to_RZ * CS%Kd_add * N2_lay(i,j,k) * dz(i,j,k)  ! Watt m-2 = kg s-3
@@ -820,6 +826,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
 
     ! Copy the 2-d slices into the 3-d array that is exported; this was done above for Kd_int.
+    ! TODO: tile/port Kd_lay export copy loop.
     if (present(Kd_lay)) then ; do k=1,nz ; do j=jstart,jend ; do i=istart,iend
       Kd_lay(i,j,k) = Kd_lay_2d(i,j,k)
     enddo ; enddo ; enddo ; endif
@@ -1315,6 +1322,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
         pres(i,j,1) = 0.0
       enddo
     endif
+    ! TODO: tile/port EOS derivative loop for full device coverage.
     do K=2,nz
       do concurrent (j=js:je, i=is:ie)
         pres(i,j,K) = pres(i,j,K-1) + (GV%g_Earth*GV%H_to_RZ)*h(i,j,k-1)
@@ -1363,7 +1371,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
   if (CS%use_tidal_mixing) then
     !$omp target update from(h_amp)
     do j=js,je
-      ! TODO: get tidal_mixing_h_amp to recognise tiles
+      ! TODO: tile/port get tidal_mixing_h_amp to recognise tile bounds.
       call tidal_mixing_h_amp(h_amp(:,j), G, j, CS%tidal_mixing)
     enddo
     !$omp target update to(h_amp)
@@ -1506,6 +1514,7 @@ subroutine double_diffusion(tv, h, T_f, S_f, j, G, GV, US, CS, Kd_T_dd, Kd_S_dd)
   integer :: i, k, is, ie, nz
   is = G%isc ; ie = G%iec ; nz = GV%ke
 
+  ! TODO: tile/port single-row double diffusion loops and EOS derivative calls.
   if (associated(tv%eqn_of_state)) then
     do i=is,ie
       pres(i) = 0.0 ; Kd_T_dd(i,1) = 0.0 ; Kd_S_dd(i,1) = 0.0
@@ -1710,6 +1719,8 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, TKE_t
   enddo ! k-loop
   !$omp end target
 
+  ! TODO: tile/port remaining host-side BBL redistribution loops.
+  ! Left unported because of exp changing answers on GPU.
   do j=js,je ; do i=is,ie ; do_i(i,j) = (G%mask2dT(i,j) > 0.0) ; enddo ; enddo
   do k=nz-1,kb_min,-1
     i_rem = 0
@@ -1876,6 +1887,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
   if (allocated(visc%Ray_u) .and. allocated(visc%Ray_v)) Rayleigh_drag = .true.
   cdrag_sqrt = sqrt(CS%cdrag)
 
+  ! TODO: tile/port single-row LOTW BBL routine and column temporaries.
   ! Find the vertical distances across layers.
   call thickness_to_dz(h, tv, dz, j, G, GV)
 
