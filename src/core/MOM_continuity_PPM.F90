@@ -166,6 +166,7 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
   logical :: x_first
   integer :: niblock !< i block size for array calculations [nondim].
   integer :: njblock !< j block size for array calculations [nondim].
+  integer :: i_start, i_end, j_start, j_end !< Per-tile bounds passed to the hoisted tile loop.
 
   niblock = CS%niblock
   njblock = CS%njblock
@@ -191,15 +192,19 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
     LB = set_continuity_loop_bounds(G, CS, i_stencil=.false., j_stencil=.true.)
     ! set default block sizes for OpenMP offload
     !$ if (omp_get_num_devices() > 0) then
-      !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+3
-      !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+1
-    !$ endif
-    call zonal_edge_thickness(hin, h_W, h_E, G, GV, US, CS, OBC, niblock, njblock, LB)
-    !$ if (omp_get_num_devices() > 0) then
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+2
     !$ endif
-    call zonal_mass_flux(u, hin, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
-                         niblock, njblock, LB, uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
+    do j_start = LB%jsh, LB%jeh, njblock
+      j_end = min(j_start + njblock - 1, LB%jeh)
+      do i_start = LB%ish - 1, LB%ieh, niblock
+        i_end = min(i_start + niblock - 1, LB%ieh)  ! mass_flux last U-face
+        call zonal_edge_thickness(hin, h_W, h_E, G, GV, US, CS, OBC, &
+                                  i_start, i_end + 1, j_start, j_end, niblock, njblock)
+        call zonal_mass_flux(u, hin, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
+                             i_start, i_end, j_start, j_end, niblock, njblock, &
+                             uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
+      enddo
+    enddo
     call continuity_zonal_convergence(h, uh, dt, G, GV, LB, hin)
 
     !  Now advect meridionally, using the updated thicknesses to determine the fluxes.
@@ -209,12 +214,17 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+1
       !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+3
     !$ endif
-    call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, niblock, njblock, LB)
-    !$ if (omp_get_num_devices() > 0) then
-      !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+2
-    !$ endif
-    call meridional_mass_flux(v, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
-                              niblock, njblock, LB, vhbt, visc_rem_v, v_cor, BT_cont, dv_cor)
+    do i_start = LB%ish, LB%ieh, niblock
+      i_end = min(i_start + niblock - 1, LB%ieh)
+      do j_start = LB%jsh - 1, LB%jeh, njblock
+        j_end = min(j_start + njblock - 1, LB%jeh)  ! mass_flux last V-face
+        call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, &
+                                       i_start, i_end, j_start, j_end + 1, niblock, njblock)
+        call meridional_mass_flux(v, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
+                                  i_start, i_end, j_start, j_end, niblock, njblock, &
+                                  vhbt, visc_rem_v, v_cor, BT_cont, dv_cor)
+      enddo
+    enddo
     call continuity_merdional_convergence(h, vh, dt, G, GV, LB, hmin=h_min)
 
   else  ! .not. x_first
@@ -225,12 +235,17 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+1
       !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+3
     !$ endif
-    call meridional_edge_thickness(hin, h_S, h_N, G, GV, US, CS, OBC, niblock, njblock, LB)
-    !$ if (omp_get_num_devices() > 0) then
-      !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+2
-    !$ endif
-    call meridional_mass_flux(v, hin, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
-                              niblock, njblock, LB, vhbt, visc_rem_v, v_cor, BT_cont, dv_cor)
+    do i_start = LB%ish, LB%ieh, niblock
+      i_end = min(i_start + niblock - 1, LB%ieh)
+      do j_start = LB%jsh - 1, LB%jeh, njblock
+        j_end = min(j_start + njblock - 1, LB%jeh)
+        call meridional_edge_thickness(hin, h_S, h_N, G, GV, US, CS, OBC, &
+                                       i_start, i_end, j_start, j_end + 1, niblock, njblock)
+        call meridional_mass_flux(v, hin, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
+                                  i_start, i_end, j_start, j_end, niblock, njblock, &
+                                  vhbt, visc_rem_v, v_cor, BT_cont, dv_cor)
+      enddo
+    enddo
     call continuity_merdional_convergence(h, vh, dt, G, GV, LB, hin)
 
     !  Now advect zonally, using the updated thicknesses to determine the fluxes.
@@ -239,12 +254,17 @@ subroutine continuity_PPM(u, v, hin, h, uh, vh, dt, G, GV, US, CS, OBC, pbv, uhb
       !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+3
       !$ if (CS%njblock == 0) njblock = LB%jeh-LB%jsh+1
     !$ endif
-    call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, niblock, njblock, LB)
-    !$ if (omp_get_num_devices() > 0) then
-      !$ if (CS%niblock == 0) niblock = LB%ieh-LB%ish+2
-    !$ endif
-    call zonal_mass_flux(u, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
-                         niblock, njblock, LB, uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
+    do j_start = LB%jsh, LB%jeh, njblock
+      j_end = min(j_start + njblock - 1, LB%jeh)
+      do i_start = LB%ish - 1, LB%ieh, niblock
+        i_end = min(i_start + niblock - 1, LB%ieh)
+        call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, &
+                                  i_start, i_end + 1, j_start, j_end, niblock, njblock)
+        call zonal_mass_flux(u, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
+                             i_start, i_end, j_start, j_end, niblock, njblock, &
+                             uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
+      enddo
+    enddo
     call continuity_zonal_convergence(h, uh, dt, G, GV, LB, hmin=h_min)
   endif
 
@@ -284,6 +304,7 @@ subroutine continuity_3d_fluxes(u, v, h, uh, vh, dt, G, GV, US, CS, OBC, pbv)
   real :: h_N(SZI_(G),SZJ_(G),SZK_(GV)) ! North edge thicknesses in the meridional PPM reconstruction [H ~> m or kg m-2]
   integer :: niblock !< i block size for array calculations [nondim].
   integer :: njblock !< j block size for array calculations [nondim].
+  integer :: i_start, i_end, j_start, j_end !< Per-tile bounds for the hoisted tile loop.
 
   niblock = CS%niblock
   njblock = CS%njblock
@@ -291,20 +312,34 @@ subroutine continuity_3d_fluxes(u, v, h, uh, vh, dt, G, GV, US, CS, OBC, pbv)
   if (njblock == 0) njblock = default_njblock
 
   !$ if (omp_get_num_devices() > 0) then
-    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+2
+    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+3
     !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+1
   !$ endif
-  call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, niblock, njblock)
-  call zonal_mass_flux(u, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
-                       niblock=niblock, njblock=njblock)
+  do j_start = G%jsc, G%jec, njblock
+    j_end = min(j_start + njblock - 1, G%jec)
+    do i_start = G%isc - 1, G%iec, niblock - 1
+      i_end = min(i_start + niblock - 2, G%iec)  ! mass_flux last U-face
+      call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, &
+                                i_start, i_end + 1, j_start, j_end, niblock, njblock)
+      call zonal_mass_flux(u, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
+                           i_start, i_end, j_start, j_end, niblock, njblock)
+    enddo
+  enddo
 
   !$ if (omp_get_num_devices() > 0) then
     !$ if (CS%niblock == 0) niblock = G%iec-G%isc+1
-    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+2
+    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+3
   !$ endif
-  call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, niblock, njblock)
-  call meridional_mass_flux(v, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
-                            niblock=niblock, njblock=njblock)
+  do i_start = G%isc, G%iec, niblock
+    i_end = min(i_start + niblock - 1, G%iec)
+    do j_start = G%jsc - 1, G%jec, njblock - 1
+      j_end = min(j_start + njblock - 2, G%jec)  ! mass_flux last V-face
+      call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, &
+                                     i_start, i_end, j_start, j_end + 1, niblock, njblock)
+      call meridional_mass_flux(v, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
+                                i_start, i_end, j_start, j_end, niblock, njblock)
+    enddo
+  enddo
 
 end subroutine continuity_3d_fluxes
 
@@ -340,6 +375,7 @@ subroutine continuity_2d_fluxes(u, v, h, uhbt, vhbt, dt, G, GV, US, CS, OBC, pbv
   real :: h_N(SZI_(G),SZJ_(G),SZK_(GV)) ! North edge thicknesses in the meridional PPM reconstruction [H ~> m or kg m-2]
   integer :: niblock !< i block size for array calculations [nondim].
   integer :: njblock !< j block size for array calculations [nondim].
+  integer :: i_start, i_end, j_start, j_end !< Per-tile bounds for the hoisted tile loop.
 
   niblock = CS%niblock
   njblock = CS%njblock
@@ -347,17 +383,32 @@ subroutine continuity_2d_fluxes(u, v, h, uhbt, vhbt, dt, G, GV, US, CS, OBC, pbv
   if (njblock == 0) njblock = default_njblock
 
   !$ if (omp_get_num_devices() > 0) then
-    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+2
+    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+3
     !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+1
   !$ endif
-  call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, niblock, njblock)
+  ! Tile only edge_thickness; BT_mass_flux runs once on the full domain.
+  do j_start = G%jsc, G%jec, njblock
+    j_end = min(j_start + njblock - 1, G%jec)
+    do i_start = G%isc - 1, G%iec + 1, niblock
+      i_end = min(i_start + niblock - 1, G%iec + 1)
+      call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, &
+                                i_start, i_end, j_start, j_end, niblock, njblock)
+    enddo
+  enddo
   call zonal_BT_mass_flux(u, h, h_W, h_E, uhbt, dt, G, GV, US, CS, OBC, pbv%por_face_areaU)
 
   !$ if (omp_get_num_devices() > 0) then
     !$ if (CS%niblock == 0) niblock = G%iec-G%isc+1
-    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+2
+    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+3
   !$ endif
-  call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, niblock, njblock)
+  do i_start = G%isc, G%iec, niblock
+    i_end = min(i_start + niblock - 1, G%iec)
+    do j_start = G%jsc - 1, G%jec + 1, njblock
+      j_end = min(j_start + njblock - 1, G%jec + 1)
+      call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, &
+                                     i_start, i_end, j_start, j_end, niblock, njblock)
+    enddo
+  enddo
   call meridional_BT_mass_flux(v, h, h_S, h_N, vhbt, dt, G, GV, US, CS, OBC, pbv%por_face_areaV)
 
 end subroutine continuity_2d_fluxes
@@ -420,6 +471,7 @@ subroutine continuity_adjust_vel(u, v, h, dt, G, GV, US, CS, OBC, pbv, uhbt, vhb
   real :: h_N(SZI_(G),SZJ_(G),SZK_(GV)) ! North edge thicknesses in the meridional PPM reconstruction [H ~> m or kg m-2]
   integer :: niblock !< i block size for array calculations [nondim].
   integer :: njblock !< j block size for array calculations [nondim].
+  integer :: i_start, i_end, j_start, j_end !< Per-tile bounds for the hoisted tile loop.
 
   niblock = CS%niblock
   njblock = CS%njblock
@@ -432,22 +484,36 @@ subroutine continuity_adjust_vel(u, v, h, dt, G, GV, US, CS, OBC, pbv, uhbt, vhb
   v_in(:,:,:) = v(:,:,:)
 
   !$ if (omp_get_num_devices() > 0) then
-    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+2
+    !$ if (CS%niblock == 0) niblock = G%iec-G%isc+3
     !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+1
   !$ endif
-  call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, niblock, njblock)
-  call zonal_mass_flux(u_in, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
-                       niblock=niblock, njblock=njblock, &
-                       uhbt=uhbt, visc_rem_u=visc_rem_u, u_cor=u)
+  do j_start = G%jsc, G%jec, njblock
+    j_end = min(j_start + njblock - 1, G%jec)
+    do i_start = G%isc - 1, G%iec, niblock - 1
+      i_end = min(i_start + niblock - 2, G%iec)
+      call zonal_edge_thickness(h, h_W, h_E, G, GV, US, CS, OBC, &
+                                i_start, i_end + 1, j_start, j_end, niblock, njblock)
+      call zonal_mass_flux(u_in, h, h_W, h_E, uh, dt, G, GV, US, CS, OBC, pbv%por_face_areaU, &
+                           i_start, i_end, j_start, j_end, niblock, njblock, &
+                           uhbt=uhbt, visc_rem_u=visc_rem_u, u_cor=u)
+    enddo
+  enddo
 
   !$ if (omp_get_num_devices() > 0) then
     !$ if (CS%niblock == 0) niblock = G%iec-G%isc+1
-    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+2
+    !$ if (CS%njblock == 0) njblock = G%jec-G%jsc+3
   !$ endif
-  call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, niblock, njblock)
-  call meridional_mass_flux(v_in, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
-                            niblock=niblock, njblock=njblock, &
-                            vhbt=vhbt, visc_rem_v=visc_rem_v, v_cor=v)
+  do i_start = G%isc, G%iec, niblock
+    i_end = min(i_start + niblock - 1, G%iec)
+    do j_start = G%jsc - 1, G%jec, njblock - 1
+      j_end = min(j_start + njblock - 2, G%jec)
+      call meridional_edge_thickness(h, h_S, h_N, G, GV, US, CS, OBC, &
+                                     i_start, i_end, j_start, j_end + 1, niblock, njblock)
+      call meridional_mass_flux(v_in, h, h_S, h_N, vh, dt, G, GV, US, CS, OBC, pbv%por_face_areaV, &
+                                i_start, i_end, j_start, j_end, niblock, njblock, &
+                                vhbt=vhbt, visc_rem_v=visc_rem_v, v_cor=v)
+    enddo
+  enddo
 
 end subroutine continuity_adjust_vel
 
@@ -533,7 +599,7 @@ end subroutine continuity_merdional_convergence
 
 !> Set the reconstructed thicknesses at the eastern and western edges of tracer cells.
 subroutine zonal_edge_thickness(h_in, h_W, h_E, G, GV, US, CS, OBC, &
-                                niblock, njblock, LB_in)
+                                i_start, i_end, j_start, j_end, niblock, njblock)
   type(ocean_grid_type),   intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV   !< Ocean's vertical grid structure.
   real,  dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -545,30 +611,28 @@ subroutine zonal_edge_thickness(h_in, h_W, h_E, G, GV, US, CS, OBC, &
   type(unit_scale_type),   intent(in)    :: US   !< A dimensional unit scaling type
   type(continuity_PPM_CS), intent(in)    :: CS   !< This module's control structure.
   type(ocean_OBC_type),    pointer       :: OBC  !< Open boundaries control structure.
-  integer,                 intent(in)    :: niblock !< i block size for array calculations [nondim].
-  integer,                 intent(in)    :: njblock !< j block size for array calculations [nondim].
-  type(cont_loop_bounds_type), &
-                 optional, intent(in)    :: LB_in !< Loop bounds structure.
+  integer,                 intent(in)    :: i_start !< Tile start i-index of the edge output range.
+  integer,                 intent(in)    :: i_end   !< Tile end i-index of the edge output range.
+  integer,                 intent(in)    :: j_start !< Tile start j-index of the edge output range.
+  integer,                 intent(in)    :: j_end   !< Tile end j-index of the edge output range.
+  integer,                 intent(in)    :: niblock !< i block size for array sizing [nondim].
+  integer,                 intent(in)    :: njblock !< j block size for array sizing [nondim].
 
   ! Local variables
-  type(cont_loop_bounds_type) :: LB
-  integer :: i, j, k, ish, ieh, jsh, jeh, nz
+  integer :: i, j, k, nz
 
   call cpu_clock_begin(id_clock_reconstruct)
 
-  if (present(LB_in)) then
-    LB = LB_in
-  else
-    LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
-  endif
-  ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nz = GV%ke
 
   if (CS%upwind_1st) then
-    do concurrent (k=1:nz, j=jsh:jeh, i=ish-1:ieh+1)
+    do concurrent (k=1:nz, j=j_start:j_end, i=i_start:i_end)
       h_W(i,j,k) = h_in(i,j,k) ; h_E(i,j,k) = h_in(i,j,k)
     enddo
   else
-    call PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, niblock, njblock, &
+    call PPM_reconstruction_x(h_in, h_W, h_E, G, GV, &
+                              i_start, i_end, j_start, j_end, &
+                              niblock, njblock, &
                               2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
   endif
 
@@ -579,7 +643,7 @@ end subroutine zonal_edge_thickness
 
 !> Set the reconstructed thicknesses at the eastern and western edges of tracer cells.
 subroutine meridional_edge_thickness(h_in, h_S, h_N, G, GV, US, CS, OBC, &
-                                     niblock, njblock, LB_in)
+                                     i_start, i_end, j_start, j_end, niblock, njblock)
   type(ocean_grid_type),   intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV   !< Ocean's vertical grid structure.
   real,  dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -591,31 +655,29 @@ subroutine meridional_edge_thickness(h_in, h_S, h_N, G, GV, US, CS, OBC, &
   type(unit_scale_type),   intent(in)    :: US   !< A dimensional unit scaling type
   type(continuity_PPM_CS), intent(in)    :: CS   !< This module's control structure.
   type(ocean_OBC_type),    pointer       :: OBC  !< Open boundaries control structure.
-  integer,                 intent(in)    :: niblock !< i block size for array calculations [nondim].
-  integer,                 intent(in)    :: njblock !< j block size for array calculations [nondim].
-  type(cont_loop_bounds_type), &
-                 optional, intent(in)    :: LB_in !< Loop bounds structure.
+  integer,                 intent(in)    :: i_start !< Tile start i-index of the edge output range.
+  integer,                 intent(in)    :: i_end   !< Tile end i-index of the edge output range.
+  integer,                 intent(in)    :: j_start !< Tile start j-index of the edge output range.
+  integer,                 intent(in)    :: j_end   !< Tile end j-index of the edge output range.
+  integer,                 intent(in)    :: niblock !< i block size for array sizing [nondim].
+  integer,                 intent(in)    :: njblock !< j block size for array sizing [nondim].
 
   ! Local variables
-  type(cont_loop_bounds_type) :: LB
-  integer :: i, j, k, ish, ieh, jsh, jeh, nz
+  integer :: i, j, k, nz
 
   call cpu_clock_begin(id_clock_reconstruct)
 
-  if (present(LB_in)) then
-    LB = LB_in
-  else
-    LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
-  endif
-  ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nz = GV%ke
 
   if (CS%upwind_1st) then
     ! untested
-    do concurrent (k=1:nz, j=jsh-1:jeh+1, i=ish:ieh)
+    do concurrent (k=1:nz, j=j_start:j_end, i=i_start:i_end)
       h_S(i,j,k) = h_in(i,j,k) ; h_N(i,j,k) = h_in(i,j,k)
     enddo
   else
-    call PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, niblock, njblock, &
+    call PPM_reconstruction_y(h_in, h_S, h_N, G, GV, &
+                              i_start, i_end, j_start, j_end, &
+                              niblock, njblock, &
                               2.0*GV%Angstrom_H, CS%monotonic, CS%simple_2nd, OBC)
   endif
 
@@ -626,9 +688,10 @@ end subroutine meridional_edge_thickness
 
 !> Calculates the mass or volume fluxes through the zonal faces, and other related quantities.
 subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_face_areaU, &
-                           niblock, njblock, LB_in, uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
-  integer,                 intent(in)    :: niblock !< i block size for array calculations [nondim].
-  integer,                 intent(in)    :: njblock !< j block size for array calculations [nondim].
+                           i_start, i_end, j_start, j_end, niblock, njblock, &
+                           uhbt, visc_rem_u, u_cor, BT_cont, du_cor)
+  integer,                 intent(in)    :: niblock !< i block size for array sizing [nondim].
+  integer,                 intent(in)    :: njblock !< j block size for array sizing [nondim].
   type(ocean_grid_type),   intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type), intent(in)    :: GV   !< Ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
@@ -648,8 +711,10 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
   type(ocean_OBC_type),    pointer       :: OBC  !< Open boundaries control structure.
   real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), &
                            intent(in)    :: por_face_areaU !< fractional open area of U-faces [nondim]
-  type(cont_loop_bounds_type), &
-                 optional, intent(in)    :: LB_in !< Loop bounds structure.
+  integer,                 intent(in)    :: i_start !< Tile start U-face i-index [nondim].
+  integer,                 intent(in)    :: i_end   !< Tile end U-face i-index [nondim].
+  integer,                 intent(in)    :: j_start !< Tile start j-index [nondim].
+  integer,                 intent(in)    :: j_end   !< Tile end j-index [nondim].
   real, dimension(SZIB_(G),SZJ_(G)), &
                  optional, intent(in)    :: uhbt !< The summed volume flux through zonal faces
                                                  !! [H L2 T-1 ~> m3 s-1 or kg s-1].
@@ -694,15 +759,11 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
   real :: du_lim  ! The velocity change that give a relative CFL of 1 [L T-1 ~> m s-1].
   real :: dx_E, dx_W ! Effective x-grid spacings to the east and west [L ~> m].
   type(cont_loop_bounds_type) :: LB
-  integer :: i, j, k, ish, ieh, jsh, jeh, n, nz, ii, jj
+  integer :: i, j, k, n, nz, ii, jj
   integer :: l_seg ! The OBC segment number
   logical :: use_visc_rem, set_BT_cont
   logical :: local_specified_BC, local_Flather_OBC, local_open_BC, any_simple_OBC  ! OBC-related logicals
   logical :: simple_OBC_pt(niblock,njblock)  ! Indicates points in a row with specified transport OBCs
-  integer :: j_start !< The j-index of the start of the current tile [nondim].
-  integer :: i_start !< The i-index of the start of the current tile [nondim].
-  integer :: j_end   !< The j-index of the end of the current tile [nondim].
-  integer :: i_end   !< The i-index of the end of the current tile [nondim].
   integer :: nteams
 
   call cpu_clock_begin(id_clock_correct)
@@ -728,12 +789,7 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
     enddo
   endif
 
-  if (present(LB_in)) then
-    LB = LB_in
-  else
-    LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
-  endif
-  ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nz = GV%ke
 
   CFL_dt = CS%CFL_limit_adjust / dt
   I_dt = 1.0 / dt
@@ -745,12 +801,8 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
     enddo
   endif
 
-  do j_start=jsh,jeh,njblock ; do i_start=ish-1,ieh,niblock
-    i_end = min(i_start+niblock-1,ieh)
-    j_end = min(j_start+njblock-1,jeh)
-
-    ! calculate number of teams
-    !$ nteams = ceiling(real((j_end-j_start+1)*(i_end-i_start+1))/128.)
+  ! calculate number of teams
+  !$ nteams = ceiling(real((j_end-j_start+1)*(i_end-i_start+1))/128.)
 
     do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
       do_I(ii,jj) = .true.
@@ -1008,8 +1060,6 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
       uh(I,j,k) = uh_t(I-i_start+1,j-j_start+1,k)
     enddo
 
-  enddo ; enddo ! ij block loop
-
   !$omp target exit data &
   !$omp   map(release:uhbt_t,uh_t,duhdu,du,du_min_CFL,du_max_CFL,duhdu_tot_0,uh_tot_0,&
   !$omp     visc_rem_max,do_I,visc_rem,simple_OBC_pt)
@@ -1040,6 +1090,10 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
   endif
 
   if  (set_BT_cont) then ; if (allocated(BT_cont%h_u)) then
+    ! zonal_flux_thickness still consumes an LB. Synthesize one matching the
+    ! current tile's U-face range [i_start, i_end] (its loop is I=ish-1:ieh).
+    LB%ish = i_start + 1 ; LB%ieh = i_end
+    LB%jsh = j_start     ; LB%jeh = j_end
     if (present(u_cor)) then
       call zonal_flux_thickness(u_cor, h_in, h_W, h_E, BT_cont%h_u, dt, G, GV, US, LB, &
                                 CS%vol_CFL, CS%marginal_faces, OBC, por_face_areaU, visc_rem_u)
@@ -1733,10 +1787,10 @@ end subroutine set_zonal_BT_cont
 
 !> Calculates the mass or volume fluxes through the meridional faces, and other related quantities.
 subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, por_face_areaV, &
-                                niblock, njblock, LB_in, vhbt, &
+                                i_start, i_end, j_start, j_end, niblock, njblock, vhbt, &
                                 visc_rem_v, v_cor, BT_cont, dv_cor)
-  integer,                                    intent(in)  :: niblock !< i block size for array calculations [nondim].
-  integer,                                    intent(in)  :: njblock !< j block size for array calculations [nondim].
+  integer,                                    intent(in)  :: niblock !< i block size for array sizing [nondim].
+  integer,                                    intent(in)  :: njblock !< j block size for array sizing [nondim].
   type(ocean_grid_type),                      intent(in)  :: G    !< Ocean's grid structure.
   type(verticalGrid_type),                    intent(in)  :: GV   !< Ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in)  :: v    !< Meridional velocity [L T-1 ~> m s-1]
@@ -1755,7 +1809,10 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
                                                                   !! specifies whether, where, and what
                                                                   !! open boundary conditions are used.
   real, dimension(SZI_(G),SZJB_(G),SZK_(G)),  intent(in)  :: por_face_areaV !< fractional open area of V-faces [nondim]
-  type(cont_loop_bounds_type),      optional, intent(in)  :: LB_in !< Loop bounds structure.
+  integer,                                    intent(in)  :: i_start !< Tile start i-index [nondim].
+  integer,                                    intent(in)  :: i_end   !< Tile end i-index [nondim].
+  integer,                                    intent(in)  :: j_start !< Tile start V-face j-index [nondim].
+  integer,                                    intent(in)  :: j_end   !< Tile end V-face j-index [nondim].
   real, dimension(SZI_(G),SZJB_(G)), optional, intent(in) :: vhbt !< The summed volume flux through meridional
                                                                   !! faces [H L2 T-1 ~> m3 s-1 or kg s-1].
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
@@ -1802,14 +1859,14 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
   real :: dv_lim  ! The velocity change that give a relative CFL of 1 [L T-1 ~> m s-1].
   real :: dy_N, dy_S ! Effective y-grid spacings to the north and south [L ~> m].
   type(cont_loop_bounds_type) :: LB
-  integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
+  integer :: i, j, k, n, nz
   integer :: l_seg ! The OBC segment number
   logical :: use_visc_rem, set_BT_cont
   logical :: local_specified_BC, local_Flather_OBC ! OBC-related logicals
   logical :: local_open_BC, any_simple_OBC          ! OBC-related logicals
   logical :: simple_OBC_pt(niblock,njblock) ! Indicates points with specified transport OBCs
   type(OBC_segment_type), pointer :: segment => NULL()
-  integer :: j_start, j_end, i_start, i_end, ii, jj
+  integer :: ii, jj
   integer :: nteams
 
   call cpu_clock_begin(id_clock_correct)
@@ -1835,12 +1892,7 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
     enddo
   endif
 
-  if (present(LB_in)) then
-    LB = LB_in
-  else
-    LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
-  endif
-  ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nz = GV%ke
 
   CFL_dt = CS%CFL_limit_adjust / dt
   I_dt = 1.0 / dt
@@ -1852,10 +1904,7 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
     enddo
   endif
 
-  do j_start = jsh-1, jeh, njblock ; do i_start = ish, ieh, niblock
-    j_end = min(j_start + njblock-1, jeh)
-    i_end = min(i_start + niblock-1, ieh)
-    !$ nteams = ceiling(real((j_end-j_start+1)*(i_end-i_start+1))/128.)
+  !$ nteams = ceiling(real((j_end-j_start+1)*(i_end-i_start+1))/128.)
     do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
       do_I(ii,JJ) = .true.
     enddo
@@ -2112,8 +2161,6 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
       vh(i,j,k) = vh_t(ii,jj,k)
     enddo
 
-  enddo ; enddo ! ij block loops
-
   !$omp target exit data &
   !$omp   map(release:vhbt_t,vh_t,dvhdv,dv,dv_min_CFL,dv_max_CFL,dvhdv_tot_0,vh_tot_0,&
   !$omp     visc_rem_max,do_I,visc_rem,simple_OBC_pt)
@@ -2144,6 +2191,10 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
   endif
 
   if (set_BT_cont) then ; if (allocated(BT_cont%h_v)) then
+    ! meridional_flux_thickness still consumes an LB. Synthesize one matching
+    ! the current tile's V-face range [j_start, j_end] (its loop is J=jsh-1:jeh).
+    LB%ish = i_start     ; LB%ieh = i_end
+    LB%jsh = j_start + 1 ; LB%jeh = j_end
     if (present(v_cor)) then
       call meridional_flux_thickness(v_cor, h_in, h_S, h_N, BT_cont%h_v, dt, G, GV, US, LB, &
                                     CS%vol_CFL, CS%marginal_faces, OBC, por_face_areaV, visc_rem_v)
@@ -2757,9 +2808,9 @@ subroutine PPM_reconstruction_x(h_in, h_W, h_E, G, GV, LB, niblock, njblock, &
 
   ! Tile-local slope buffer with an i-stencil halo of 1 each side, indexed
   ! over all layers. Indexing: ii = i - i_start + 1, jj = j - j_start + 1,
-  ! so slp covers global i in [i_start-1, i_end+1] (ii=0..niblock+1) and
+  ! so slp covers global i in [i_start-1, i_end+1] (ii=0..niblock+2) and
   ! j in [j_start, j_end].
-  real :: slp(0:niblock+1, njblock, SZK_(GV)) ! The slopes per grid point [H ~> m or kg m-2]
+  real :: slp(0:niblock+2, njblock, SZK_(GV)) ! The slopes per grid point [H ~> m or kg m-2]
   real, parameter :: oneSixth = 1./6.  ! [nondim]
   real :: h_ip1, h_im1 ! Neighboring thicknesses or sensibly extrapolated values [H ~> m or kg m-2]
   real :: dMx, dMn     ! The difference between the local thickness and the maximum (dMx) or
@@ -2930,7 +2981,7 @@ subroutine PPM_reconstruction_y(h_in, h_S, h_N, G, GV, LB, niblock, njblock, &
   ! over all layers. Indexing: ii = i - i_start + 1, jj = j - j_start + 1,
   ! so slp covers global i in [i_start, i_end] and j in [j_start-1, j_end+1]
   ! (jj=0..njblock+1).
-  real :: slp(niblock, 0:njblock+1, SZK_(GV)) ! The slopes per grid point [H ~> m or kg m-2]
+  real :: slp(niblock, 0:njblock+2, SZK_(GV)) ! The slopes per grid point [H ~> m or kg m-2]
   real, parameter :: oneSixth = 1./6.      ! [nondim]
   real :: h_jp1, h_jm1 ! Neighboring thicknesses or sensibly extrapolated values [H ~> m or kg m-2]
   real :: dMx, dMn     ! The difference between the local thickness and the maximum (dMx) or
