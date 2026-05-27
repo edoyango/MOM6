@@ -22,6 +22,7 @@ use MOM_verticalGrid,      only : verticalGrid_type
 use MOM_wave_speed,        only : wave_speed, wave_speed_CS, wave_speed_init
 use MOM_open_boundary,     only : ocean_OBC_type, OBC_NONE
 use MOM_open_boundary,     only : OBC_DIRECTION_E, OBC_DIRECTION_W, OBC_DIRECTION_N, OBC_DIRECTION_S
+use MOM_cpu_clock,         only : cpu_clock_id, cpu_clock_begin, cpu_clock_end, CLOCK_ROUTINE
 use MOM_MEKE_types,        only : MEKE_type
 
 implicit none ; private
@@ -192,6 +193,7 @@ type, public :: VarMix_CS
   type(wave_speed_CS) :: wave_speed !< Wave speed control structure
   type(group_pass_type) :: pass_cg1 !< For group halo pass
   logical :: debug      !< If true, write out checksums of data for debugging
+  integer :: id_clock_isoneutral_slopes !< Clock for calc_isoneutral_slopes calls
 end type VarMix_CS
 
 public VarMix_init, VarMix_end, calc_slope_functions, calc_resoln_function
@@ -686,9 +688,11 @@ subroutine calc_sqg_struct(h, tv, G, GV, US, CS, dt, MEKE, OBC)
       !$omp target enter data map(alloc: e)
       call find_eta(h, tv, G, GV, US, e, halo_size=2)  !### Could be halo_size=1?
       !$omp target exit data map(from: e)
+      call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
       call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, dzu=dzu, dzv=dzv, &
                                   dzSxN=dzSxN, dzSyN=dzSyN, halo=1, OBC=OBC, OBC_N2=CS%OBC_friendly)
+      call cpu_clock_end(CS%id_clock_isoneutral_slopes)
       do k=2,nz ; do j=js,je ; do i=is,ie
         N2 = max(0.25 * ((N2_u(I-1,j,K) + N2_u(I,j,K)) + (N2_v(i,J-1,K) + N2_v(i,J,K))), 0.0)
         dzc = 0.25 * ((dzu(I-1,j,K) + dzu(I,j,K)) + (dzv(i,J-1,K) + dzv(i,J,K)))
@@ -788,6 +792,7 @@ subroutine calc_slope_functions(h, tv, dt, G, GV, US, CS, OBC)
     !$omp target exit data map(from: e)
     ! ! BISECT (disabled): localize slope drift — does e itself differ between CPU and GPU?
     ! if (CS%debug) call hchksum(e, "post-find_eta e (calc_slope_functions)", G%HI, haloshift=1, unscale=US%Z_to_m)
+    call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
     if (CS%use_simpler_Eady_growth_rate) then
       call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                                   CS%slope_x, CS%slope_y, N2_u=N2_u, N2_v=N2_v, dzu=dzu, dzv=dzv, &
@@ -801,6 +806,7 @@ subroutine calc_slope_functions(h, tv, dt, G, GV, US, CS, OBC)
     else
       call calc_slope_functions_using_just_e(h, G, GV, US, CS, e)
     endif
+    call cpu_clock_end(CS%id_clock_isoneutral_slopes)
   endif
 
   if (query_averaging_enabled(CS%diag)) then
@@ -1380,8 +1386,10 @@ subroutine calc_QG_slopes(h, tv, dt, G, GV, US, slope_x, slope_y, CS, OBC)
   !$omp target enter data map(alloc: e)
   call find_eta(h, tv, G, GV, US, e, halo_size=3)
   !$omp target exit data map(from: e)
+  call cpu_clock_begin(CS%id_clock_isoneutral_slopes)
   call calc_isoneutral_slopes(G, GV, US, h, e, tv, dt*CS%kappa_smooth, CS%use_stanley_iso, &
                               slope_x, slope_y, halo=2, OBC=OBC, OBC_N2=CS%OBC_friendly)
+  call cpu_clock_end(CS%id_clock_isoneutral_slopes)
 
 end subroutine calc_QG_slopes
 
@@ -2141,6 +2149,8 @@ subroutine VarMix_init(Time, G, GV, US, param_file, diag, CS)
 
   ! Re-enable variable mixing if one of the schemes was enabled
   CS%use_variable_mixing = in_use .or. CS%use_variable_mixing
+
+  CS%id_clock_isoneutral_slopes = cpu_clock_id('(MOM_calc_isoneutral_slopes)', grain=CLOCK_ROUTINE)
 end subroutine VarMix_init
 
 !> Destructor for VarMix control structure
