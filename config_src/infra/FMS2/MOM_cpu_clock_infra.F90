@@ -18,8 +18,12 @@ use mpp_mod, only : MPP_CLOCK_MODULE => CLOCK_MODULE
 use mpp_mod, only : MPP_CLOCK_ROUTINE => CLOCK_ROUTINE
 use mpp_mod, only : MPP_CLOCK_LOOP => CLOCK_LOOP
 use mpp_mod, only : MPP_CLOCK_INFRA => CLOCK_INFRA
+use nvtx
 
 implicit none ; private
+
+integer, parameter :: MAX_NVTX_CLOCKS = 4096
+character(len=64), save :: nvtx_clock_names(MAX_NVTX_CLOCKS) = ""
 
 ! Public entities
 public :: cpu_clock_id, cpu_clock_begin, cpu_clock_end
@@ -60,6 +64,9 @@ contains
 subroutine cpu_clock_begin(id)
   integer, intent(in) :: id !< Handle for clock
 
+  if (id > 0 .and. id <= MAX_NVTX_CLOCKS) then
+    if (len_trim(nvtx_clock_names(id)) > 0) call nvtxStartRange(trim(nvtx_clock_names(id)))
+  endif
   call mpp_clock_begin(id)
 
 end subroutine cpu_clock_begin
@@ -69,6 +76,9 @@ subroutine cpu_clock_end(id)
   integer, intent(in) :: id !< Handle for clock
 
   call mpp_clock_end(id)
+  if (id > 0 .and. id <= MAX_NVTX_CLOCKS) then
+    if (len_trim(nvtx_clock_names(id)) > 0) call nvtxEndRange
+  endif
 
 end subroutine cpu_clock_end
 
@@ -96,6 +106,9 @@ integer function cpu_clock_id(name, sync, grain)
   endif
 
   cpu_clock_id = mpp_clock_id(name, flags=clock_flags, grain=grain)
+  if (cpu_clock_id > 0 .and. cpu_clock_id <= MAX_NVTX_CLOCKS) then
+    nvtx_clock_names(cpu_clock_id) = name
+  endif
 end function cpu_clock_id
 
 end module MOM_cpu_clock_infra
