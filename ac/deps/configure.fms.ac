@@ -77,6 +77,29 @@ AC_CHECK_FUNCS([sched_getaffinity], [], [AC_DEFINE([__APPLE__])])
 LDFLAGS="$FC_LDFLAGS"
 
 
+# yaml support (optional): explicitly enabled via --with-yaml; requires LIBYAML_ROOT
+AC_ARG_VAR([LIBYAML_ROOT],
+  [Root directory of libyaml installation (enables modern diag_manager when set)])
+AC_ARG_WITH([yaml],
+  [AS_HELP_STRING([--with-yaml],
+    [Enable YAML support for modern diag_manager (requires LIBYAML_ROOT)])],
+  [with_yaml=$withval], [with_yaml=no])
+AS_IF([test "x$with_yaml" != "xno"], [
+  AS_IF([test -z "$LIBYAML_ROOT"], [
+    AC_MSG_ERROR([--with-yaml requires LIBYAML_ROOT to be set to the libyaml install prefix])
+  ])
+  CPPFLAGS="$CPPFLAGS -I${LIBYAML_ROOT}/include"
+  LDFLAGS="$LDFLAGS -L${LIBYAML_ROOT}/lib"
+  AC_LANG_PUSH([C])
+  AC_CHECK_HEADERS([yaml.h], [],
+    [AC_MSG_ERROR([Cannot find yaml.h in ${LIBYAML_ROOT}/include])])
+  AC_SEARCH_LIBS([yaml_parser_initialize], [yaml], [],
+    [AC_MSG_ERROR([Cannot find yaml_parser_initialize in ${LIBYAML_ROOT}/lib])])
+  AC_LANG_POP([C])
+  AC_DEFINE([use_yaml], [1], [Enable YAML parser for modern diag_manager])
+])
+
+
 # Fortran configuration
 AC_LANG([Fortran])
 AC_FC_SRCEXT([f90])
