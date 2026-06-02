@@ -3830,13 +3830,20 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
   ! now register some diagnostics since the tracer registry is now locked
   call register_surface_diags(Time, G, US, CS%sfc_IDs, CS%diag, CS%tv)
+  call MOM_mesg("DEBUG MOM.F90: register_surface_diags done")
   call register_diags(Time, G, GV, US, CS%IDs, CS%diag)
+  call MOM_mesg("DEBUG MOM.F90: register_diags done")
   call register_transport_diags(Time, G, GV, US, CS%transport_IDs, CS%diag)
+  call MOM_mesg("DEBUG MOM.F90: register_transport_diags done")
   call extract_diabatic_member(CS%diabatic_CSp, use_KPP=use_KPP)
+  call MOM_mesg("DEBUG MOM.F90: extract_diabatic_member done")
   call register_tracer_diagnostics(CS%tracer_Reg, CS%h, Time, diag, G, GV, US, &
                                    CS%use_ALE_algorithm, use_KPP)
+  call MOM_mesg("DEBUG MOM.F90: register_tracer_diagnostics done")
   if (CS%use_ALE_algorithm) then
+    call MOM_mesg("DEBUG MOM.F90: calling ALE_register_diags")
     call ALE_register_diags(Time, G, GV, US, diag, CS%ALE_CSp)
+    call MOM_mesg("DEBUG MOM.F90: ALE_register_diags done")
   endif
 
   ! Do any necessary halo updates on any auxiliary variables that have been initialized.
@@ -3847,11 +3854,13 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   if (associated(CS%visc%Kv_slow)) &
     call pass_var(CS%visc%Kv_slow, G%Domain, To_All+Omit_Corners, halo=1)
   call cpu_clock_end(id_clock_pass_init)
+  call MOM_mesg("DEBUG MOM.F90: pass_var init done")
 
   ! This subroutine initializes any tracer packages.
   call tracer_flow_control_init(.not.new_sim, Time, G, GV, US, CS%h, param_file, &
              CS%diag, CS%OBC, CS%tracer_flow_CSp, CS%sponge_CSp, &
              CS%ALE_sponge_CSp, CS%tv)
+  call MOM_mesg("DEBUG MOM.F90: tracer_flow_control_init done")
   if (present(tracer_flow_CSp)) tracer_flow_CSp => CS%tracer_flow_CSp
 
   if (associated(CS%ALE_sponge_CSp)) &
@@ -3870,6 +3879,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
                               tv=CS%tv, x_before_y=(MODULO(first_direction,2)==0), debug=CS%debug )
     call register_diags_offline_transport(Time, CS%diag, CS%offline_CSp, GV, US)
   endif
+  call MOM_mesg("DEBUG MOM.F90: offline/OBC setup done")
 
   if (associated(CS%OBC)) then
     ! At this point any information related to the tracer reservoirs has either been read from
@@ -3880,7 +3890,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call open_boundary_halo_update(G, CS%OBC)
   endif
 
+  call MOM_mesg("DEBUG MOM.F90: calling register_obsolete_diagnostics")
   call register_obsolete_diagnostics(param_file, CS%diag)
+  call MOM_mesg("DEBUG MOM.F90: register_obsolete_diagnostics done")
 
   if (use_frazil) then
     if (.not.query_initialized(CS%tv%frazil, "frazil", restart_CSp)) then

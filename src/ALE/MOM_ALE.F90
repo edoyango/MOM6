@@ -16,7 +16,7 @@ use MOM_debugging,        only : check_column_integrals
 use MOM_diag_mediator,    only : register_diag_field, post_data, diag_ctrl
 use MOM_diag_mediator,    only : time_type, diag_update_remap_grids, query_averaging_enabled
 use MOM_domains,          only : create_group_pass, do_group_pass, group_pass_type
-use MOM_error_handler,    only : MOM_error, FATAL, WARNING
+use MOM_error_handler,    only : MOM_error, MOM_mesg, FATAL, WARNING
 use MOM_error_handler,    only : callTree_showQuery
 use MOM_error_handler,    only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_hybgen_unmix,     only : hybgen_unmix, init_hybgen_unmix, end_hybgen_unmix, hybgen_unmix_CS
@@ -395,6 +395,7 @@ subroutine ALE_register_diags(Time, G, GV, US, diag, CS)
   ! Local variables
   character(len=48)  :: thickness_units
 
+  call MOM_mesg("DEBUG ALE_register_diags: entering")
   CS%diag => diag
   thickness_units = get_thickness_units(GV)
 
@@ -434,6 +435,7 @@ subroutine ALE_register_diags(Time, G, GV, US, diag, CS)
       'this measures the change before the KE-conserving correction is applied.', &
       'W m-2', conversion=US%RZ3_T3_to_W_m2*GV%H_to_RZ*US%L_to_Z**2)
 
+  call MOM_mesg("DEBUG ALE_register_diags: done")
 end subroutine ALE_register_diags
 
 !> Crudely adjust (initial) grid for integrity.

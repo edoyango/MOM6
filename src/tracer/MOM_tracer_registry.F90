@@ -315,6 +315,7 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
   type(tracer_type), pointer :: Tr=>NULL()
   integer :: i, j, k, is, ie, js, je, nz, m, m2, nTr_in
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  call MOM_mesg("DEBUG register_tracer_diagnostics: entering")
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   isd  = G%isd  ; ied  = G%ied  ; jsd  = G%jsd  ; jed  = G%jed
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
