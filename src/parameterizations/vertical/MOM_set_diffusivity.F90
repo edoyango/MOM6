@@ -475,6 +475,11 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     visc%Kv_shear(:,:,:) = 0.0 ! needed if calculate_kappa_shear is not enabled
   endif
 
+  !$omp target enter data &
+  !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp, visc, visc%Kd_shear) &
+  !$omp   map(alloc: dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, &
+  !$omp     Kd_int_bkgnd, Kv_bkgnd, Kd_lay_2d, Kd_int_2d, kb, maxTKE, TKE_to_Kd, dz)
+
   ! Smooth the properties through massless layers.
   if (use_EOS) then
     if (CS%debug) then
@@ -497,11 +502,6 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   !   Calculate the diffusivities, Kd_lay and Kd_int, for each layer and interface.  This would
   ! be an appropriate place to add a depth-dependent parameterization or another explicit
   ! parameterization of Kd.
-
-  !$omp target enter data &
-  !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp, visc, visc%Kd_shear) &
-  !$omp   map(alloc: dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, &
-  !$omp     Kd_int_bkgnd, Kv_bkgnd, Kd_lay_2d, Kd_int_2d, kb, maxTKE, TKE_to_Kd, dz)
 
   do jstart = js, je, TILE_SIZE_Y ; do istart = is, ie, TILE_SIZE_X
     jend = min(je, jstart + TILE_SIZE_Y - 1)
