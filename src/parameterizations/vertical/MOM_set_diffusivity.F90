@@ -383,7 +383,10 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   ! Set Kd_lay, Kd_int and Kv_slow to constant values, mostly to fill the halos.
   ! TODO: tile/port whole-domain output and viscosity initializations.
   if (present(Kd_lay)) Kd_lay(:,:,:) = CS%Kd
-  Kd_int(:,:,:) = CS%Kd
+  !$omp target enter data map(alloc: Kd_int)
+  do concurrent (k=1:nz, j=G%jsd:G%jed, i=G%isd:G%ied)
+    Kd_int(i,j,k) = CS%Kd
+  enddo
   if (present(Kd_extra_T)) Kd_extra_T(:,:,:) = 0.0
   if (present(Kd_extra_S)) Kd_extra_S(:,:,:) = 0.0
   if (associated(visc%Kv_slow)) visc%Kv_slow(:,:,:) = CS%Kv
@@ -504,13 +507,16 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     jend = min(je, jstart + TILE_SIZE_Y - 1)
     iend = min(ie, istart + TILE_SIZE_X - 1)
 
+    call thickness_to_dz(h, tv, dz, G, GV, US, is=istart, ie=iend, js=jstart, je=jend, do_offload=.true.)
+    !$omp target update from(dz)  if (CS%ML_radiation .or. CS%use_tidal_mixing .or. associated(dd%Kd_Work) .or. CS%use_LOTW_BBL_diffusivity)
+
     ! Set up variables related to the stratification.
-    call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, G, GV, US, CS, &
+    call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, dz, G, GV, US, CS, &
                 dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot)
 
     ! Add background mixing
     call calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, &
-                                istart, iend, jstart, jend, G, GV, US, CS%bkgnd_mixing_csp)
+                                istart, iend, jstart, jend, dz, G, GV, US, CS%bkgnd_mixing_csp)
 
     if (associated(dd%N2_3d)) then
       do concurrent (K=1:nz+1, j=jstart:jend, i=istart:iend)
@@ -618,36 +624,23 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
     ! Add the input turbulent diffusivity.
     if (CS%useKappaShear .or. CS%use_CVMix_shear) then
-      !$omp target
-      !$omp loop collapse(3)
-      do K=2,nz ; do j=jstart,jend ; do i=istart,iend
+      do concurrent (K=2:nz, j=jstart:jend, i=istart:iend)
         Kd_int_2d(i,j,K) = visc%Kd_shear(i,j,K) + 0.5 * (Kd_lay_2d(i,j,k-1) + Kd_lay_2d(i,j,k))
-      enddo ; enddo ; enddo
-      !$omp loop collapse(2)
-      do j=jstart,jend ; do i=istart,iend
+      enddo
+      do concurrent (j=jstart:jend, i=istart:iend)
         Kd_int_2d(i,j,1) = visc%Kd_shear(i,j,1) ! This isn't actually used. It could be 0.
         Kd_int_2d(i,j,nz+1) = 0.0
-      enddo ; enddo
-      !$omp end target
+      enddo
       do concurrent (k=1:nz, j=jstart:jend, i=istart:iend)
         Kd_lay_2d(i,j,k) = Kd_lay_2d(i,j,k) + 0.5 * (visc%Kd_shear(i,j,K) + visc%Kd_shear(i,j,K+1))
       enddo
     else
-      !$omp target
-      !$omp loop collapse(2)
-      do j=jstart,jend ; do i=istart,iend
+      do concurrent (j=jstart:jend, i=istart:iend)
         Kd_int_2d(i,j,1) = Kd_lay_2d(i,j,1) ; Kd_int_2d(i,j,nz+1) = 0.0
-      enddo ; enddo
-      !$omp loop collapse(3)
-      do K=2,nz ; do j=jstart,jend ; do i=istart,iend
+      enddo
+      do concurrent (K=2:nz, j=jstart:jend, i=istart:iend)
         Kd_int_2d(i,j,K) = 0.5 * (Kd_lay_2d(i,j,k-1) + Kd_lay_2d(i,j,k))
-      enddo ; enddo ; enddo
-      !$omp end target
-    endif
-
-    if (CS%ML_radiation .or. CS%use_tidal_mixing .or. associated(dd%Kd_Work)) then
-      call thickness_to_dz(h, tv, dz, G, GV, US, is=istart, ie=iend, js=jstart, je=jend, do_offload=.true.)
-      !$omp target update from(dz)
+      enddo
     endif
 
     ! Add the ML_Rad diffusivity.
@@ -734,14 +727,17 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
       enddo
     endif
 
-    !$omp target update from(dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_2d,&
-    !$omp    Kd_int_2d, kb, maxTKE, TKE_to_Kd)
+    !$omp target update from(Kd_lay_2d, Kd_int_2d)
+    !$omp target update from(rho_bot) if (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0))
+    !$omp target update from(N2_int) if(CS%limit_dissipation .or. (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0) .and. CS%use_LOTW_BBL_diffusivity))
+    !$omp target update from(N2_lay) if (CS%limit_dissipation .or. associated(dd%Kd_Work) .or. associated(dd%Kd_Work_added))
+    !$omp target update from(TKE_to_Kd, maxTKE, kb) if (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0) .and. .not. CS%use_LOTW_BBL_diffusivity)
 
     ! This adds the diffusion sustained by the energy extracted from the flow by the bottom drag.
     if (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0)) then
       if (CS%use_LOTW_BBL_diffusivity) then
         ! TODO: tile/port - exp with answer change
-        call add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, istart, iend, jstart, jend, N2_int, Rho_bot, Kd_int_2d, &
+        call add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, istart, iend, jstart, jend, dz, N2_int, Rho_bot, Kd_int_2d, &
                                       G, GV, US, CS, dd%Kd_BBL, Kd_lay_2d)
         !$omp target update to(Kd_lay_2d, Kd_int_2d)
       else
@@ -831,15 +827,17 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   enddo ; enddo ! ij-loop
 
-  !$omp target exit data &
-  !$omp   map(release: T_f, S_f, tv, tv%T, tv%S,dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, &
-  !$omp     k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, CS, CS%bkgnd_mixing_csp, Kd_lay_2d, &
-  !$omp     Kd_int_2d, kb, maxTKE, TKE_to_Kd, visc, visc%Kd_shear, dz)
-
   if (CS%user_change_diff) then
+    !$omp target update from(Kd_int)
     call user_change_diff(h, tv, G, GV, US, CS%user_change_diff_CSp, Kd_lay, Kd_int, &
                           T_f, S_f, dd%Kd_user)
   endif
+
+  !$omp target exit data &
+  !$omp   map(release: T_f, S_f, tv, tv%T, tv%S,dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, &
+  !$omp     k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, CS, CS%bkgnd_mixing_csp, Kd_lay_2d, &
+  !$omp     Kd_int_2d, kb, maxTKE, TKE_to_Kd, visc, visc%Kd_shear, dz) &
+  !$omp   map(from: Kd_int)
 
   if (CS%debug) then
     if (present(Kd_lay)) call hchksum(Kd_lay, "Kd_lay", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
@@ -1227,7 +1225,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, dt, G, GV, US
 end subroutine find_TKE_to_Kd
 
 !> Calculate Brunt-Vaisala frequency, N^2.
-subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_int, &
+subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, dz, G, GV, US, CS, dRho_int, &
                    N2_lay, N2_int, N2_bot, Rho_bot, h_bot, k_bot)
   type(ocean_grid_type),    intent(in)  :: G    !< The ocean's grid structure
   type(verticalGrid_type),  intent(in)  :: GV   !< The ocean's vertical grid structure
@@ -1258,6 +1256,8 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: h_bot !< Bottom boundary layer thickness [H ~> m or kg m-2].
   integer, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: k_bot !< Bottom boundary layer top layer index.
   integer, intent(in) :: is, ie
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                            intent(in)  :: dz   !< Height change across layers [Z ~> m]
 
   ! Local variables
   real, dimension(is:ie,js:je,SZK_(GV)+1) :: &
@@ -1267,8 +1267,6 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
   real, dimension(is:ie,js:je,SZK_(GV)+1) :: &
     dRho_dT,         & ! partial derivative of density wrt temp [R C-1 ~> kg m-3 degC-1]
     dRho_dS            ! partial derivative of density wrt saln [R S-1 ~> kg m-3 ppt-1]
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
-    dz            ! Height change across layers [Z ~> m]
   real, dimension(is:ie,js:je) :: &
     Temp_int,  &  ! temperature at each interface [C ~> degC]
     Salin_int, &  ! salinity at each interface [S ~> ppt]
@@ -1300,9 +1298,9 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
 
   !$omp target enter data &
   !$omp   map(alloc: dRho_dT, dRho_dS, pres, Temp_Int, Salin_Int, h_amp, dRho_int, N2_int, N2_lay, &
-  !$omp     dRho_int_unfilt, dz, drho_bot, dz_BBL_avg, hb, z_from_bot, do_i, N2_bot, Rho_bot, &
+  !$omp     dRho_int_unfilt, drho_bot, dz_BBL_avg, hb, z_from_bot, do_i, N2_bot, Rho_bot, &
   !$omp     h_bot, k_bot) &
-  !$omp   map(to: CS)
+  !$omp   map(to: CS, dz)
 
   ! Find the (limited) density jump across each interface.
   do concurrent (j=js:je, i=is:ie)
@@ -1341,9 +1339,6 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
       dRho_int(i,j,K) = GV%Rlay(k) - GV%Rlay(k-1)
     enddo
   endif
-
-  ! Find the vertical distances across layers.
-  call thickness_to_dz(h, tv, dz, G, GV, US, is=is, ie=ie, js=js, je=je, do_offload=.true.)
 
   ! Set the buoyancy frequencies.
   do concurrent (k=1:nz, j=js:je, i=is:ie)
@@ -1457,9 +1452,9 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, G, GV, US, CS, dRho_
   call find_rho_bottom(G, GV, US, tv, h, dz, pres, dz_BBL_avg, is,ie,js, je, Rho_bot, h_bot, k_bot)
 
   !$omp target exit data &
-  !$omp   map(from: dRho_int, N2_int, N2_lay, dz, dz_BBL_avg, N2_bot, Rho_bot, h_bot, k_bot) &
+  !$omp   map(from: dRho_int, N2_int, N2_lay, dz_BBL_avg, N2_bot, Rho_bot, h_bot, k_bot) &
   !$omp   map(release: dRho_dT, dRho_dS, Temp_Int, Salin_Int, h_amp, dRho_int_unfilt, drho_bot, &
-  !$omp     hb, z_from_bot, do_i, CS, pres)
+  !$omp     hb, z_from_bot, do_i, CS, pres, dz)
 
 end subroutine find_N2
 
@@ -1817,7 +1812,7 @@ end subroutine add_drag_diffusivity
 !> Calculates a BBL diffusivity use a Prandtl number 1 diffusivity with a law of the
 !! wall turbulent viscosity, up to a BBL height where the energy used for mixing has
 !! consumed the mechanical TKE input.
-subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, N2_int, Rho_bot, Kd_int, &
+subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, dz, N2_int, Rho_bot, Kd_int, &
                                     G, GV, US, CS, Kd_BBL, Kd_lay)
   type(ocean_grid_type),    intent(in)    :: G  !< Grid structure
   type(verticalGrid_type),  intent(in)    :: GV !< Vertical grid structure
@@ -1837,6 +1832,8 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, N
   integer,                  intent(in)    :: ie !< End i-index of columns to work on
   integer,                  intent(in)    :: js !< Start j-index of rows to work on
   integer,                  intent(in)    :: je !< End j-index of rows to work on
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                            intent(in)    :: dz !< Height change across layers [Z ~> m]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                             intent(in)    :: N2_int !< Square of Brunt-Vaisala at interfaces [T-2 ~> s-2]
   real, dimension(SZI_(G),SZJ_(G)), &
@@ -1850,7 +1847,6 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, N
                   optional, intent(inout) :: Kd_lay !< Layer net diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
 
   ! Local variables
-  real :: dz(SZI_(G),SZJ_(G),SZK_(GV)) ! Height change across layers [Z ~> m]
   real :: dz_above(SZK_(GV)+1) ! Distance from each interface to the surface [Z ~> m]
   real :: TKE_column       ! net TKE input into the column [H Z2 T-3 ~> m3 s-3 or W m-2]
   real :: BBL_meanKE_dis   ! Sum of tidal and mean kinetic energy dissipation in the bottom boundary layer, which
@@ -1888,9 +1884,6 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, N
   Rayleigh_drag = .false.
   if (allocated(visc%Ray_u) .and. allocated(visc%Ray_v)) Rayleigh_drag = .true.
   cdrag_sqrt = sqrt(CS%cdrag)
-
-  ! Find the vertical distances across layers.
-  call thickness_to_dz(h, tv, dz, G, GV, US, is=is, ie=ie, js=js, je=je)
 
   ! TODO: tile/port single-row LOTW BBL routine and column temporaries.
   do j=js,je ; do i=is,ie ! Developed in single-column mode
