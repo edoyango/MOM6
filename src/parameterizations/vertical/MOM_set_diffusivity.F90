@@ -740,11 +740,9 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     ! This adds the diffusion sustained by the energy extracted from the flow by the bottom drag.
     if (CS%bottomdraglaw .and. (CS%BBL_effic > 0.0)) then
       if (CS%use_LOTW_BBL_diffusivity) then
-        ! TODO: tile
-        do j=jstart,jend
-          call add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int(:,j,:), Rho_bot(:,j), Kd_int_2d(:,j,:), &
-                                        G, GV, US, CS, dd%Kd_BBL, Kd_lay_2d(:,j,:))
-        enddo
+        ! TODO: tile/port - exp with answer change
+        call add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, istart, iend, jstart, jend, N2_int, Rho_bot, Kd_int_2d, &
+                                      G, GV, US, CS, dd%Kd_BBL, Kd_lay_2d)
         !$omp target update to(Kd_lay_2d, Kd_int_2d)
       else
         call add_drag_diffusivity(h, u, v,  tv, fluxes, visc, istart, iend, jstart, jend, TKE_to_Kd, &
@@ -1819,7 +1817,7 @@ end subroutine add_drag_diffusivity
 !> Calculates a BBL diffusivity use a Prandtl number 1 diffusivity with a law of the
 !! wall turbulent viscosity, up to a BBL height where the energy used for mixing has
 !! consumed the mechanical TKE input.
-subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bot, Kd_int, &
+subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, N2_int, Rho_bot, Kd_int, &
                                     G, GV, US, CS, Kd_BBL, Kd_lay)
   type(ocean_grid_type),    intent(in)    :: G  !< Grid structure
   type(verticalGrid_type),  intent(in)    :: GV !< Vertical grid structure
@@ -1835,20 +1833,24 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
   type(forcing),            intent(in)    :: fluxes !< Surface fluxes structure
   type(vertvisc_type),      intent(in)    :: visc !< Structure containing vertical viscosities, bottom
                                                   !! boundary layer properties and related fields.
-  integer,                  intent(in)    :: j  !< j-index of row to work on
-  real, dimension(SZI_(G),SZK_(GV)+1), &
+  integer,                  intent(in)    :: is !< Start i-index of columns to work on
+  integer,                  intent(in)    :: ie !< End i-index of columns to work on
+  integer,                  intent(in)    :: js !< Start j-index of rows to work on
+  integer,                  intent(in)    :: je !< End j-index of rows to work on
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                             intent(in)    :: N2_int !< Square of Brunt-Vaisala at interfaces [T-2 ~> s-2]
-  real, dimension(SZI_(G)), intent(in)    :: rho_bot !< In situ density averaged over a near-bottom
+  real, dimension(SZI_(G),SZJ_(G)), &
+                            intent(in)    :: rho_bot !< In situ density averaged over a near-bottom
                                                      !! region [R ~> kg m-3]
-  real, dimension(SZI_(G),SZK_(GV)+1), &
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                             intent(inout) :: Kd_int !< Interface net diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
   type(set_diffusivity_CS), pointer       :: CS !< Diffusivity control structure
   real, dimension(:,:,:),   pointer       :: Kd_BBL !< Interface BBL diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
-  real, dimension(SZI_(G),SZK_(GV)), &
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                   optional, intent(inout) :: Kd_lay !< Layer net diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
 
   ! Local variables
-  real :: dz(SZI_(G),SZK_(GV)) ! Height change across layers [Z ~> m]
+  real :: dz(SZI_(G),SZJ_(G),SZK_(GV)) ! Height change across layers [Z ~> m]
   real :: dz_above(SZK_(GV)+1) ! Distance from each interface to the surface [Z ~> m]
   real :: TKE_column       ! net TKE input into the column [H Z2 T-3 ~> m3 s-3 or W m-2]
   real :: BBL_meanKE_dis   ! Sum of tidal and mean kinetic energy dissipation in the bottom boundary layer, which
@@ -1873,7 +1875,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
   real :: N2_min           ! Minimum value of N2 to use in calculation of TKE_Kd_wall [T-2 ~> s-2]
   logical :: Rayleigh_drag ! Set to true if there are Rayleigh drag velocities defined in visc, on
                            ! the assumption that this extracted energy also drives diapycnal mixing.
-  integer :: i, k
+  integer :: i, j, k
   logical :: do_diag_Kd_BBL
 
   if (.not.(CS%bottomdraglaw .and. (CS%BBL_effic > 0.0))) return
@@ -1887,11 +1889,11 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
   if (allocated(visc%Ray_u) .and. allocated(visc%Ray_v)) Rayleigh_drag = .true.
   cdrag_sqrt = sqrt(CS%cdrag)
 
-  ! TODO: tile/port single-row LOTW BBL routine and column temporaries.
   ! Find the vertical distances across layers.
-  call thickness_to_dz(h, tv, dz, j, G, GV)
+  call thickness_to_dz(h, tv, dz, G, GV, US, is=is, ie=ie, js=js, je=je)
 
-  do i=G%isc,G%iec ! Developed in single-column mode
+  ! TODO: tile/port single-row LOTW BBL routine and column temporaries.
+  do j=js,je ; do i=is,ie ! Developed in single-column mode
 
     ! Column-wise parameters.
     absf = 0.25 * ((abs(G%CoriolisBu(I-1,J-1)) + abs(G%CoriolisBu(I,J))) + &
@@ -1905,7 +1907,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
     ! and add_LOTW_BBL_diffusivity() only calls one of the two routines.
     if (associated(fluxes%ustar_tidal)) then
       if (allocated(tv%SpV_avg)) then
-        ustar = ustar + GV%RZ_to_H*rho_bot(i) * fluxes%ustar_tidal(i,j)
+        ustar = ustar + GV%RZ_to_H*rho_bot(i,j) * fluxes%ustar_tidal(i,j)
       else
         ustar = ustar + GV%Z_to_H * fluxes%ustar_tidal(i,j)
       endif
@@ -1929,11 +1931,11 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
     if (CS%LOTW_BBL_answer_date > 20240630) then
       dz_above(1) = GV%dz_subroundoff  ! This could perhaps be 0 instead.
       do K=2,GV%ke+1
-        dz_above(K) = dz_above(K-1) + dz(i,k-1)
+        dz_above(K) = dz_above(K-1) + dz(i,j,k-1)
       enddo
       total_depth = dz_above(GV%ke+1)
     else
-      total_depth = ( sum(dz(i,:)) + GV%dz_subroundoff ) ! Total column thickness [Z ~> m].
+      total_depth = ( sum(dz(i,j,:)) + GV%dz_subroundoff ) ! Total column thickness [Z ~> m].
     endif
     ustar_D = ustar * total_depth
     h_bot = 0.
@@ -1943,7 +1945,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
     ! Work upwards from the bottom, accumulating work used until it exceeds the available TKE input
     ! at the bottom.
     do K=GV%ke,2,-1
-      dz_int = 0.5 * (dz(i,k-1) + dz(i,k))
+      dz_int = 0.5 * (dz(i,j,k-1) + dz(i,j,k))
 
       ! Add in additional energy input from bottom-drag against slopes (sides)
       if (Rayleigh_drag) TKE_remaining = TKE_remaining + &
@@ -1957,7 +1959,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
       ! This is energy loss in addition to work done as mixing, apparently to Joule heating.
       TKE_remaining = exp(-Idecay*h(i,j,k)) * TKE_remaining
 
-      z_bot = z_bot + dz(i,k)  ! Distance between upper interface of layer and the bottom [Z ~> m].
+      z_bot = z_bot + dz(i,j,k)  ! Distance between upper interface of layer and the bottom [Z ~> m].
       h_bot = h_bot + h(i,j,k) ! Thickness between upper interface of layer and the bottom [H ~> m or kg m-2].
       if (CS%LOTW_BBL_answer_date > 20240630) then
         D_minus_z = dz_above(K)
@@ -1976,7 +1978,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
 
       ! TKE associated with Kd_wall [H Z2 T-3 ~> m3 s-3 or W m-2].
       ! This calculation is for the volume spanning the interface.
-      TKE_Kd_wall = Kd_wall * dz_int * max(N2_int(i,K), N2_min)
+      TKE_Kd_wall = Kd_wall * dz_int * max(N2_int(i,j,K), N2_min)
 
       ! Now bound Kd such that the associated TKE is no greater than available TKE for mixing.
       if (TKE_Kd_wall > 0.) then
@@ -1996,12 +1998,12 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
       TKE_remaining = TKE_remaining - TKE_consumed ! Note this will be non-negative
 
       ! Add this BBL diffusivity to the model net diffusivity.
-      Kd_int(i,K) = Kd_int(i,K) + Kd_wall
-      if (present(Kd_lay)) Kd_lay(i,k) = Kd_lay(i,k) + 0.5 * (Kd_wall + Kd_lower)
+      Kd_int(i,j,K) = Kd_int(i,j,K) + Kd_wall
+      if (present(Kd_lay)) Kd_lay(i,j,k) = Kd_lay(i,j,k) + 0.5 * (Kd_wall + Kd_lower)
       Kd_lower = Kd_wall ! Store for next layer up.
       if (do_diag_Kd_BBL) Kd_BBL(i,j,K) = Kd_wall
     enddo ! k
-  enddo ! i
+  enddo ; enddo ! ij
 
 end subroutine add_LOTW_BBL_diffusivity
 
