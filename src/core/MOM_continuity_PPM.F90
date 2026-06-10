@@ -725,37 +725,24 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
       do_I(ii,jj) = .true.
     enddo
     ! Set uh and duhdu.
-    !$omp target teams num_teams(nteams)
-    do k=1,nz
-      if (use_visc_rem) then
-        !$omp loop collapse(2) private(ii,jj)
-        do j=j_start,j_end ; do I=i_start,i_end
-          ii=I-i_start+1 ; jj=j-j_start+1
-          visc_rem(ii,jj,k) = visc_rem_u(I,j,k)
-        enddo ; enddo
-      endif
-      !$omp loop collapse(2) private(ii,jj)
-      do j=j_start,j_end ; do i=i_start,i_end
-        ii=i-i_start+1 ; jj=j-j_start+1
-        call flux_elem(u(i,j,k),h_in(i,j,k),h_in(i+1,j,k),h_W(i,j,k),h_W(i+1,j,k),h_E(i,j,k),&
-                       h_E(i+1,j,k),uh_t(ii,jj,k),duhdu(ii,jj,k),visc_rem(ii,jj,k),G%dy_Cu(i,j),&
-                       G%IareaT(i,j),G%IareaT(i+1,j),G%IdxT(i,j),G%IdxT(i+1,j),dt,CS%vol_CFL,&
-                       por_face_areaU(I,j,k))
-        if (local_open_BC) &
-          call flux_elem_OBC(u(i,j,k),h_in(i,j,k),h_in(i+1,j,k),uh_t(ii,jj,k),duhdu(ii,jj,k),&
-                             visc_rem(ii,jj,k),por_face_areaU(i,j,k),G%dy_Cu(i,j),OBC,&
-                             OBC%segnum_u(i,j))
-      enddo ; enddo
+    do concurrent (k=1:nz, j=j_start:j_end, I=i_start:i_end) local(ii,jj,l_seg)
+      ii=I-i_start+1 ; jj=j-j_start+1
+      if (use_visc_rem) visc_rem(ii,jj,k) = visc_rem_u(I,j,k)
+      call flux_elem(u(i,j,k),h_in(i,j,k),h_in(i+1,j,k),h_W(i,j,k),h_W(i+1,j,k),h_E(i,j,k),&
+                      h_E(i+1,j,k),uh_t(ii,jj,k),duhdu(ii,jj,k),visc_rem(ii,jj,k),G%dy_Cu(i,j),&
+                      G%IareaT(i,j),G%IareaT(i+1,j),G%IdxT(i,j),G%IdxT(i+1,j),dt,CS%vol_CFL,&
+                      por_face_areaU(I,j,k))
+      if (local_open_BC) &
+        call flux_elem_OBC(u(i,j,k),h_in(i,j,k),h_in(i+1,j,k),uh_t(ii,jj,k),duhdu(ii,jj,k),&
+                            visc_rem(ii,jj,k),por_face_areaU(i,j,k),G%dy_Cu(i,j),OBC,&
+                            OBC%segnum_u(i,j))
       if (local_specified_BC) then
-        !$omp loop collapse(2) private(l_seg)
-        do j=j_start,j_end ; do i=i_start,i_end ; if (OBC%segnum_u(I,j) /= 0) then
+        if (OBC%segnum_u(I,j) /= 0) then
           l_seg = abs(OBC%segnum_u(I,j))
-          if (OBC%segment(l_seg)%specified) uh_t(I-i_start+1,j-j_start+1,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
-        endif ; enddo ; enddo
+          if (OBC%segment(l_seg)%specified) uh_t(ii,jj,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
+        endif
       endif
     enddo
-    !$omp end target teams
-
     if (present(uhbt) .or. set_BT_cont) then
       if (use_visc_rem .and. CS%use_visc_rem_max) then
         !$omp target
@@ -1374,23 +1361,21 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   real :: &
     u_new, &   ! The velocity with the correction added [L T-1 ~> m s-1].
     duhdu      ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
-  real, dimension(niblock,njblock) :: &
+  real :: &
     uh_err, &  ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
     uh_err_best, & ! The smallest value of uh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
     duhdu_tot,&! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
     du_min, &  ! Lower limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
     du_max     ! Upper limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  real :: du_ij
   real :: du_prev ! The previous value of du [L T-1 ~> m s-1].
   real :: ddu     ! The change in du from the previous iteration [L T-1 ~> m s-1].
   real :: tol_eta ! The tolerance for the current iteration [H ~> m or kg m-2].
   real :: tol_vel ! The tolerance for velocity in the current iteration [L T-1 ~> m s-1].
   integer :: i, j, k, nz, itt, ii, jj
-  logical :: domore, do_I(niblock,njblock)
+  logical :: domore, do_I
   logical :: local_open_BC ! True if there are open OBC points on this PE [nondim].
   integer, parameter :: max_itts = 20
-
-  !$omp target enter data &
-  !$omp   map(alloc: uh_err,uh_err_best,duhdu_tot,du_min,du_max,do_I)
 
   nz = GV%ke
   local_open_BC = .false.
@@ -1398,16 +1383,12 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
 
   tol_vel = CS%tol_vel
 
-  !$omp target
-
-  !$omp loop collapse(2) private(ii,jj)
-  do j=j_start,j_end ; do I=i_start,i_end
+  do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,itt,tol_eta,du_ij,do_I,du_max,du_min,uh_err,duhdu_tot,uh_err_best,ddu,du_prev,u_new)
     ii=I-i_start+1 ; jj=j-j_start+1
-    du(ii,jj) = 0.0 ; do_I(ii,jj) = do_I_in(ii,jj)
-    du_max(ii,jj) = du_max_CFL(ii,jj) ; du_min(ii,jj) = du_min_CFL(ii,jj)
-    uh_err(ii,jj) = uh_tot_0(ii,jj) - uhbt(ii,jj) ; duhdu_tot(ii,jj) = duhdu_tot_0(ii,jj)
-    uh_err_best(ii,jj) = abs(uh_err(ii,jj))
-  enddo ; enddo
+    du_ij = 0.0 ; do_I = do_I_in(ii,jj)
+    du_max = du_max_CFL(ii,jj) ; du_min = du_min_CFL(ii,jj)
+    uh_err = uh_tot_0(ii,jj) - uhbt(ii,jj) ; duhdu_tot = duhdu_tot_0(ii,jj)
+    uh_err_best = abs(uh_err)
 
   do itt=1,max_itts
     select case (itt)
@@ -1417,64 +1398,49 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
       case default ; tol_eta = CS%tol_eta
     end select
 
-    !$omp loop collapse(2) private(ii,jj)
-    do j=j_start,j_end ; do I=i_start,i_end
-      ii=I-i_start+1 ; jj=j-j_start+1
-      if (uh_err(ii,jj) > 0.0) then ; du_max(ii,jj) = du(ii,jj)
-      elseif (uh_err(ii,jj) < 0.0) then ; du_min(ii,jj) = du(ii,jj)
-      else ; do_I(ii,jj) = .false. ; endif
-    enddo ; enddo
+      if (uh_err > 0.0) then ; du_max = du_ij
+      elseif (uh_err < 0.0) then ; du_min = du_ij
+      else ; do_I = .false. ; endif
 #ifndef __NVCOMPILER_OPENMP_GPU
     domore = .false.
 #endif
-    !$omp loop collapse(2) private(ii,jj,ddu,du_prev)
-    do j=j_start,j_end ; do I=i_start,i_end
-      ii=I-i_start+1 ; jj=j-j_start+1
-      if (do_I(ii,jj)) then
-        if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err(ii,jj)) > tol_eta) .or. &
-            (CS%better_iter .and. ((abs(uh_err(ii,jj)) > tol_vel * duhdu_tot(ii,jj)) .or. &
-                                   (abs(uh_err(ii,jj)) > uh_err_best(ii,jj))) )) then
+      if (do_I) then
+        if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err) > tol_eta) .or. &
+            (CS%better_iter .and. ((abs(uh_err) > tol_vel * duhdu_tot) .or. &
+                                   (abs(uh_err) > uh_err_best)) )) then
         !   Use Newton's method, provided it stays bounded.  Otherwise bisect
         ! the value with the appropriate bound.
-          ddu = -uh_err(ii,jj) / duhdu_tot(ii,jj)
-          du_prev = du(ii,jj)
-          du(ii,jj) = du(ii,jj) + ddu
-          if (abs(ddu) < 1.0e-15*abs(du(ii,jj))) then
-            do_I(ii,jj) = .false. ! ddu is small enough to quit.
+          ddu = -uh_err / duhdu_tot
+          du_prev = du_ij
+          du_ij = du_ij + ddu
+          if (abs(ddu) < 1.0e-15*abs(du_ij)) then
+            do_I = .false. ! ddu is small enough to quit.
           elseif (ddu > 0.0) then
-            if (du(ii,jj) >= du_max(ii,jj)) then
-              du(ii,jj) = 0.5*(du_prev + du_max(ii,jj))
-              if (du_max(ii,jj) - du_prev < 1.0e-15*abs(du(ii,jj))) do_I(ii,jj) = .false.
+            if (du_ij >= du_max) then
+              du_ij = 0.5*(du_prev + du_max)
+              if (du_max - du_prev < 1.0e-15*abs(du_ij)) do_I = .false.
             endif
           else ! ddu < 0.0
-            if (du(ii,jj) <= du_min(ii,jj)) then
-              du(ii,jj) = 0.5*(du_prev + du_min(ii,jj))
-              if (du_prev - du_min(ii,jj) < 1.0e-15*abs(du(ii,jj))) do_I(ii,jj) = .false.
+            if (du_ij <= du_min) then
+              du_ij = 0.5*(du_prev + du_min)
+              if (du_prev - du_min < 1.0e-15*abs(du_ij)) do_I = .false.
             endif
           endif
 #ifndef __NVCOMPILER_OPENMP_GPU
-          if (do_I(ii,jj)) domore = .true.
+          if (do_I) domore = .true.
 #endif
         else
-          do_I(ii,jj) = .false.
+          do_I = .false.
         endif
       endif
-    enddo ; enddo
 #ifndef __NVCOMPILER_OPENMP_GPU
     if (.not.domore) exit
 #endif
 
-    !$omp loop collapse(2) private(ii,jj)
-    do j=j_start,j_end ; do I=i_start,i_end
-      ii=I-i_start+1 ; jj=j-j_start+1
-      uh_err(ii,jj) = -uhbt(ii,jj) ; duhdu_tot(ii,jj) = 0.0
-    enddo ; enddo
+      uh_err = -uhbt(ii,jj) ; duhdu_tot = 0.0
     do k=1,nz
-      !$omp loop collapse(2) private(ii,jj,duhdu,u_new)
-      do j=j_start,j_end ; do i=i_start,i_end
-        ii=i-i_start+1 ; jj=j-j_start+1
-        if (do_I(ii,jj)) then
-          u_new = u(i,j,k) + du(ii,jj) * visc_rem(ii,jj,k)
+        if (do_I) then
+          u_new = u(i,j,k) + du_ij * visc_rem(ii,jj,k)
           call flux_elem(u_new,h_in(i,j,k),h_in(i+1,j,k),h_W(i,j,k),h_W(i+1,j,k),h_E(i,j,k),&
                          h_E(i+1,j,k),uh_3d(ii,jj,k),duhdu,visc_rem(ii,jj,k),G%dy_Cu(i,j),&
                          G%IareaT(i,j),G%IareaT(i+1,j),G%IdxT(i,j),G%IdxT(i+1,j),dt,CS%vol_CFL,&
@@ -1483,24 +1449,17 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
             call flux_elem_OBC(u_new,h_in(i,j,k),h_in(i+1,j,k),uh_3d(ii,jj,k),duhdu,&
                                visc_rem(ii,jj,k),por_face_areaU(i,j,k),G%dy_Cu(i,j),OBC,&
                                OBC%segnum_u(i,j))
-          uh_err(ii,jj) = uh_err(ii,jj) + uh_3d(ii,jj,k)
-          duhdu_tot(ii,jj) = duhdu_tot(ii,jj) + duhdu
+          uh_err = uh_err + uh_3d(ii,jj,k)
+          duhdu_tot = duhdu_tot + duhdu
         endif
-      enddo ; enddo
     enddo
-    !$omp loop collapse(2) private(ii,jj)
-    do j=j_start,j_end ; do I=i_start,i_end
-      ii=I-i_start+1 ; jj=j-j_start+1
-      uh_err_best(ii,jj) = min(uh_err_best(ii,jj), abs(uh_err(ii,jj)))
-    enddo ; enddo
+      uh_err_best = min(uh_err_best, abs(uh_err))
   enddo ! itt-loop
+  du(ii,jj) = du_ij
+enddo
   ! If there are any faces which have not converged to within the tolerance,
   ! so-be-it, or else use a final upwind correction?
   ! This never seems to happen with 20 iterations as max_itt.
-  !$omp end target
-
-  !$omp target exit data &
-  !$omp   map(release: uh_err,uh_err_best,duhdu_tot,du_min,du_max,do_I)
 
 end subroutine zonal_flux_adjust
 
@@ -2381,12 +2340,13 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
   ! Local variables
   real :: &
     dvhdv      ! Partial derivative of vh with v [H L ~> m2 or kg m-1].
-  real, dimension(niblock,njblock) :: &
+  real :: &
     vh_err, &  ! Difference between vhbt and the summed vh [H L2 T-1 ~> m3 s-1 or kg s-1].
     vh_err_best, & ! The smallest value of vh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
     dvhdv_tot,&! Summed partial derivative of vh with u [H L ~> m2 or kg m-1].
     dv_min, &  ! Lower limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
     dv_max     ! Upper limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  real :: dv_ij
   real :: &
     v_new   ! The velocity with the correction added [L T-1 ~> m s-1].
   real :: dv_prev ! The previous value of dv [L T-1 ~> m s-1].
@@ -2394,11 +2354,8 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
   real :: tol_eta ! The tolerance for the current iteration [H ~> m or kg m-2].
   real :: tol_vel ! The tolerance for velocity in the current iteration [L T-1 ~> m s-1].
   integer :: i, j, k, nz, itt, ii, jj
-  logical :: domore, do_I(niblock,njblock), local_open_BC
+  logical :: domore, do_I, local_open_BC
   integer, parameter :: max_itts = 20
-
-  !$omp target enter data &
-  !$omp   map(alloc:vh_err,vh_err_best,dvhdv_tot,dv_min,dv_max,do_I)
 
   local_open_BC = .false.
   if (present(OBC)) then ; if (associated(OBC)) then
@@ -2408,16 +2365,12 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
   nz = GV%ke
   tol_vel = CS%tol_vel
 
-  !$omp target
-
-  !$omp loop collapse(2) private(ii,jj)
-  do J=J_start,J_end ; do i=i_start,i_end
-    ii=i-i_start+1 ; jj=j-j_start+1
-    dv(ii,JJ) = 0.0 ; do_I(ii,JJ) = do_I_in(ii,JJ)
-    dv_max(ii,JJ) = dv_max_CFL(ii,JJ) ; dv_min(ii,JJ) = dv_min_CFL(ii,JJ)
-    vh_err(ii,JJ) = vh_tot_0(ii,JJ) - vhbt(ii,JJ) ; dvhdv_tot(ii,JJ) = dvhdv_tot_0(ii,JJ)
-    vh_err_best(ii,JJ) = abs(vh_err(ii,JJ))
-  enddo ; enddo
+  do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,itt,tol_eta,dv_ij,do_I,dv_max,dv_min,vh_err,dvhdv_tot,vh_err_best,ddv,dv_prev,v_new)
+    ii=i-i_start+1 ; jj=J-j_start+1
+    dv_ij = 0.0 ; do_I = do_I_in(ii,jj)
+    dv_max = dv_max_CFL(ii,jj) ; dv_min = dv_min_CFL(ii,jj)
+    vh_err = vh_tot_0(ii,jj) - vhbt(ii,jj) ; dvhdv_tot = dvhdv_tot_0(ii,jj)
+    vh_err_best = abs(vh_err)
 
   do itt=1,max_itts
     select case (itt)
@@ -2427,87 +2380,68 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
       case default ; tol_eta = CS%tol_eta
     end select
 
-    !$omp loop collapse(2) private(ii,jj)
-    do j=j_start,j_end ; do i=i_start,i_end
-      ii=i-i_start+1 ; jj=j-j_start+1
-      if (vh_err(ii,JJ) > 0.0) then ; dv_max(ii,JJ) = dv(ii,JJ)
-      elseif (vh_err(ii,JJ) < 0.0) then ; dv_min(ii,JJ) = dv(ii,JJ)
-      else ; do_I(ii,JJ) = .false. ; endif
-    enddo ; enddo
+      if (vh_err > 0.0) then ; dv_max = dv_ij
+      elseif (vh_err < 0.0) then ; dv_min = dv_ij
+      else ; do_I = .false. ; endif
 #ifndef __NVCOMPILER_OPENMP_GPU
     domore = .false.
 #endif
-    !$omp loop collapse(2) private(ii,jj,ddv,dv_prev)
-    do J=J_start,J_end ; do i=i_start,i_end
-      ii=i-i_start+1 ; jj=j-j_start+1 ; if (do_I(ii,JJ)) then
-      if ((dt * min(G%IareaT(i,j),G%IareaT(i,j+1))*abs(vh_err(ii,JJ)) > tol_eta) .or. &
-          (CS%better_iter .and. ((abs(vh_err(ii,JJ)) > tol_vel * dvhdv_tot(ii,JJ)) .or. &
-                                 (abs(vh_err(ii,JJ)) > vh_err_best(ii,JJ))) )) then
+      if (do_I) then
+        if ((dt * min(G%IareaT(i,j),G%IareaT(i,j+1))*abs(vh_err) > tol_eta) .or. &
+            (CS%better_iter .and. ((abs(vh_err) > tol_vel * dvhdv_tot) .or. &
+                                   (abs(vh_err) > vh_err_best)) )) then
         !   Use Newton's method, provided it stays bounded.  Otherwise bisect
         ! the value with the appropriate bound.
-        ddv = -vh_err(ii,JJ) / dvhdv_tot(ii,JJ)
-        dv_prev = dv(ii,JJ)
-        dv(ii,JJ) = dv(ii,JJ) + ddv
-        if (abs(ddv) < 1.0e-15*abs(dv(ii,JJ))) then
-          do_I(ii,JJ) = .false. ! ddv is small enough to quit.
-        elseif (ddv > 0.0) then
-          if (dv(ii,JJ) >= dv_max(ii,JJ)) then
-            dv(ii,JJ) = 0.5*(dv_prev + dv_max(ii,JJ))
-            if (dv_max(ii,JJ) - dv_prev < 1.0e-15*abs(dv(ii,JJ))) do_I(ii,JJ) = .false.
+          ddv = -vh_err / dvhdv_tot
+          dv_prev = dv_ij
+          dv_ij = dv_ij + ddv
+          if (abs(ddv) < 1.0e-15*abs(dv_ij)) then
+            do_I = .false. ! ddv is small enough to quit.
+          elseif (ddv > 0.0) then
+            if (dv_ij >= dv_max) then
+              dv_ij = 0.5*(dv_prev + dv_max)
+              if (dv_max - dv_prev < 1.0e-15*abs(dv_ij)) do_I = .false.
+            endif
+          else ! ddv < 0.0
+            if (dv_ij <= dv_min) then
+              dv_ij = 0.5*(dv_prev + dv_min)
+              if (dv_prev - dv_min < 1.0e-15*abs(dv_ij)) do_I = .false.
+            endif
           endif
-        else ! dvv(i,J) < 0.0
-          if (dv(ii,JJ) <= dv_min(ii,JJ)) then
-            dv(ii,JJ) = 0.5*(dv_prev + dv_min(ii,JJ))
-            if (dv_prev - dv_min(ii,JJ) < 1.0e-15*abs(dv(ii,JJ))) do_I(ii,JJ) = .false.
-          endif
-        endif
 #ifndef __NVCOMPILER_OPENMP_GPU
-        if (do_I(ii,JJ)) domore = .true.
+          if (do_I) domore = .true.
 #endif
-      else
-        do_I(ii,JJ) = .false.
+        else
+          do_I = .false.
+        endif
       endif
-    endif ; enddo ; enddo
 #ifndef __NVCOMPILER_OPENMP_GPU
     if (.not.domore) exit
 #endif
-    !$omp loop collapse(2) private(ii,jj)
-    do J=J_start,J_end ; do i=i_start,i_end
-      ii=i-i_start+1 ; jj=J-j_start+1
-      vh_err(ii,JJ) = -vhbt(ii,JJ) ; dvhdv_tot(ii,JJ) = 0.0
-    enddo ; enddo
+
+      vh_err = -vhbt(ii,jj) ; dvhdv_tot = 0.0
     do k=1,nz
-      !$omp loop collapse(2) private(ii,jj,dvhdv,v_new)
-      do J=J_start,J_end ; do i=i_start,i_end
-        ii=i-i_start+1 ; jj=j-j_start+1
-        if (do_I(ii,JJ)) then
-          v_new = v(i,J,k) + dv(ii,JJ) * visc_rem(ii,JJ,k)
-          call flux_elem(v_new,h_in(i,J,k),h_in(i,J+1,k),h_S(i,J,k),h_S(i,J+1,k),h_N(i,J,k),&
-                         h_N(i,J+1,k),vh_3d(ii,JJ,k),dvhdv,visc_rem(ii,JJ,k),G%dx_Cv(i,J),&
-                         G%IareaT(i,J),G%IareaT(i,J+1),G%IdyT(i,J),G%IdyT(i,J+1),dt,CS%vol_CFL,&
-                         por_face_areaV(i,J,k))
+        if (do_I) then
+          v_new = v(i,j,k) + dv_ij * visc_rem(ii,jj,k)
+          call flux_elem(v_new,h_in(i,j,k),h_in(i,j+1,k),h_S(i,j,k),h_S(i,j+1,k),h_N(i,j,k),&
+                         h_N(i,j+1,k),vh_3d(ii,jj,k),dvhdv,visc_rem(ii,jj,k),G%dx_Cv(i,j),&
+                         G%IareaT(i,j),G%IareaT(i,j+1),G%IdyT(i,j),G%IdyT(i,j+1),dt,CS%vol_CFL,&
+                         por_face_areaV(i,j,k))
           if (local_open_BC) &
-            call flux_elem_OBC(v_new,h_in(i,J,k),h_in(i,J+1,k),vh_3d(ii,JJ,k),dvhdv,&
-                               visc_rem(ii,JJ,k),por_face_areaV(i,J,k),G%dx_Cv(i,J),OBC,&
-                               OBC%segnum_v(i,J))
-          vh_err(ii,JJ) = vh_err(ii,JJ) + vh_3d(ii,JJ,k)
-          dvhdv_tot(ii,JJ) = dvhdv_tot(ii,JJ) + dvhdv
+            call flux_elem_OBC(v_new,h_in(i,j,k),h_in(i,j+1,k),vh_3d(ii,jj,k),dvhdv,&
+                               visc_rem(ii,jj,k),por_face_areaV(i,j,k),G%dx_Cv(i,j),OBC,&
+                               OBC%segnum_v(i,j))
+          vh_err = vh_err + vh_3d(ii,jj,k)
+          dvhdv_tot = dvhdv_tot + dvhdv
         endif
-      enddo ; enddo
     enddo
-    !$omp loop collapse(2) private(ii,jj)
-    do J=J_start,J_end ; do i=i_start,i_end
-      ii=i-i_start+1 ; jj=J-j_start+1
-      vh_err_best(ii,JJ) = min(vh_err_best(ii,JJ), abs(vh_err(ii,JJ)))
-    enddo ; enddo
+      vh_err_best = min(vh_err_best, abs(vh_err))
   enddo ! itt-loop
+  dv(ii,jj) = dv_ij
+enddo
   ! If there are any faces which have not converged to within the tolerance,
   ! so-be-it, or else use a final upwind correction?
   ! This never seems to happen with 20 iterations as max_itt.
-  !$omp end target
-
-  !$omp target exit data &
-  !$omp   map(release:vh_err,vh_err_best,dvhdv_tot,dv_min,dv_max,do_I)
 
 end subroutine meridional_flux_adjust
 
