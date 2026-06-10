@@ -745,20 +745,13 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
     enddo
     if (present(uhbt) .or. set_BT_cont) then
       if (use_visc_rem .and. CS%use_visc_rem_max) then
-        !$omp target
-        !$omp loop collapse(2) private(ii,jj)
-        do j=j_start,j_end ; do i=i_start,i_end
-          ii=i-i_start+1 ; jj=j-j_start+1
+        do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k)
+          ii=I-i_start+1 ; jj=j-j_start+1
           visc_rem_max(ii,jj) = 0.0
-        enddo ; enddo
-        do k=1,nz
-          !$omp loop collapse(2) private(ii,jj)
-          do j=j_start,j_end ; do i=i_start,i_end
-            ii=i-i_start+1 ; jj=j-j_start+1
+          do k=1,nz
             visc_rem_max(ii,jj) = max(visc_rem_max(ii,jj), visc_rem(ii,jj,k))
-          enddo ; enddo
+          enddo
         enddo
-        !$omp end target
       else
         do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
           visc_rem_max(ii,jj) = 1.0
@@ -766,9 +759,7 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
       endif
       !   Set limits on du that will keep the CFL number between -1 and 1.
       ! This should be adequate to keep the root bracketed in all cases.
-      !$omp target
-      !$omp loop collapse(2) private(ii,jj,I_vrm,dx_W,dx_E)
-      do j=j_start,j_end ; do I=i_start,i_end
+      do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k,I_vrm,dx_W,dx_E)
         ii=I-i_start+1 ; jj=j-j_start+1
         I_vrm = 0.0
         if (visc_rem_max(ii,jj) > 0.0) I_vrm = 1.0 / visc_rem_max(ii,jj)
@@ -779,27 +770,20 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
         du_max_CFL(ii,jj) = 2.0* (CFL_dt * dx_W) * I_vrm
         du_min_CFL(ii,jj) = -2.0 * (CFL_dt * dx_E) * I_vrm
         uh_tot_0(ii,jj) = 0.0 ; duhdu_tot_0(ii,jj) = 0.0
-      enddo ; enddo
-      do k=1,nz
-        !$omp loop collapse(2) private(ii,jj)
-        do j=j_start,j_end ; do I=i_start,i_end
-          ii=I-i_start+1 ; jj=j-j_start+1
+        do k=1,nz
           duhdu_tot_0(ii,jj) = duhdu_tot_0(ii,jj) + duhdu(ii,jj,k)
           uh_tot_0(ii,jj) = uh_tot_0(ii,jj) + uh_t(ii,jj,k)
         enddo
-      enddo ; enddo
-      !$omp end target
+      enddo
       if (use_visc_rem) then
         if (CS%aggress_adjust) then
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dx_W,dx_E,du_lim)
-            do j=j_start,j_end ; do I=i_start,i_end
-              ii=I-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-                dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-              else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k,dx_W,dx_E,du_lim)
+            ii=I-i_start+1 ; jj=j-j_start+1
+            if (CS%vol_CFL) then
+              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+            do k=1,nz
 
               du_lim = 0.499*((dx_W*I_dt - u(I,j,k)) + MIN(0.0,u(I-1,j,k)))
               if (du_max_CFL(ii,jj) * visc_rem(ii,jj,k) > du_lim) &
@@ -808,63 +792,52 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
               du_lim = 0.499*((-dx_E*I_dt - u(I,j,k)) + MAX(0.0,u(I+1,j,k)))
               if (du_min_CFL(ii,jj) * visc_rem(ii,jj,k) < du_lim) &
                 du_min_CFL(ii,jj) = du_lim / visc_rem(ii,jj,k)
-            enddo ; enddo
+            enddo
           enddo
-          !$omp end target
         else
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dx_E,dx_W)
-            do j=j_start,j_end ; do I=i_start,i_end
-              ii=I-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-                dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-              else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k,dx_E,dx_W)
+            ii=I-i_start+1 ; jj=j-j_start+1
+            if (CS%vol_CFL) then
+              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+            do k=1,nz
 
               if (du_max_CFL(ii,jj) * visc_rem(ii,jj,k) > dx_W*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
                 du_max_CFL(ii,jj) = (dx_W*CFL_dt - u(I,j,k)) / visc_rem(ii,jj,k)
               if (du_min_CFL(ii,jj) * visc_rem(ii,jj,k) < -dx_E*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
                 du_min_CFL(ii,jj) = -(dx_E*CFL_dt + u(I,j,k)) / visc_rem(ii,jj,k)
-            enddo ; enddo
+            enddo
           enddo
-          !$omp end target
         endif
       else
         if (CS%aggress_adjust) then
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dx_W,dx_E)
-            do j=j_start,j_end ; do I=i_start,i_end
-              ii=I-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-                dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-              else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
-
+          do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k,dx_W,dx_E)
+            ii=I-i_start+1 ; jj=j-j_start+1
+            if (CS%vol_CFL) then
+              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+            do k=1,nz
               du_max_CFL(ii,jj) = MIN(du_max_CFL(ii,jj), 0.499 * &
                           ((dx_W*I_dt - u(I,j,k)) + MIN(0.0,u(I-1,j,k))) )
               du_min_CFL(ii,jj) = MAX(du_min_CFL(ii,jj), 0.499 * &
                           ((-dx_E*I_dt - u(I,j,k)) + MAX(0.0,u(I+1,j,k))) )
-            enddo ; enddo
+            enddo
           enddo
-          !$omp end target
         else
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dx_W,dx_E)
-            do j=j_start,j_end ; do I=i_start,i_end
-              ii=I-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
-                dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
-              else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+          do concurrent (j=j_start:j_end, I=i_start:i_end) local(ii,jj,k,dx_W,dx_E)
+            ii=I-i_start+1 ; jj=j-j_start+1
+            if (CS%vol_CFL) then
+              dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
+              dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
+            else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
+            do k=1,nz
 
               du_max_CFL(ii,jj) = MIN(du_max_CFL(ii,jj), dx_W*CFL_dt - u(I,j,k))
               du_min_CFL(ii,jj) = MAX(du_min_CFL(ii,jj), -(dx_E*CFL_dt + u(I,j,k)))
-            enddo ; enddo
+            enddo
           enddo
-          !$omp end target
         endif
       endif
       do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
@@ -1821,125 +1794,99 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
 
     if (present(vhbt) .or. set_BT_cont) then
       if (use_visc_rem .and. CS%use_visc_rem_max) then
-        !$omp target
-        !$omp loop collapse(2) private(ii,jj)
-        do j=j_start,j_end ; do i=i_start,i_end
-          ii=i-i_start+1 ; jj=j-j_start+1
-          visc_rem_max(ii,JJ) = 0.0
-        enddo ; enddo
-        do k=1,nz
-          !$omp loop collapse(2) private(ii,jj)
-          do j=j_start,j_end ; do i=i_start,i_end
-            ii=i-i_start+1 ; jj=j-j_start+1
-            visc_rem_max(ii,JJ) = max(visc_rem_max(ii,JJ), visc_rem(ii,JJ,k))
-          enddo ; enddo
+        do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k)
+          ii=i-i_start+1 ; jj=J-j_start+1
+          visc_rem_max(ii,jj) = 0.0
+          do k=1,nz
+            visc_rem_max(ii,jj) = max(visc_rem_max(ii,jj), visc_rem(ii,jj,k))
+          enddo
         enddo
-        !$omp end target
       else
         do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
-          visc_rem_max(ii,JJ) = 1.0
+          visc_rem_max(ii,jj) = 1.0
         enddo
       endif
       !   Set limits on dv that will keep the CFL number between -1 and 1.
       ! This should be adequate to keep the root bracketed in all cases.
-      !$omp target
-      !$omp loop collapse(2) private(ii,jj,I_vrm,dy_S,dy_N)
-      do J=J_start,J_end ; do i=i_start,i_end
-        ii=i-i_start+1 ; jj=j-j_start+1
+      do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k,I_vrm,dy_S,dy_N)
+        ii=i-i_start+1 ; jj=J-j_start+1
         I_vrm = 0.0
-        if (visc_rem_max(ii,JJ) > 0.0) I_vrm = 1.0 / visc_rem_max(ii,JJ)
+        if (visc_rem_max(ii,jj) > 0.0) I_vrm = 1.0 / visc_rem_max(ii,jj)
         if (CS%vol_CFL) then
-          dy_S = ratio_max(G%areaT(i,j), G%dx_Cv(i,J), 1000.0*G%dyT(i,j))
-          dy_N = ratio_max(G%areaT(i,j+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,j+1))
-        else ; dy_S = G%dyT(i,j) ; dy_N = G%dyT(i,j+1) ; endif
-        dv_max_CFL(ii,JJ) = 2.0 * (CFL_dt * dy_S) * I_vrm
-        dv_min_CFL(ii,JJ) = -2.0 * (CFL_dt * dy_N) * I_vrm
-        vh_tot_0(ii,JJ) = 0.0 ; dvhdv_tot_0(ii,JJ) = 0.0
-      enddo ; enddo
-      do k=1,nz
-        !$omp loop collapse(2) private(ii,jj)
-        do J=J_start,J_end ; do i=i_start,i_end
-          ii=i-i_start+1 ; jj=j-j_start+1
-          dvhdv_tot_0(ii,JJ) = dvhdv_tot_0(ii,JJ) + dvhdv(ii,jj,k)
-          vh_tot_0(ii,JJ) = vh_tot_0(ii,JJ) + vh_t(ii,JJ,k)
+          dy_S = ratio_max(G%areaT(i,J), G%dx_Cv(i,J), 1000.0*G%dyT(i,J))
+          dy_N = ratio_max(G%areaT(i,J+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,J+1))
+        else ; dy_S = G%dyT(i,J) ; dy_N = G%dyT(i,J+1) ; endif
+        dv_max_CFL(ii,jj) = 2.0 * (CFL_dt * dy_S) * I_vrm
+        dv_min_CFL(ii,jj) = -2.0 * (CFL_dt * dy_N) * I_vrm
+        vh_tot_0(ii,jj) = 0.0 ; dvhdv_tot_0(ii,jj) = 0.0
+        do k=1,nz
+          dvhdv_tot_0(ii,jj) = dvhdv_tot_0(ii,jj) + dvhdv(ii,jj,k)
+          vh_tot_0(ii,jj) = vh_tot_0(ii,jj) + vh_t(ii,jj,k)
         enddo
-      enddo ; enddo
-      !$omp end target
+      enddo
 
       if (use_visc_rem) then
         if (CS%aggress_adjust) then
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dy_S,dy_N,dv_lim)
-            do J=J_start,J_end ; do i=i_start,i_end
-              ii=i-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dy_S = ratio_max(G%areaT(i,j), G%dx_Cv(I,j), 1000.0*G%dyT(i,j))
-                dy_N = ratio_max(G%areaT(i,j+1), G%dx_Cv(I,j), 1000.0*G%dyT(i,j+1))
-              else ; dy_S = G%dyT(i,j) ; dy_N = G%dyT(i,j+1) ; endif
+          do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k,dy_S,dy_N,dv_lim)
+            ii=i-i_start+1 ; jj=J-j_start+1
+            if (CS%vol_CFL) then
+              dy_S = ratio_max(G%areaT(i,J), G%dx_Cv(i,J), 1000.0*G%dyT(i,J))
+              dy_N = ratio_max(G%areaT(i,J+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,J+1))
+            else ; dy_S = G%dyT(i,J) ; dy_N = G%dyT(i,J+1) ; endif
+            do k=1,nz
               dv_lim = 0.499*((dy_S*I_dt - v(i,J,k)) + MIN(0.0,v(i,J-1,k)))
-              if (dv_max_CFL(ii,JJ) * visc_rem(ii,JJ,k) > dv_lim) &
-                dv_max_CFL(ii,JJ) = dv_lim / visc_rem(ii,JJ,k)
+              if (dv_max_CFL(ii,jj) * visc_rem(ii,jj,k) > dv_lim) &
+                dv_max_CFL(ii,jj) = dv_lim / visc_rem(ii,jj,k)
 
               dv_lim = 0.499*((-dy_N*CFL_dt - v(i,J,k)) + MAX(0.0,v(i,J+1,k)))
-              if (dv_min_CFL(ii,JJ) * visc_rem(ii,JJ,k) < dv_lim) &
-                dv_min_CFL(ii,JJ) = dv_lim / visc_rem(ii,JJ,k)
+              if (dv_min_CFL(ii,jj) * visc_rem(ii,jj,k) < dv_lim) &
+                dv_min_CFL(ii,jj) = dv_lim / visc_rem(ii,jj,k)
             enddo
-          enddo ; enddo
-          !$omp end target
-        else
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dy_S,dy_N)
-            do J=J_start,J_end ; do i=i_start,i_end
-              ii=i-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dy_S = ratio_max(G%areaT(i,j), G%dx_Cv(I,j), 1000.0*G%dyT(i,j))
-                dy_N = ratio_max(G%areaT(i,j+1), G%dx_Cv(I,j), 1000.0*G%dyT(i,j+1))
-              else ; dy_S = G%dyT(i,j) ; dy_N = G%dyT(i,j+1) ; endif
-              if (dv_max_CFL(ii,JJ) * visc_rem(ii,JJ,k) > &
-                  dy_S*CFL_dt - v(i,J,k)*G%mask2dCv(i,J)) &
-                dv_max_CFL(ii,JJ) = (dy_S*CFL_dt - v(i,J,k)) / visc_rem(ii,JJ,k)
-              if (dv_min_CFL(ii,JJ) * visc_rem(ii,JJ,k) < &
-                  -dy_N*CFL_dt - v(i,J,k)*G%mask2dCv(i,J)) &
-                dv_min_CFL(ii,JJ) = -(dy_N*CFL_dt + v(i,J,k)) / visc_rem(ii,JJ,k)
-            enddo ; enddo
           enddo
-          !$omp end target
+        else
+          do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k,dy_S,dy_N)
+            ii=i-i_start+1 ; jj=J-j_start+1
+            if (CS%vol_CFL) then
+              dy_S = ratio_max(G%areaT(i,J), G%dx_Cv(i,J), 1000.0*G%dyT(i,J))
+              dy_N = ratio_max(G%areaT(i,J+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,J+1))
+            else ; dy_S = G%dyT(i,J) ; dy_N = G%dyT(i,J+1) ; endif
+            do k=1,nz
+              if (dv_max_CFL(ii,jj) * visc_rem(ii,jj,k) > &
+                  dy_S*CFL_dt - v(i,J,k)*G%mask2dCv(i,J)) &
+                dv_max_CFL(ii,jj) = (dy_S*CFL_dt - v(i,J,k)) / visc_rem(ii,jj,k)
+              if (dv_min_CFL(ii,jj) * visc_rem(ii,jj,k) < &
+                  -dy_N*CFL_dt - v(i,J,k)*G%mask2dCv(i,J)) &
+                dv_min_CFL(ii,jj) = -(dy_N*CFL_dt + v(i,J,k)) / visc_rem(ii,jj,k)
+            enddo
+          enddo
         endif
       else
         if (CS%aggress_adjust) then
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dy_S,dy_N)
-            do J=J_start,J_end ; do i=i_start,i_end
-              ii=i-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dy_S = ratio_max(G%areaT(i,j), G%dx_Cv(I,j), 1000.0*G%dyT(i,j))
-                dy_N = ratio_max(G%areaT(i,j+1), G%dx_Cv(I,j), 1000.0*G%dyT(i,j+1))
-              else ; dy_S = G%dyT(i,j) ; dy_N = G%dyT(i,j+1) ; endif
-              dv_max_CFL(ii,JJ) = min(dv_max_CFL(ii,JJ), 0.499 * &
+          do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k,dy_S,dy_N)
+            ii=i-i_start+1 ; jj=J-j_start+1
+            if (CS%vol_CFL) then
+              dy_S = ratio_max(G%areaT(i,J), G%dx_Cv(i,J), 1000.0*G%dyT(i,J))
+              dy_N = ratio_max(G%areaT(i,J+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,J+1))
+            else ; dy_S = G%dyT(i,J) ; dy_N = G%dyT(i,J+1) ; endif
+            do k=1,nz
+              dv_max_CFL(ii,jj) = min(dv_max_CFL(ii,jj), 0.499 * &
                           ((dy_S*I_dt - v(i,J,k)) + MIN(0.0,v(i,J-1,k))) )
-              dv_min_CFL(ii,JJ) = max(dv_min_CFL(ii,JJ), 0.499 * &
+              dv_min_CFL(ii,jj) = max(dv_min_CFL(ii,jj), 0.499 * &
                           ((-dy_N*I_dt - v(i,J,k)) + MAX(0.0,v(i,J+1,k))) )
-            enddo ; enddo
+            enddo
           enddo
-          !$omp end target
         else
-          !$omp target
-          do k=1,nz
-            !$omp loop collapse(2) private(ii,jj,dy_S,dy_N)
-            do J=J_start,J_end ; do i=i_start,i_end
-              ii=i-i_start+1 ; jj=j-j_start+1
-              if (CS%vol_CFL) then
-                dy_S = ratio_max(G%areaT(i,j), G%dx_Cv(I,j), 1000.0*G%dyT(i,j))
-                dy_N = ratio_max(G%areaT(i,j+1), G%dx_Cv(I,j), 1000.0*G%dyT(i,j+1))
-              else ; dy_S = G%dyT(i,j) ; dy_N = G%dyT(i,j+1) ; endif
-              dv_max_CFL(ii,JJ) = min(dv_max_CFL(ii,JJ), dy_S*CFL_dt - v(i,J,k))
-              dv_min_CFL(ii,JJ) = max(dv_min_CFL(ii,JJ), -(dy_N*CFL_dt + v(i,J,k)))
-            enddo ; enddo
+          do concurrent (J=j_start:j_end, i=i_start:i_end) local(ii,jj,k,dy_S,dy_N)
+            ii=i-i_start+1 ; jj=J-j_start+1
+            if (CS%vol_CFL) then
+              dy_S = ratio_max(G%areaT(i,J), G%dx_Cv(i,J), 1000.0*G%dyT(i,J))
+              dy_N = ratio_max(G%areaT(i,J+1), G%dx_Cv(i,J), 1000.0*G%dyT(i,J+1))
+            else ; dy_S = G%dyT(i,J) ; dy_N = G%dyT(i,J+1) ; endif
+            do k=1,nz
+              dv_max_CFL(ii,jj) = min(dv_max_CFL(ii,jj), dy_S*CFL_dt - v(i,J,k))
+              dv_min_CFL(ii,jj) = max(dv_min_CFL(ii,jj), -(dy_N*CFL_dt + v(i,J,k)))
+            enddo
           enddo
-          !$omp end target
         endif
       endif
       do concurrent (jj=1:j_end-j_start+1, ii=1:i_end-i_start+1)
