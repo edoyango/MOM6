@@ -1095,7 +1095,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     enddo
   endif
 
-  !$acc kernels loop collapse(2) async(2)
+  !$acc kernels loop collapse(3) async(2)
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
     ! The 0.5 below is just for safety.
@@ -1108,7 +1108,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     visc_rem = max(visc_rem, 0.)
     wt_u(I,j,k) = CS%frhatu(I,j,k) * visc_rem
   enddo
-  !$acc kernels loop collapse(2) async(3)
+  !$acc kernels loop collapse(3) async(3)
   do concurrent (k=1:nz, J=js-1:je, i=is:ie)
     ! As above, rem must be greater than visc_rem_v and 1-Instep/visc_rem_v.
     visc_rem = min(visc_rem_v(I,j,k), 1.)
@@ -1166,20 +1166,16 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   do concurrent (J=js-1:je, i=is-1:ie+1)
     vbt_Cor(i,J) = 0.0
   enddo
-  !$acc kernels loop async(2)
-  do concurrent (j=js:je)
+  !$acc kernels loop collapse(2) async(2)
+  do concurrent (j=js:je, I=is-1:ie)
     do k=1,nz
-      do concurrent (I=is-1:ie)
-        ubt_Cor(I,j) = ubt_Cor(I,j) + wt_u(I,j,k) * U_Cor(I,j,k)
-      enddo
+      ubt_Cor(I,j) = ubt_Cor(I,j) + wt_u(I,j,k) * U_Cor(I,j,k)
     enddo
   enddo
-  !$acc kernels loop async(3)
-  do concurrent (J=js-1:je)
+  !$acc kernels loop collapse(2) async(3)
+  do concurrent (J=js-1:je, i=is:ie)
     do k=1,nz
-      do concurrent (i=is:ie)
-        vbt_Cor(i,J) = vbt_Cor(i,J) + wt_v(i,J,k) * V_Cor(i,J,k)
-      enddo
+      vbt_Cor(i,J) = vbt_Cor(i,J) + wt_v(i,J,k) * V_Cor(i,J,k)
     enddo
   enddo
 
@@ -1188,21 +1184,17 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! locations of the faces to the pressure point.  They will have their halos
   ! updated later on.
   !$acc kernels loop collapse(2) async(2) wait(1)
-  do concurrent (j=js:je)
+  do concurrent (j=js:je, i=is-1:ie)
     do k=1,nz
-      do concurrent (i=is-1:ie)
-        gtot_E(i,j)   = gtot_E(i,j)   + pbce(i,j,k)   * wt_u(I,j,k)
-        gtot_W(i+1,j) = gtot_W(i+1,j) + pbce(i+1,j,k) * wt_u(I,j,k)
-      enddo
+      gtot_E(i,j)   = gtot_E(i,j)   + pbce(i,j,k)   * wt_u(I,j,k)
+      gtot_W(i+1,j) = gtot_W(i+1,j) + pbce(i+1,j,k) * wt_u(I,j,k)
     enddo
   enddo
   !$acc kernels loop collapse(2) async(3) wait(1)
-  do concurrent (J=js-1:je)
+  do concurrent (J=js-1:je, i=is:ie)
     do k=1,nz
-      do concurrent (i=is:ie)
-        gtot_N(i,j)   = gtot_N(i,j)   + pbce(i,j,k)   * wt_v(i,J,k)
-        gtot_S(i,j+1) = gtot_S(i,j+1) + pbce(i,j+1,k) * wt_v(i,J,k)
-      enddo
+      gtot_N(i,j)   = gtot_N(i,j)   + pbce(i,j,k)   * wt_v(i,J,k)
+      gtot_S(i,j+1) = gtot_S(i,j+1) + pbce(i,j+1,k) * wt_v(i,J,k)
     enddo
   enddo
 
@@ -1283,37 +1275,33 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       vhbt(i,J) = 0.0 ; vbt(i,J) = 0.0
     enddo
     if (CS%visc_rem_u_uh0) then
-      !$acc kernels loop async(2)
-      do concurrent (j=js:je)
-        do k=1,nz ; do concurrent (I=is-1:ie)
+      !$acc kernels loop collapse(2) async(2)
+      do concurrent (j=js:je, I=is-1:ie)
+        do k=1,nz
           uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
           ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * u_uh0(I,j,k)
-        enddo ; enddo
-      enddo
-      !$acc kernels loop async(3)
-      do concurrent (J=js-1:je)
-        do k=1,nz ; do concurrent (i=is:ie)
-          vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
-          vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
-        enddo ; enddo
-      enddo
-    else
-      !$acc kernels loop async(2)
-      do concurrent (j=js:je)
-        do k=1,nz
-          do concurrent (I=is-1:ie)
-            uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
-            ubt(I,j) = ubt(I,j) + CS%frhatu(I,j,k) * u_uh0(I,j,k)
-          enddo
         enddo
       enddo
-      !$acc kernels loop async(3)
-      do concurrent (J=js-1:je)
+      !$acc kernels loop collapse(2) async(3)
+      do concurrent (J=js-1:je, i=is:ie)
         do k=1,nz
-          do concurrent (i=is:ie)
-            vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
-            vbt(i,J) = vbt(i,J) + CS%frhatv(i,J,k) * v_vh0(i,J,k)
-          enddo
+          vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
+          vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
+        enddo
+      enddo
+    else
+      !$acc kernels loop collapse(2) async(2)
+      do concurrent (j=js:je, I=is-1:ie)
+        do k=1,nz
+          uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
+          ubt(I,j) = ubt(I,j) + CS%frhatu(I,j,k) * u_uh0(I,j,k)
+        enddo
+      enddo
+      !$acc kernels loop collapse(2) async(3)
+      do concurrent (J=js-1:je, i=is:ie)
+        do k=1,nz
+          vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
+          vbt(i,J) = vbt(i,J) + CS%frhatv(i,J,k) * v_vh0(i,J,k)
         enddo
       enddo
     endif
@@ -1484,20 +1472,16 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
   ! non-symmetric computational domain.
-  !$acc kernels loop async(2)
-  do concurrent (j=js:je)
+  !$acc kernels loop collapse(2) async(2)
+  do concurrent (j=js:je, I=Isq:Ieq)
     do k=1,nz
-      do concurrent (I=Isq:Ieq)
-        BT_force_u(I,j) = BT_force_u(I,j) + wt_u(I,j,k) * bc_accel_u(I,j,k)
-      enddo
+      BT_force_u(I,j) = BT_force_u(I,j) + wt_u(I,j,k) * bc_accel_u(I,j,k)
     enddo
   enddo
-  !$acc kernels loop async(3)
-  do concurrent (J=Jsq:Jeq)
+  !$acc kernels loop collapse(2) async(3)
+  do concurrent (J=Jsq:Jeq, i=is:ie)
     do k=1,nz
-      do concurrent (i=is:ie)
-        BT_force_v(i,J) = BT_force_v(i,J) + wt_v(i,J,k) * bc_accel_v(i,J,k)
-      enddo
+      BT_force_v(i,J) = BT_force_v(i,J) + wt_v(i,J,k) * bc_accel_v(i,J,k)
     enddo
   enddo
 
@@ -1669,23 +1653,20 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   do concurrent (j=js-1:je+1, I=is-1:ie)
     av_rem_u(I,j) = 0.0
   enddo
-  !$acc kernels loop async(2)
-  do concurrent (j=js:je)
+  !$acc kernels loop collapse(2) async(2)
+  do concurrent (j=js:je, I=is-1:ie)
     do k=1,nz
-      do concurrent (I=is-1:ie)
-        av_rem_u(I,j) = av_rem_u(I,j) + CS%frhatu(I,j,k) * visc_rem_u(I,j,k)
-      enddo
+      av_rem_u(I,j) = av_rem_u(I,j) + CS%frhatu(I,j,k) * visc_rem_u(I,j,k)
     enddo
   enddo
-  !$acc kernels loop async(3)
-  do concurrent (J=js-1:je)
-    do concurrent(i=is-1:ie+1)
-      av_rem_v(i,J) = 0.0
-    enddo
+  !$acc kernels loop collapse(2) async(3)
+  do concurrent (J=js-1:je, i=is-1:ie+1)
+    av_rem_v(i,J) = 0.0
+  enddo
+  !$acc kernels loop collapse(2) async(3)
+  do concurrent (J=js-1:je, i=is:ie)
     do k=1,nz
-      do concurrent (i=is:ie)
-        av_rem_v(i,J) = av_rem_v(i,J) + CS%frhatv(i,J,k) * visc_rem_v(i,J,k)
-      enddo
+      av_rem_v(i,J) = av_rem_v(i,J) + CS%frhatv(i,J,k) * visc_rem_v(i,J,k)
     enddo
   enddo
   if (CS%strong_drag) then
@@ -3920,27 +3901,19 @@ subroutine btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt,  G, GV, CS)
     vbt(i,j) = 0.0
   enddo
 
-  !$acc kernels loop async(2)
-  do concurrent (j=js:je)
+  !$acc kernels loop collapse(2) async(2)
+  do concurrent (j=js:je, I=is-1:ie)
     do k=1,nz
-      do concurrent (I=is-1:ie)
-        ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
-      enddo
+      ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
     enddo
-    do concurrent (I=is-1:ie)
-      if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-    enddo
+    if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
   enddo
-  !$acc kernels loop async(3)
-  do concurrent (J=js-1:je)
+  !$acc kernels loop collapse(2) async(3)
+  do concurrent (J=js-1:je, i=is:ie)
     do k=1,nz
-      do concurrent (i=is:ie)
-        vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
-      enddo
+      vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
     enddo
-    do concurrent (i=is:ie)
-      if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-    enddo
+    if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
   enddo
 
 end subroutine btstep_ubt_from_layer
