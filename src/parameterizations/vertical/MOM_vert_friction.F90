@@ -1446,7 +1446,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp target update to(visc%Kv_shear) if (associated(visc%Kv_shear))
   !$omp target enter data map(to: visc%Kv_shear_Bu) if (associated(visc%Kv_shear_Bu))
 
-  !$omp target teams distribute parallel do collapse(2) &
+  !$omp target teams loop bind(parallel,teams) collapse(2) &
   !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, zh, zcol, &
   !$omp&     zcol_p1, h_harm, h_arith, h_delta, dz_arith, z2, botfn, z_clear, &
   !$omp&     z2_wt, h_ml)
@@ -1754,7 +1754,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   ! Now work on v-points.
 
-  !$omp target teams distribute parallel do collapse(2) &
+  !$omp target teams loop bind(parallel,teams) collapse(2) &
   !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, zh, zcol, &
   !$omp     zcol_p1, h_harm, h_arith, h_delta, dz_arith, z2, botfn, z_clear, &
   !$omp     z2_wt, h_ml)
