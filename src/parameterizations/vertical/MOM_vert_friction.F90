@@ -572,7 +572,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   real :: b1
     ! A variable used by the tridiagonal solver [H-1 ~> m-1 or m2 kg-1].
-  real :: c1(SZK_(GV))
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: c1_3d
     ! A variable used by the tridiagonal solver [nondim].
   real :: d1
     ! d1=1-c1 is used by the tridiagonal solver [nondim].
@@ -732,10 +732,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! c1(k) is -c'_(k - 1)
   ! and the right-hand-side is destructively updated to be d'_k
 
-  !$omp target enter data map(alloc: c1)
+  !$omp target enter data map(alloc: c1_3d)
 
   !$omp target teams loop collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1)
+  !$omp   private(b1, d1, Ray, b_denom_1)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -752,7 +752,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     do k=2,nz
       if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,k)
 
-      c1(k) = dt * CS%a_u(I,j,K) * b1
+      c1_3d(i,j,k) = dt * CS%a_u(I,j,K) * b1
       b_denom_1 = CS%h_u(I,j,k) + dt * (Ray + CS%a_u(I,j,K) * d1)
       b1 = 1. / (b_denom_1 + dt * CS%a_u(I,j,K+1))
       d1 = b_denom_1 * b1
@@ -774,10 +774,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
 
     do k=nz-1,1,-1
-      u(I,j,k) = u(I,j,k) + c1(k+1) * u(I,j,k+1)
+      u(I,j,k) = u(I,j,k) + c1_3d(i,j,k+1) * u(I,j,k+1)
 
       if (associated(ADp%du_dt_str)) then
-        ADp%du_dt_str(I,j,k) = ADp%du_dt_str(I,j,k) + c1(k+1) * ADp%du_dt_str(I,j,k+1)
+        ADp%du_dt_str(I,j,k) = ADp%du_dt_str(I,j,k) + c1_3d(i,j,k+1) * ADp%du_dt_str(I,j,k+1)
 
         if (abs(ADp%du_dt_str(I,j,k)) < accel_underflow) &
           ADp%du_dt_str(I,j,k) = 0.0
@@ -798,7 +798,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         ADp%du_dt_visc_gl90(I,j,1) = b1 * (CS%h_u(I,j,1) * ADp%du_dt_visc_gl90(I,j,1))
 
         do k=2,nz
-          c1(k) = dt * CS%a_u_gl90(I,j,K) * b1
+          c1_3d(i,j,k) = dt * CS%a_u_gl90(I,j,K) * b1
           b_denom_1 = CS%h_u(I,j,k) + dt * (CS%a_u_gl90(I,j,K)*d1)
           b1 = 1.0 / (b_denom_1 + dt * CS%a_u_gl90(I,j,K+1))
           d1 = b_denom_1 * b1
@@ -810,7 +810,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         ! back substitute to solve for new velocities, held by ADp%du_dt_visc_gl90
         do k=nz-1,1,-1
           ADp%du_dt_visc_gl90(I,j,k) = &
-              ADp%du_dt_visc_gl90(I,j,k) + c1(k+1) * ADp%du_dt_visc_gl90(I,j,k+1)
+              ADp%du_dt_visc_gl90(I,j,k) + c1_3d(i,j,k+1) * ADp%du_dt_visc_gl90(I,j,k+1)
         enddo
 
         do k=1,nz
@@ -936,7 +936,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   !$omp target teams loop collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1)
+  !$omp   private(b1, d1, Ray, b_denom_1)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
@@ -953,7 +953,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     do k=2,nz
       if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,k)
 
-      c1(k) = dt * CS%a_v(i,J,K) * b1
+      c1_3d(i,j,k) = dt * CS%a_v(i,J,K) * b1
       b_denom_1 = CS%h_v(i,J,k) + dt * (Ray + CS%a_v(i,J,K) * d1)
       b1 = 1. / (b_denom_1 + dt * CS%a_v(i,J,K+1))
       d1 = b_denom_1 * b1
@@ -975,10 +975,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
 
     do k=nz-1,1,-1
-      v(i,J,k) = v(i,J,k) + c1(k+1) * v(i,J,k+1)
+      v(i,J,k) = v(i,J,k) + c1_3d(i,j,k+1) * v(i,J,k+1)
 
       if (associated(ADp%dv_dt_str)) then
-        ADp%dv_dt_str(i,J,k) = ADp%dv_dt_str(i,J,k) + c1(k+1) * ADp%dv_dt_str(i,J,k+1)
+        ADp%dv_dt_str(i,J,k) = ADp%dv_dt_str(i,J,k) + c1_3d(i,j,k+1) * ADp%dv_dt_str(i,J,k+1)
 
         if (abs(ADp%dv_dt_str(i,J,k)) < accel_underflow) &
           ADp%dv_dt_str(i,J,k) = 0.0
@@ -998,7 +998,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         ADp%dv_dt_visc_gl90(I,J,1) = b1 * (CS%h_v(i,J,1) * ADp%dv_dt_visc_gl90(i,J,1))
 
         do k=2,nz
-          c1(k) = dt * CS%a_v_gl90(i,J,K) * b1
+          c1_3d(i,j,k) = dt * CS%a_v_gl90(i,J,K) * b1
           b_denom_1 = CS%h_v(i,J,k) + dt * (CS%a_v_gl90(i,J,K) * d1)
           b1 = 1.0 / (b_denom_1 + dt * CS%a_v_gl90(i,J,K+1))
           d1 = b_denom_1 * b1
@@ -1008,7 +1008,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
         ! back substitute to solve for new velocities, held by ADp%dv_dt_visc_gl90
         do k=nz-1,1,-1
-          ADp%dv_dt_visc_gl90(i,J,k) = ADp%dv_dt_visc_gl90(i,J,k) + c1(k+1) * ADp%dv_dt_visc_gl90(i,J,k+1)
+          ADp%dv_dt_visc_gl90(i,J,k) = ADp%dv_dt_visc_gl90(i,J,k) + c1_3d(i,j,k+1) * ADp%dv_dt_visc_gl90(i,J,k+1)
         enddo
       endif ; enddo ; enddo
 
@@ -1099,7 +1099,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
 
-  !$omp target exit data map(delete: c1)
+  !$omp target exit data map(delete: c1_3d)
 
   !$omp target exit data map(from: ADp%du_dt_str, ADp%dv_dt_str)
   !$omp target exit data map(delete: ADp)
@@ -1202,7 +1202,7 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
 
   real :: b1
     ! A variable used by the tridiagonal solver [H-1 ~> m-1 or m2 kg-1].
-  real :: c1(SZK_(GV))
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: c1_3d
     ! A variable used by the tridiagonal solver [nondim].
   real :: d1
     ! d1=1-c1 is used by the tridiagonal solver [nondim].
@@ -1220,8 +1220,10 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
 
   ! Find the zonal viscous remnant using a modification of a standard tridagonal solver.
 
+  !$omp target enter data map(alloc: c1_3d)
+
   !$omp target teams loop collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1)
+  !$omp   private(b1, d1, Ray, b_denom_1)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -1234,7 +1236,7 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     do k=2,nz
       if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,k)
 
-      c1(k) = dt * CS%a_u(I,j,K) * b1
+      c1_3d(i,j,k) = dt * CS%a_u(I,j,K) * b1
       b_denom_1 = CS%h_u(I,j,k) + dt * (Ray + CS%a_u(I,j,K) * d1)
       b1 = 1.0 / (b_denom_1 + dt * CS%a_u(I,j,K+1))
       d1 = b_denom_1 * b1
@@ -1246,14 +1248,14 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     enddo
 
     do k=nz-1,1,-1
-      visc_rem_u(I,j,k) = visc_rem_u(I,j,k) + c1(k+1) * visc_rem_u(I,j,k+1)
+      visc_rem_u(I,j,k) = visc_rem_u(I,j,k) + c1_3d(i,j,k+1) * visc_rem_u(I,j,k+1)
     enddo
   endif ; enddo ; enddo
 
   ! Now find the meridional viscous remnant using the robust tridiagonal solver.
 
   !$omp target teams loop collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1)
+  !$omp   private(b1, d1, Ray, b_denom_1)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
@@ -1266,7 +1268,7 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     do k=2,nz
       if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,k)
 
-      c1(k) = dt * CS%a_v(i,J,K) * b1
+      c1_3d(i,j,k) = dt * CS%a_v(i,J,K) * b1
       b_denom_1 = CS%h_v(i,J,k) + dt * (Ray + CS%a_v(i,J,K) * d1)
       b1 = 1.0 / (b_denom_1 + dt * CS%a_v(i,J,K+1))
       d1 = b_denom_1 * b1
@@ -1278,9 +1280,11 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     enddo
 
     do k=nz-1,1,-1
-      visc_rem_v(i,J,k) = visc_rem_v(i,J,k) + c1(k+1) * visc_rem_v(i,J,k+1)
+      visc_rem_v(i,J,k) = visc_rem_v(i,J,k) + c1_3d(i,j,k+1) * visc_rem_v(i,J,k+1)
     enddo
   endif ; enddo ; enddo
+
+  !$omp target exit data map(delete: c1_3d)
 
   if (CS%debug) then
     !$omp target update from(visc_rem_u, visc_rem_v)
