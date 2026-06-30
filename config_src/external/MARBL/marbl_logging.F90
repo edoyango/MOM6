@@ -25,18 +25,16 @@ module marbl_logging
         procedure, public :: erase  !< dummy erase routine
     end type marbl_log_type
 
-contains
 
-    !> dummy trace routine
-    subroutine log_error_trace(self, RoutineName, CodeLoc, ElemInd)
+  interface
+    module subroutine log_error_trace(self, RoutineName, CodeLoc, ElemInd)
         class(marbl_log_type), intent(inout) :: self
         character(len=*),      intent(in)    :: RoutineName, CodeLoc
         integer, optional,     intent(in)    :: ElemInd
     end subroutine log_error_trace
-
-    !> dummy erase routine
-    subroutine erase(self)
+    module subroutine erase(self)
         class(marbl_log_type), intent(inout) :: self
     end subroutine erase
+  end interface
 
 end module marbl_logging

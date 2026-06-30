@@ -1,0 +1,204 @@
+submodule (regrid_solvers) regrid_solvers_s
+  implicit none
+contains
+module procedure solve_linear_system
+  real, parameter       :: eps = 0.0        ! Minimum pivot magnitude allowed [A]
+  real    :: factor       ! The factor that eliminates the leading nonzero element in a row [A-1]
+  real    :: pivot, I_pivot ! The pivot value and its reciprocal, in [A] and [A-1]
+  real    :: swap_a, swap_b ! Swap space in various units [various]
+  logical :: found_pivot  ! If true, a pivot has been found
+  logical :: old_answers  ! If true, use expressions that give the original (2008 through 2018) MOM6 answers
+  integer :: i, j, k
+  old_answers = .true. ; if (present(answer_date)) old_answers = (answer_date < 20190101)
+
+  ! Loop on rows to transform the problem into multiplication by an upper-right matrix.
+  do i = 1,N-1
+
+
+    ! Start to look for a pivot in the current row, i.  If the pivot in row i is not valid,
+    ! keep looking for a valid pivot by searching the entries of column i in rows below row i.
+    ! Once a valid pivot is found (say in row k), rows i and k are swaped.
+    found_pivot = .false.
+    k = i
+    do while ( ( .NOT. found_pivot ) .AND. ( k <= N ) )
+      if ( abs( A(k,i) ) > eps ) then  ! A valid pivot has been found
+        found_pivot = .true.
+      else                             ! Seek a valid pivot in the next row
+        k = k + 1
+      endif
+    enddo ! end loop to find pivot
+
+    ! If no pivot could be found, the system is singular.
+    if ( .NOT. found_pivot ) then
+      write(0,*) ' A=',A
+      call MOM_error( FATAL, 'The linear system is singular !' )
+    endif
+
+    ! If the pivot is in a row that is different than row i, that is if
+    ! k is different than i, we need to swap those two rows
+    if ( k /= i ) then
+      do j = 1,N
+        swap_a = A(i,j) ; A(i,j) = A(k,j) ; A(k,j) = swap_a
+      enddo
+      swap_b = R(i) ; R(i) = R(k) ; R(k) = swap_b
+    endif
+
+    ! Transform pivot to 1 by dividing the entire row (right-hand side included) by the pivot
+    if (old_answers) then
+      pivot = A(i,i)
+      do j = i,N ; A(i,j) = A(i,j) / pivot ; enddo
+      R(i) = R(i) / pivot
+    else
+      I_pivot = 1.0 / A(i,i)
+      A(i,i) = 1.0
+      do j = i+1,N ; A(i,j) = A(i,j) * I_pivot ; enddo
+      R(i) = R(i) * I_pivot
+    endif
+
+    ! #INV: At this point, A(i,i) is a suitable pivot and it is equal to 1
+
+    ! Put zeros in column for all rows below that contain the pivot (which is row i)
+    do k = i+1,N    ! k is the row index
+      factor = A(k,i)
+      ! A(k,i) = 0.0  ! These elements are not used again, so this line can be skipped for speed.
+      do j = i+1,N  ! j is the column index
+        A(k,j) = A(k,j) - factor * A(i,j)
+      enddo
+      R(k) = R(k) - factor * R(i)
+    enddo
+
+  enddo ! end loop on i
+
+  ! Solve system by back substituting in what is now an upper-right matrix.
+  X(N) = R(N) / A(N,N)  ! The last row is now trivially solved.
+  do i = N-1,1,-1 ! loop on rows, starting from second to last row
+    X(i) = R(i)
+    do j = i+1,N
+      X(i) = X(i) - A(i,j) * X(j)
+    enddo
+    if (old_answers) X(i) = X(i) / A(i,i)
+  enddo
+
+end procedure solve_linear_system
+module procedure linear_solver
+  real, parameter :: eps = 0.0   ! Minimum pivot magnitude allowed [A]
+  real    :: factor       ! The factor that eliminates the leading nonzero element in a row [A-1].
+  real    :: I_pivot      ! The reciprocal of the pivot value [A-1]
+  real    :: swap         ! Swap space used in various units [various]
+  integer :: i, j, k
+  do i=1,N-1
+    ! Seek a pivot for column i starting in row i, and continuing into the remaining rows.  If the
+    ! pivot is in a row other than i, swap them.  If no valid pivot is found, i = N+1 after this loop.
+    do k=i,N ; if ( abs( A(i,k) ) > eps ) exit ; enddo ! end loop to find pivot
+    if ( k > N ) then  ! No pivot could be found and the system is singular.
+      write(0,*) ' A=',A
+      call MOM_error( FATAL, 'The linear system is singular !' )
+    endif
+
+    ! If the pivot is in a row that is different than row i, swap those two rows, noting that both
+    ! rows start with i-1 zero values.
+    if ( k /= i ) then
+      do j=i,N ; swap = A(j,i) ; A(j,i) = A(j,k) ; A(j,k) = swap ; enddo
+      swap = R(i) ; R(i) = R(k) ; R(k) = swap
+    endif
+
+    ! Transform the pivot to 1 by dividing the entire row (right-hand side included) by the pivot
+    I_pivot = 1.0 / A(i,i)
+    A(i,i) = 1.0
+    do j=i+1,N ; A(j,i) = A(j,i) * I_pivot ; enddo
+    R(i) = R(i) * I_pivot
+
+    ! Put zeros in column for all rows below that contain the pivot (which is row i)
+    do k=i+1,N    ! k is the row index
+      factor = A(i,k)
+      ! A(i,k) = 0.0  ! These elements are not used again, so this line can be skipped for speed.
+      do j=i+1,N ; A(j,k) = A(j,k) - factor * A(j,i) ; enddo
+      R(k) = R(k) - factor * R(i)
+    enddo
+
+  enddo ! end loop on i
+
+  if (A(N,N) == 0.0) then
+    ! no pivot could be found, and the sytem is singular
+    call MOM_error(FATAL, 'The final pivot in linear_solver is zero.')
+  endif
+
+  ! Solve the system by back substituting into what is now an upper-right matrix.
+  X(N) = R(N) / A(N,N)  ! The last row is now trivially solved.
+  do i=N-1,1,-1 ! loop on rows, starting from second to last row
+    X(i) = R(i)
+    do j=i+1,N ; X(i) = X(i) - A(j,i) * X(j) ; enddo
+  enddo
+
+end procedure linear_solver
+module procedure solve_tridiagonal_system
+  real, dimension(N) :: pivot    ! The pivot value [A]
+  real, dimension(N) :: Al_piv   ! The lower diagonal divided by the pivot value [nondim]
+  real, dimension(N) :: c1       ! Au / pivot for the backward sweep [nondim]
+  real    :: I_pivot  ! The inverse of the most recent pivot [A-1]
+  integer :: k        ! Loop index
+  logical :: old_answers  ! If true, use expressions that give the original (2008 through 2018) MOM6 answers
+  old_answers = .true. ; if (present(answer_date)) old_answers = (answer_date < 20190101)
+
+  if (old_answers) then
+    ! This version gives the same answers as the original (2008 through 2018) MOM6 code
+    ! Factorization and forward sweep
+    pivot(1) = Ad(1)
+    X(1) = R(1)
+    do k = 2,N
+      Al_piv(k) = Al(k) / pivot(k-1)
+      pivot(k) = Ad(k) - Al_piv(k) * Au(k-1)
+      X(k) = R(k) - Al_piv(k) * X(k-1)
+    enddo
+
+    ! Backward sweep
+    X(N) = R(N) / pivot(N)  ! This should be X(N) / pivot(N), but is OK if Al(N) = 0.
+    do k = N-1,1,-1
+      X(k) = ( X(k) - Au(k)*X(k+1) ) / pivot(k)
+    enddo
+  else
+    ! This is a more typical implementation of a tridiagonal solver than the one above.
+    ! It is mathematically equivalent but differs at roundoff, which can cascade up to larger values.
+
+    ! Factorization and forward sweep
+    I_pivot = 1.0 / Ad(1)
+    X(1) = R(1) * I_pivot
+    do k = 2,N
+      c1(K-1) = Au(k-1) * I_pivot
+      I_pivot = 1.0 / (Ad(k) - Al(k) * c1(K-1))
+      X(k) = (R(k) - Al(k) * X(k-1)) * I_pivot
+    enddo
+    ! Backward sweep
+    do k = N-1,1,-1
+      X(k) = X(k) - c1(K) * X(k+1)
+    enddo
+
+  endif
+
+end procedure solve_tridiagonal_system
+module procedure solve_diag_dominant_tridiag
+  real, dimension(N) :: c1       ! Au / pivot for the backward sweep [nondim]
+  real               :: d1       ! The next value of 1.0 - c1 [nondim]
+  real               :: I_pivot  ! The inverse of the most recent pivot [A-1]
+  real               :: denom_t1 ! The first term in the denominator of the inverse of the pivot [A]
+  integer            :: k        ! Loop index
+  I_pivot = 1.0 / (Ac(1) + Au(1))
+  d1 = Ac(1) * I_pivot
+  c1(1) = Au(1) * I_pivot
+  X(1) = R(1) * I_pivot
+  do k=2,N-1
+    denom_t1 = Ac(k) + d1 * Al(k)
+    I_pivot = 1.0 / (denom_t1 + Au(k))
+    d1 = denom_t1 * I_pivot
+    c1(k) = Au(k) * I_pivot
+    X(k) = (R(k) - Al(k) * X(k-1)) * I_pivot
+  enddo
+  I_pivot = 1.0 / (Ac(N) + d1 * Al(N))
+  X(N) = (R(N) - Al(N) * X(N-1)) * I_pivot
+  ! Backward sweep
+  do k=N-1,1,-1
+    X(k) = X(k) - c1(k) * X(k+1)
+  enddo
+
+end procedure solve_diag_dominant_tridiag
+end submodule regrid_solvers_s

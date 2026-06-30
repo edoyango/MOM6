@@ -52,21 +52,13 @@ interface build_horiz_interp_weights
   module procedure build_horiz_interp_weights_2d_to_2d
 end interface build_horiz_interp_weights
 
-contains
 
-!> Do any initialization for the horizontal interpolation
-subroutine horizontal_interp_init()
-  call horiz_interp_init()
+  interface
+module subroutine horizontal_interp_init()
 end subroutine horizontal_interp_init
-
-!> Do any initialization for the time and space interpolation infrastructure
-subroutine time_interp_extern_init()
-  call time_interp_external_init()
+module subroutine time_interp_extern_init()
 end subroutine time_interp_extern_init
-
-!> perform horizontal interpolation of a 2d field using pre-computed weights
-!! source and destination coordinates are 2d
-subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
+module subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
                                              missing_value, missing_permit, err_msg)
 
   type(horiz_interp_type),        intent(in)  :: Interp   !< type containing interpolation options and weights
@@ -80,16 +72,8 @@ subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose,
                                                           !! missing value for interpolation (0-3)
   character(len=*),     optional, intent(out) :: err_msg  !< error message
 
-  call horiz_interp(Interp, data_in, data_out, verbose, &
-                    mask_in, mask_out, missing_value, missing_permit, &
-                    err_msg, new_missing_handle=.true. )
-
 end subroutine horiz_interp_from_weights_field2d
-
-
-!> perform horizontal interpolation of a 3d field using pre-computed weights
-!! source and destination coordinates are 2d
-subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
+module subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
                                              missing_value, missing_permit, err_msg)
 
   type(horiz_interp_type),          intent(in)  :: Interp   !< type containing interpolation options and weights
@@ -103,15 +87,8 @@ subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose,
                                                             !! missing value for interpolation (0-3)
   character(len=*),       optional, intent(out) :: err_msg  !< error message
 
-  call horiz_interp(Interp, data_in, data_out, verbose, mask_in, mask_out, &
-                    missing_value, missing_permit, err_msg)
-
 end subroutine horiz_interp_from_weights_field3d
-
-
-!> build horizontal interpolation weights from source grid defined by 2d lon/lat to destination grid
-!! defined by 2d lon/lat
-subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, lat_out, &
+module subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, lat_out, &
                                                verbose, interp_method, num_nbrs, max_dist, &
                                                src_modulo, mask_in, mask_out, &
                                                is_latlon_in, is_latlon_out)
@@ -131,57 +108,31 @@ subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, 
   logical,          optional, intent(in) :: is_latlon_in   !< input grid is regular lat/lon grid
   logical,          optional, intent(in) :: is_latlon_out  !< output grid is regular lat/lon grid
 
-  call horiz_interp_new(Interp, lon_in, lat_in, lon_out, lat_out, &
-                        verbose, interp_method, num_nbrs, max_dist, &
-                        src_modulo, mask_in, mask_out, &
-                        is_latlon_in, is_latlon_out)
-
 end subroutine build_horiz_interp_weights_2d_to_2d
-
-
-!> Extracts and returns the axis data stored in an axistype.
-subroutine get_axis_data( axis, dat )
+module subroutine get_axis_data( axis, dat )
   type(axistype),     intent(in)  :: axis !< An axis type
   real, dimension(:), intent(out) :: dat  !< The data in the axis variable
 
-  call mpp_get_axis_data( axis, dat )
 end subroutine get_axis_data
-
-
-!> get size of an external field from field index
-function get_extern_field_size(index)
+module function get_extern_field_size(index)
 
   integer, intent(in) :: index         !< field index
   integer :: get_extern_field_size(4)  !< field size
 
-  get_extern_field_size = get_external_field_size(index)
-
 end function get_extern_field_size
-
-
-!> get size of an external field from field index
-function get_extern_field_axes(index)
+module function get_extern_field_axes(index)
 
   integer, intent(in) :: index                !< field index
   type(axistype) :: get_extern_field_axes(4)  !< field size
 
-  get_extern_field_axes = get_external_field_axes(index)
 end function get_extern_field_axes
-
-
-!> get missing value of an external field from field index
-function get_extern_field_missing(index)
+module function get_extern_field_missing(index)
 
   integer, intent(in) :: index     !< field index
   real :: get_extern_field_missing !< field missing value
 
-  get_extern_field_missing = get_external_field_missing(index)
-
 end function get_extern_field_missing
-
-
-!> Get information about the external fields.
-subroutine get_external_field_info(field, size, axes, missing)
+module subroutine get_external_field_info(field, size, axes, missing)
   type(external_field), intent(in) :: field
     !< Handle for time interpolated external field returned from a previous
     !! call to init_external_field()
@@ -192,34 +143,15 @@ subroutine get_external_field_info(field, size, axes, missing)
   real, optional, intent(inout) :: missing
     !< Missing value for the input data
 
-  if (present(size)) then
-    size(:) = get_extern_field_size(field%id)
-  endif
-
-  if (present(axes)) then
-    axes(:) = get_extern_field_axes(field%id)
-  endif
-
-  if (present(missing)) then
-    missing = get_extern_field_missing(field%id)
-  endif
 end subroutine get_external_field_info
-
-
-!> Read a scalar field based on model time.
-subroutine time_interp_extern_0d(field, time, data_in, verbose)
+module subroutine time_interp_extern_0d(field, time, data_in, verbose)
   type(external_field), intent(in) :: field    !< Handle for time interpolated field
   type(time_type),   intent(in)    :: time     !< The target time for the data
   real,              intent(inout) :: data_in  !< The interpolated value
   logical, optional, intent(in)    :: verbose  !< If true, write verbose output for debugging
 
-  call time_interp_external(field%id, time, data_in, verbose=verbose)
 end subroutine time_interp_extern_0d
-
-
-!> Read a 2d field from an external based on model time, potentially including horizontal
-!! interpolation and rotation of the data
-subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_interp, mask_out)
+module subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_interp, mask_out)
   type(external_field), intent(in)    :: field    !< Handle for time interpolated field
   type(time_type),      intent(in)    :: time     !< The target time for the data
   real, dimension(:,:), intent(inout) :: data_in  !< The array in which to store the interpolated values
@@ -230,13 +162,8 @@ subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_int
   logical, dimension(:,:), &
               optional, intent(out)   :: mask_out !< An array that is true where there is valid data
 
-  call time_interp_external(field%id, time, data_in, interp=interp, verbose=verbose, &
-                            horz_interp=horz_interp, mask_out=mask_out)
 end subroutine time_interp_extern_2d
-
-
-!> Read a 3d field based on model time, and rotate to the model grid
-subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_interp, mask_out)
+module subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_interp, mask_out)
   type(external_field),   intent(in)    :: field    !< Handle for time interpolated field
   type(time_type),        intent(in)    :: time     !< The target time for the data
   real, dimension(:,:,:), intent(inout) :: data_in  !< The array in which to store the interpolated values
@@ -247,13 +174,8 @@ subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_int
   logical, dimension(:,:,:), &
                 optional, intent(out)   :: mask_out !< An array that is true where there is valid data
 
-  call time_interp_external(field%id, time, data_in, interp=interp, verbose=verbose, &
-                            horz_interp=horz_interp, mask_out=mask_out)
 end subroutine time_interp_extern_3d
-
-
-!> initialize an external field
-function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
+module function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
     threading, ierr, ignore_axis_atts, correct_leap_year_inconsistency) &
     result(field)
 
@@ -277,15 +199,7 @@ function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
                                                  !! a model date of Feb 29. onto a common year on Feb. 28.
   type(external_field) :: field                  !< Handle to external field
 
-  if (present(MOM_Domain)) then
-    field%id = init_external_field(file, fieldname, domain=MOM_domain%mpp_domain, &
-             verbose=verbose, threading=threading, ierr=ierr, ignore_axis_atts=ignore_axis_atts, &
-             correct_leap_year_inconsistency=correct_leap_year_inconsistency)
-  else
-    field%id = init_external_field(file, fieldname, domain=domain, &
-             verbose=verbose, threading=threading, ierr=ierr, ignore_axis_atts=ignore_axis_atts, &
-             correct_leap_year_inconsistency=correct_leap_year_inconsistency)
-  endif
 end function init_extern_field
+  end interface
 
 end module MOM_interp_infra

@@ -1,0 +1,214 @@
+submodule (benchmark_initialization) benchmark_initialization_s
+#include <MOM_memory.h>
+  implicit none
+contains
+module procedure benchmark_initialize_topography
+  real :: min_depth ! The minimum basin depth [Z ~> m]
+  real :: PI        ! 3.1415926... calculated as 4*atan(1) [nondim]
+  real :: D0        ! A constant to make the maximum basin depth MAXIMUM_DEPTH [Z ~> m]
+  real :: x         ! Longitude relative to the domain edge, normalized by its extent [nondim]
+  real :: y         ! Latitude relative to the domain edge, normalized by its extent [nondim]
+# include "version_variable.h"
+  character(len=40)  :: mdl = "benchmark_initialize_topography" ! This subroutine's name.
+  integer :: i, j, is, ie, js, je
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
+
+  call MOM_mesg("  benchmark_initialization.F90, benchmark_initialize_topography: setting topography", 5)
+
+  call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "MINIMUM_DEPTH", min_depth, &
+                 "The minimum depth of the ocean.", units="m", default=0.0, scale=US%m_to_Z)
+
+  PI = 4.0*atan(1.0)
+  D0 = max_depth / 0.5
+
+!  Calculate the depth of the bottom.
+  do j=js,je ; do i=is,ie
+    x = (G%geoLonT(i,j)-G%west_lon) / G%len_lon
+    y = (G%geoLatT(i,j)-G%south_lat) / G%len_lat
+!  This sets topography that has a reentrant channel to the south.
+    D(i,j) = -D0 * ( y*(1.0 + 0.6*cos(4.0*PI*x)) &
+                   + 0.75*exp(-6.0*y) &
+                   + 0.05*cos(10.0*PI*x) - 0.7 )
+    if (D(i,j) > max_depth) D(i,j) = max_depth
+    if (D(i,j) < min_depth) D(i,j) = 0.
+  enddo ; enddo
+
+end procedure benchmark_initialize_topography
+module procedure benchmark_initialize_thickness
+  real :: e0(SZK_(GV)+1)     ! The resting interface heights, in depth units [Z ~> m],
+  real :: e_pert(SZK_(GV)+1) ! Interface height perturbations, positive upward,
+  real :: eta1D(SZK_(GV)+1)  ! Interface height relative to the sea surface
+  real :: SST       ! The initial sea surface temperature [C ~> degC].
+  real :: S_ref     ! A default value for salinities [S ~> ppt]
+  real :: T_light   ! A first guess at the temperature of the lightest layer [C ~> degC]
+  real :: T_int     ! The initial temperature of an interface [C ~> degC].
+  real :: ML_depth  ! The specified initial mixed layer depth, in depth units [Z ~> m].
+  real :: thermocline_scale ! The e-folding scale of the thermocline, in depth units [Z ~> m].
+  real, dimension(SZK_(GV)) :: &
+    T0, S0, &       ! Profiles of temperature [C ~> degC] and salinity [S ~> ppt]
+    rho_guess, &    ! Potential density at T0 & S0 [R ~> kg m-3].
+    drho_dT, &      ! Derivative of density with temperature [R C-1 ~> kg m-3 degC-1].
+    drho_dS         ! Derivative of density with salinity [R S-1 ~> kg m-3 ppt-1].
+  real :: pres(SZK_(GV))  ! Reference pressure [R L2 T-2 ~> Pa].
+  real :: a_exp     ! The fraction of the overall stratification that is exponential [nondim]
+  real :: I_ts, I_md ! Inverse lengthscales [Z-1 ~> m-1].
+  real :: T_frac    ! A ratio of the interface temperature to the range
+  real :: err       ! The normalized error between the profile's temperature and the
+  real :: derr_dz   ! The derivative of the normalized error between the profile's
+  real :: pi        ! 3.1415926... calculated as 4*atan(1) [nondim]
+  real :: z         ! A work variable for the interface position [Z ~> m]
+# include "version_variable.h"
+  character(len=40)  :: mdl = "benchmark_initialize_thickness" ! This subroutine's name.
+  integer :: i, j, k, k1, is, ie, js, je, nz, itt
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  if (.not.just_read) call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "BENCHMARK_ML_DEPTH_IC", ML_depth, &
+                 "Initial mixed layer depth in the benchmark test case.", &
+                 units='m', default=50.0, scale=US%m_to_Z, do_not_log=just_read)
+  call get_param(param_file, mdl, "BENCHMARK_THERMOCLINE_SCALE", thermocline_scale, &
+                 "Initial thermocline depth scale in the benchmark test case.", &
+                 default=500.0, units="m", scale=US%m_to_Z, do_not_log=just_read)
+  call get_param(param_file, mdl, "BENCHMARK_T_LIGHT", T_light, &
+                 "A first guess at the temperature of the lightest layer in the benchmark test case.", &
+                 units="degC", default=29.0, scale=US%degC_to_C, do_not_log=just_read)
+  call get_param(param_file, mdl, "S_REF", S_ref, &
+                 "The uniform salinities used to initialize the benchmark test case.", &
+                 units="ppt", default=35.0, scale=US%ppt_to_S, do_not_log=just_read)
+
+  if (just_read) return ! This subroutine has no run-time parameters.
+
+  call MOM_mesg("  benchmark_initialization.F90, benchmark_initialize_thickness: setting thickness", 5)
+
+  k1 = GV%nk_rho_varies + 1
+
+  a_exp = 0.9
+
+! This block calculates T0(k) for the purpose of diagnosing where the
+! interfaces will be found.
+  do k=1,nz
+    pres(k) = P_Ref ; S0(k) = S_ref
+  enddo
+  T0(k1) = T_light
+  call calculate_density(T0(k1), S0(k1), pres(k1), rho_guess(k1), eqn_of_state)
+  call calculate_density_derivs(T0(k1), S0(k1), pres(k1), drho_dT(k1), drho_dS(k1), eqn_of_state)
+
+! A first guess of the layers' temperatures.
+  do k=1,nz
+    T0(k) = T0(k1) + (GV%Rlay(k) - rho_guess(k1)) / drho_dT(k1)
+  enddo
+
+! Refine the guesses for each layer.
+  do itt=1,6
+    call calculate_density(T0, S0, pres, rho_guess, eqn_of_state)
+    call calculate_density_derivs(T0, S0, pres, drho_dT, drho_dS, eqn_of_state)
+    do k=1,nz
+      T0(k) = T0(k) + (GV%Rlay(k) - rho_guess(k)) / drho_dT(k)
+    enddo
+  enddo
+
+  pi = 4.0*atan(1.0)
+  I_ts = 1.0 / thermocline_scale
+  I_md = 1.0 / G%max_depth
+  do j=js,je ; do i=is,ie
+    SST = 0.5*(T0(k1)+T0(nz)) - 0.9*0.5*(T0(k1)-T0(nz)) * &
+                               cos(pi*(G%geoLatT(i,j)-G%south_lat)/(G%len_lat))
+
+    do k=1,nz ; e_pert(K) = 0.0 ; enddo
+
+    !   This sets the initial thickness (in [Z ~> m]) of the layers.  The thicknesses
+    ! are set to insure that:
+    !   1. each layer is at least GV%Angstrom_Z thick, and
+    !   2. the interfaces are where they should be based on the resting depths and
+    !      interface height perturbations, as long at this doesn't interfere with 1.
+    eta1D(nz+1) = -depth_tot(i,j)
+
+    do k=nz,2,-1
+      T_int = 0.5*(T0(k) + T0(k-1))
+      T_frac = (T_int - T0(nz)) / (SST - T0(nz))
+      ! Find the z such that T_frac = a exp(z/thermocline_scale) + (1-a) (z+D)/D
+      z = 0.0
+      do itt=1,6
+        err = a_exp * exp(z*I_ts) + (1.0 - a_exp) * (z*I_md + 1.0) - T_frac
+        derr_dz = a_exp * I_ts * exp(z*I_ts) + (1.0 - a_exp) * I_md
+        z = z - err / derr_dz
+      enddo
+      e0(K) = z
+!       e0(K) = -ML_depth + thermocline_scale * log((T_int - T0(nz)) / (SST - T0(nz)))
+
+      eta1D(K) = e0(K) + e_pert(K)
+
+      if (eta1D(K) > -ML_depth) eta1D(K) = -ML_depth
+
+      if (eta1D(K) < eta1D(K+1) + GV%Angstrom_Z) &
+        eta1D(K) = eta1D(K+1) + GV%Angstrom_Z
+
+      h(i,j,k) = max(eta1D(K) - eta1D(K+1), GV%Angstrom_Z)
+    enddo
+    h(i,j,1) = max(0.0 - eta1D(2), GV%Angstrom_Z)
+
+  enddo ; enddo
+
+end procedure benchmark_initialize_thickness
+module procedure benchmark_init_temperature_salinity
+  real :: T0(SZK_(GV))       ! A profile of temperatures [C ~> degC]
+  real :: S0(SZK_(GV))       ! A profile of salinities [S ~> ppt]
+  real :: S_ref              ! A default value for salinities [S ~> ppt]
+  real :: T_light            ! A first guess at the temperature of the lightest layer [C ~> degC]
+  real :: pres(SZK_(GV))     ! Reference pressure [R L2 T-2 ~> Pa]
+  real :: drho_dT(SZK_(GV))  ! Derivative of density with temperature [R C-1 ~> kg m-3 degC-1]
+  real :: drho_dS(SZK_(GV))  ! Derivative of density with salinity [R S-1 ~> kg m-3 ppt-1]
+  real :: rho_guess(SZK_(GV)) ! Potential density at T0 & S0 [R ~> kg m-3]
+  real :: PI                 ! 3.1415926... calculated as 4*atan(1) [nondim]
+  real :: SST                !  The initial sea surface temperature [C ~> degC]
+  character(len=40)  :: mdl = "benchmark_init_temperature_salinity" ! This subroutine's name.
+  integer :: i, j, k, k1, is, ie, js, je, nz, itt
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  call get_param(param_file, mdl, "S_REF", S_ref, &
+                 units="ppt", default=35.0, scale=US%ppt_to_S, do_not_log=.true.)
+  call get_param(param_file, mdl, "BENCHMARK_T_LIGHT", T_light, &
+                 units="degC", default=29.0, scale=US%degC_to_C, do_not_log=.true.)
+
+  if (just_read) return ! All run-time parameters have been read, so return.
+
+  k1 = GV%nk_rho_varies + 1
+
+  do k=1,nz
+    pres(k) = P_Ref ; S0(k) = S_ref
+  enddo
+
+  T0(k1) = T_light
+  call calculate_density(T0(k1), S0(k1), pres(k1), rho_guess(k1), eqn_of_state)
+  call calculate_density_derivs(T0, S0, pres, drho_dT, drho_dS, eqn_of_state, (/k1,k1/) )
+
+! A first guess of the layers' temperatures.                         !
+  do k=1,nz
+    T0(k) = T0(k1) + (GV%Rlay(k) - rho_guess(k1)) / drho_dT(k1)
+  enddo
+
+! Refine the guesses for each layer.                                 !
+  do itt = 1,6
+    call calculate_density(T0, S0, pres, rho_guess, eqn_of_state)
+    call calculate_density_derivs(T0, S0, pres, drho_dT, drho_dS, eqn_of_state)
+    do k=1,nz
+      T0(k) = T0(k) + (GV%Rlay(k) - rho_guess(k)) / drho_dT(k)
+    enddo
+  enddo
+
+  do k=1,nz ; do j=js,je ; do i=is,ie
+    T(i,j,k) = T0(k)
+    S(i,j,k) = S0(k)
+  enddo ; enddo ; enddo
+  PI = 4.0*atan(1.0)
+  do j=js,je ; do i=is,ie
+    SST = 0.5*(T0(k1)+T0(nz)) - 0.9*0.5*(T0(k1)-T0(nz)) * &
+                               cos(PI*(G%geoLatT(i,j)-G%south_lat)/(G%len_lat))
+    do k=1,k1-1
+      T(i,j,k) = SST
+    enddo
+  enddo ; enddo
+
+end procedure benchmark_init_temperature_salinity
+end submodule benchmark_initialization_s

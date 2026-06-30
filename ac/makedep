@@ -197,6 +197,8 @@ def create_deps(src_dirs, skip_dirs, makefile, debug, exec_target, fc_rule,
     for smod in list(parent2subobjs.keys()):
         if '@' in smod:
             continue
+        if not smod.endswith('.smod'):
+            continue
 
         parent_mod = smod[:-5] + '.mod'
         if parent_mod in mod2o:
@@ -476,7 +478,10 @@ def scan_fortran_file(src_file, defines=None):
             # Restore exclude state when exiting conditional block
             match = re_cpp_endif.match(line)
             if match:
-                cpp_exclude = cpp_group_stack.pop()
+                # Guard against orphaned #endif that opens in a sibling file
+                # (e.g. a cross-file #ifdef / #else / #endif split across a
+                # module and its submodule).
+                cpp_exclude = cpp_group_stack.pop() if cpp_group_stack else False
 
             # Skip lines inside of false condition blocks
             if cpp_exclude:

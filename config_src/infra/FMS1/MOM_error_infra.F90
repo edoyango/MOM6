@@ -14,31 +14,19 @@ public :: MOM_err, is_root_pe, stdlog, stdout
 !> Integer parameters encoding the severity of an error message
 public :: NOTE, WARNING, FATAL
 
-contains
 
-!> MOM_err writes an error message, and may cause the run to stop depending on the
-!! severity of the error.
-subroutine MOM_err(severity, message)
+  interface
+module subroutine MOM_err(severity, message)
   integer,           intent(in) :: severity !< The severity level of this error
   character(len=*),  intent(in) :: message  !< A message to write out
 
-  call mpp_error(severity, message)
 end subroutine MOM_err
-
-!> stdout returns the standard Fortran unit number for output
-integer function stdout()
-  stdout = mpp_stdout()
+integer module function stdout()
 end function stdout
-
-!> stdlog returns the standard Fortran unit number to use to log messages
-integer function stdlog()
-  stdlog = mpp_stdlog()
+integer module function stdlog()
 end function stdlog
-
-!> is_root_pe returns .true. if the current PE is the root PE.
-logical function is_root_pe()
-  is_root_pe = .false.
-  if (mpp_pe() == mpp_root_pe()) is_root_pe = .true.
+logical module function is_root_pe()
 end function is_root_pe
+  end interface
 
 end module MOM_error_infra

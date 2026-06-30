@@ -37,10 +37,9 @@ type, public :: PressureForce_CS ; private
   type(PressureForce_Mont_CS) :: PressureForce_Mont
 end type PressureForce_CS
 
-contains
 
-!> A thin layer between the model and the Boussinesq and non-Boussinesq pressure force routines.
-subroutine PressureForce(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, p_atm, pbce, eta)
+  interface
+module subroutine PressureForce(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, p_atm, pbce, eta)
   type(ocean_grid_type),   intent(in)  :: G    !< The ocean's grid structure
   type(verticalGrid_type), intent(in)  :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),   intent(in)  :: US   !< A dimensional unit scaling type
@@ -63,28 +62,8 @@ subroutine PressureForce(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, p_atm, pb
                  optional, intent(out) :: eta  !< The bottom mass used to calculate PFu and PFv,
                                                !! [H ~> m or kg m-2], with any tidal contributions.
 
-  if (CS%Analytic_FV_PGF) then
-    if (GV%Boussinesq) then
-      call PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS%PressureForce_FV, &
-                                   ALE_CSp, ADp, p_atm, pbce, eta)
-    else
-      call PressureForce_FV_nonBouss(h, tv, PFu, PFv, G, GV, US, CS%PressureForce_FV, &
-                                      ALE_CSp, ADp, p_atm, pbce, eta)
-    endif
-  else
-    if (GV%Boussinesq) then
-      call PressureForce_Mont_Bouss(h, tv, PFu, PFv, G, GV, US, CS%PressureForce_Mont, &
-                                    p_atm, pbce, eta)
-    else
-      call PressureForce_Mont_nonBouss(h, tv, PFu, PFv, G, GV, US, CS%PressureForce_Mont, &
-                                       p_atm, pbce, eta)
-    endif
-  endif
-
-end subroutine Pressureforce
-
-!> Initialize the pressure force control structure
-subroutine PressureForce_init(Time, G, GV, US, param_file, diag, CS, ADp, SAL_CSp, tides_CSp)
+end subroutine PressureForce
+module subroutine PressureForce_init(Time, G, GV, US, param_file, diag, CS, ADp, SAL_CSp, tides_CSp)
   type(time_type), target, intent(in)    :: Time !< Current model time
   type(ocean_grid_type),   intent(in)    :: G    !< Ocean grid structure
   type(verticalGrid_type), intent(in)    :: GV   !< Vertical grid structure
@@ -95,32 +74,9 @@ subroutine PressureForce_init(Time, G, GV, US, param_file, diag, CS, ADp, SAL_CS
   type(accel_diag_ptrs),   pointer       :: ADp !< Acceleration diagnostic pointers
   type(SAL_CS),           intent(in), optional :: SAL_CSp !< SAL control structure
   type(tidal_forcing_CS), intent(in), optional :: tides_CSp !< Tide control structure
-#include "version_variable.h"
-  character(len=40)  :: mdl = "MOM_PressureForce" ! This module's name.
 
   ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mdl, version, "")
-  call get_param(param_file, mdl, "ANALYTIC_FV_PGF", CS%Analytic_FV_PGF, &
-                 "If true the pressure gradient forces are calculated "//&
-                 "with a finite volume form that analytically integrates "//&
-                 "the equations of state in pressure to avoid any "//&
-                 "possibility of numerical thermobaric instability, as "//&
-                 "described in Adcroft et al., O. Mod. (2008).", default=.true.)
-
-  if (CS%Analytic_FV_PGF) then
-    call PressureForce_FV_init(Time, G, GV, US, param_file, diag, &
-             CS%PressureForce_FV, ADp, SAL_CSp, tides_CSp)
-  else
-    call PressureForce_Mont_init(Time, G, GV, US, param_file, diag, &
-             CS%PressureForce_Mont, SAL_CSp, tides_CSp)
-  endif
 end subroutine PressureForce_init
-
-!> \namespace mom_pressureforce
-!!
-!! This thin module provides a branch to two forms of the horizontal accelerations
-!! due to pressure gradients. The two options currently available are a
-!! Montgomery potential form (used in traditional isopycnal layer models), and the
-!! analytic finite volume form.
+  end interface
 
 end module MOM_PressureForce

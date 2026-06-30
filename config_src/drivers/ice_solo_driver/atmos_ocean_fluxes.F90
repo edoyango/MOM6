@@ -10,11 +10,9 @@ implicit none ; private
 
 public :: aof_set_coupler_flux
 
-contains
 
-!> This subroutine duplicates an interface used by the FMS coupler, but only
-!! returns a value of -1.  None of the arguments are used for anything.
-function aof_set_coupler_flux(name, flux_type, implementation, atm_tr_index,     &
+  interface
+module function aof_set_coupler_flux(name, flux_type, implementation, atm_tr_index,     &
                               param, flag, mol_wt, ice_restart_file, ocean_restart_file, &
                               units, caller, verbosity)  result (coupler_index)
 
@@ -37,8 +35,7 @@ function aof_set_coupler_flux(name, flux_type, implementation, atm_tr_index,    
   ! None of these arguments are used for anything.
 
   integer :: coupler_index
-  coupler_index = -1
-
 end function aof_set_coupler_flux
+  end interface
 
 end module atmos_ocean_fluxes_mod

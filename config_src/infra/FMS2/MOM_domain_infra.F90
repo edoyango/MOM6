@@ -167,10 +167,9 @@ end type MOM_domain_type
 
 integer, parameter :: To_All = To_East + To_West + To_North + To_South !< A flag for passing in all directions
 
-contains
 
-!> pass_var_3d does a halo update for a three-dimensional array.
-subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo, &
+  interface
+module subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo, &
                        clock)
   real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
                                                     !! exchanged.
@@ -193,31 +192,9 @@ subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo, &
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
 
-  integer :: dirflag
-  logical :: block_til_complete
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-  block_til_complete = .true.
-  if (present(complete)) block_til_complete = complete
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_update_domains(array, MOM_dom%mpp_domain, flags=dirflag, &
-                        complete=block_til_complete, position=position, &
-                        whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_update_domains(array, MOM_dom%mpp_domain, flags=dirflag, &
-                          complete=block_til_complete, position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_var_3d
-
-!> pass_var_2d does a halo update for a two-dimensional array.
-subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo, inner_halo, clock)
+module subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo, inner_halo, clock)
   real, dimension(:,:),  intent(inout) :: array    !< The array which is having its halos points
                                                    !! exchanged.
   type(MOM_domain_type), intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
@@ -243,100 +220,9 @@ subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo, inner
                                                    !! started then stopped to time this routine.
 
   ! Local variables
-  real, allocatable, dimension(:,:) :: tmp
-  integer :: pos, i_halo, j_halo
-  integer :: isc, iec, jsc, jec, isd, ied, jsd, jed, IscB, IecB, JscB, JecB
-  integer :: inner, i, j, isfw, iefw, isfe, iefe, jsfs, jefs, jsfn, jefn
-  integer :: dirflag
-  logical :: block_til_complete
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-  block_til_complete = .true. ; if (present(complete)) block_til_complete = complete
-  pos = CENTER ; if (present(position)) pos = position
-
-  if (present(inner_halo)) then ; if (inner_halo >= 0) then
-    ! Store the original values.
-    allocate(tmp(size(array,1), size(array,2)))
-    tmp(:,:) = array(:,:)
-    block_til_complete = .true.
-  endif ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_update_domains(array, MOM_dom%mpp_domain, flags=dirflag, &
-                        complete=block_til_complete, position=position, &
-                        whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_update_domains(array, MOM_dom%mpp_domain, flags=dirflag, &
-                        complete=block_til_complete, position=position)
-  endif
-
-  if (present(inner_halo)) then ; if (inner_halo >= 0) then
-    call mpp_get_compute_domain(MOM_dom%mpp_domain, isc, iec, jsc, jec)
-    call mpp_get_data_domain(MOM_dom%mpp_domain, isd, ied, jsd, jed)
-    ! Convert to local indices for arrays starting at 1.
-    isc = isc - (isd-1) ; iec = iec - (isd-1) ; ied = ied - (isd-1) ; isd = 1
-    jsc = jsc - (jsd-1) ; jec = jec - (jsd-1) ; jed = jed - (jsd-1) ; jsd = 1
-    i_halo = min(inner_halo, isc-1) ; j_halo = min(inner_halo, jsc-1)
-
-    ! Figure out the array index extents of the eastern, western, northern and southern regions to copy.
-    if (pos == CENTER) then
-      if (size(array,1) == ied) then
-        isfw = isc - i_halo ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong i-size for CENTER array.") ; endif
-      if (size(array,2) == jed) then
-        isfw = isc - i_halo ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong j-size for CENTER array.") ; endif
-    elseif (pos == CORNER) then
-      if (size(array,1) == ied) then
-        isfw = max(isc - (i_halo+1), 1) ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      elseif (size(array,1) == ied+1) then
-        isfw = isc - i_halo ; iefw = isc+1 ; isfe = iec+1 ; iefe = min(iec + 1 + i_halo, ied+1)
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong i-size for CORNER array.") ; endif
-      if (size(array,2) == jed) then
-        jsfs = max(jsc - (j_halo+1), 1) ; jefs = jsc ; jsfn = jec ; jefn = jec + j_halo
-      elseif (size(array,2) == jed+1) then
-        jsfs = jsc - j_halo ; jefs = jsc+1 ; jsfn = jec+1 ; jefn = min(jec + 1 + j_halo, jed+1)
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong j-size for CORNER array.") ; endif
-    elseif (pos == NORTH_FACE) then
-      if (size(array,1) == ied) then
-        isfw = isc - i_halo ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong i-size for NORTH_FACE array.") ; endif
-      if (size(array,2) == jed) then
-        jsfs = max(jsc - (j_halo+1), 1) ; jefs = jsc ; jsfn = jec ; jefn = jec + j_halo
-      elseif (size(array,2) == jed+1) then
-        jsfs = jsc - j_halo ; jefs = jsc+1 ; jsfn = jec+1 ; jefn = min(jec + 1 + j_halo, jed+1)
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong j-size for NORTH_FACE array.") ; endif
-    elseif (pos == EAST_FACE) then
-      if (size(array,1) == ied) then
-        isfw = max(isc - (i_halo+1), 1) ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      elseif (size(array,1) == ied+1) then
-        isfw = isc - i_halo ; iefw = isc+1 ; isfe = iec+1 ; iefe = min(iec + 1 + i_halo, ied+1)
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong i-size for EAST_FACE array.") ; endif
-      if (size(array,2) == jed) then
-        isfw = isc - i_halo ; iefw = isc ; isfe = iec ; iefe = iec + i_halo
-      else ; call MOM_error(FATAL, "pass_var_2d: wrong j-size for EAST_FACE array.") ; endif
-    else
-      call MOM_error(FATAL, "pass_var_2d: Unrecognized position")
-    endif
-
-    ! Copy back the stored inner halo points
-    do j=jsfs,jefn ; do i=isfw,iefw ; array(i,j) = tmp(i,j) ; enddo ; enddo
-    do j=jsfs,jefn ; do i=isfe,iefe ; array(i,j) = tmp(i,j) ; enddo ; enddo
-    do j=jsfs,jefs ; do i=isfw,iefe ; array(i,j) = tmp(i,j) ; enddo ; enddo
-    do j=jsfn,jefn ; do i=isfw,iefe ; array(i,j) = tmp(i,j) ; enddo ; enddo
-
-    deallocate(tmp)
-  endif ; endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_var_2d
-
-!> pass_var_start_2d starts a halo update for a two-dimensional array.
-function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo, &
+module function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo, &
                            clock)
   real, dimension(:,:),   intent(inout) :: array    !< The array which is having its halos points
                                                     !! exchanged.
@@ -360,28 +246,9 @@ function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo, &
                                                     !! started then stopped to time this routine.
   integer                               :: pass_var_start_2d  !<The integer index for this update.
 
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    pass_var_start_2d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position, &
-                            whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    pass_var_start_2d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end function pass_var_start_2d
-
-!> pass_var_start_3d starts a halo update for a three-dimensional array.
-function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo, &
+module function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo, &
                            clock)
   real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
                                                     !! exchanged.
@@ -405,28 +272,9 @@ function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo, &
                                                     !! started then stopped to time this routine.
   integer                               :: pass_var_start_3d  !< The integer index for this update.
 
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    pass_var_start_3d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position, &
-                            whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    pass_var_start_3d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end function pass_var_start_3d
-
-!> pass_var_complete_2d completes a halo update for a two-dimensional array.
-subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, halo, &
+module subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, halo, &
                                 clock)
   integer,                intent(in)    :: id_update !< The integer id of this update which has
                                                     !! been returned from a previous call to
@@ -448,28 +296,9 @@ subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, h
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
 
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_complete_update_domains(id_update, array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position, &
-                            whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_complete_update_domains(id_update, array, MOM_dom%mpp_domain, &
-                                     flags=dirflag, position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_var_complete_2d
-
-!> pass_var_complete_3d completes a halo update for a three-dimensional array.
-subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, halo, &
+module subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, halo, &
                                 clock)
   integer,                intent(in)    :: id_update !< The integer id of this update which has
                                                     !! been returned from a previous call to
@@ -491,29 +320,9 @@ subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, h
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
 
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_complete_update_domains(id_update, array, MOM_dom%mpp_domain, &
-                            flags=dirflag, position=position, &
-                            whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_complete_update_domains(id_update, array, MOM_dom%mpp_domain, &
-                                     flags=dirflag, position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_var_complete_3d
-
-!> pass_vector_2d does a halo update for a pair of two-dimensional arrays
-!! representing the components of a two-dimensional horizontal vector.
-subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+module subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
                           clock)
   real, dimension(:,:),  intent(inout) :: u_cmpt    !< The nominal zonal (u) component of the vector
                                                     !! pair which is having its halos points
@@ -542,39 +351,9 @@ subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
                                                     !! started then stopped to time this routine.
 
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-  logical :: block_til_complete
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-  block_til_complete = .true.
-  if (present(complete)) block_til_complete = complete
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_update_domains(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                   gridtype=stagger_local, complete = block_til_complete, &
-                   whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_update_domains(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                   gridtype=stagger_local, complete = block_til_complete)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_vector_2d
-
-!> fill_vector_symmetric_edges_2d does an usual set of halo updates that only
-!! fill in the values at the edge of a pair of symmetric memory two-dimensional
-!! arrays representing the components of a two-dimensional horizontal vector.
-!! If symmetric memory is not being used, this subroutine does nothing except to
-!! possibly turn optional cpu clocks on or off.
-subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scalar, &
+module subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scalar, &
                                           clock)
   real, dimension(:,:),  intent(inout) :: u_cmpt  !< The nominal zonal (u) component of the vector
                                                   !! pair which is having its halos points
@@ -593,73 +372,9 @@ subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scal
                                                    !! started then stopped to time this routine.
 
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-  integer :: i, j, isc, iec, jsc, jec, isd, ied, jsd, jed, IscB, IecB, JscB, JecB
-  real, allocatable, dimension(:) :: sbuff_x, sbuff_y, wbuff_x, wbuff_y
-  logical :: block_til_complete
-
-  if (.not. MOM_dom%symmetric) then
-      return
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  if (.not.(stagger_local == CGRID_NE .or. stagger_local == BGRID_NE)) return
-
-  call mpp_get_compute_domain(MOM_dom%mpp_domain, isc, iec, jsc, jec)
-  call mpp_get_data_domain(MOM_dom%mpp_domain, isd, ied, jsd, jed)
-
-  ! Adjust isc, etc., to account for the fact that the input arrays indices all
-  ! start at 1 (and are effectively on a SW grid!).
-  isc = isc - (isd-1) ; iec = iec - (isd-1)
-  jsc = jsc - (jsd-1) ; jec = jec - (jsd-1)
-  IscB = isc ; IecB = iec+1 ; JscB = jsc ; JecB = jec+1
-
-  dirflag = To_All ! 60
-  if (present(scalar)) then ; if (scalar) dirflag = To_All+SCALAR_PAIR ; endif
-
-  if (stagger_local == CGRID_NE) then
-    allocate(wbuff_x(jsc:jec)) ; allocate(sbuff_y(isc:iec))
-    wbuff_x(:) = 0.0 ; sbuff_y(:) = 0.0
-    call mpp_get_boundary(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                          wbufferx=wbuff_x, sbuffery=sbuff_y, &
-                          gridtype=CGRID_NE)
-    do i=isc,iec
-      v_cmpt(i,JscB) = sbuff_y(i)
-    enddo
-    do j=jsc,jec
-      u_cmpt(IscB,j) = wbuff_x(j)
-    enddo
-    deallocate(wbuff_x) ; deallocate(sbuff_y)
-  elseif  (stagger_local == BGRID_NE) then
-    allocate(wbuff_x(JscB:JecB)) ; allocate(sbuff_x(IscB:IecB))
-    allocate(wbuff_y(JscB:JecB)) ; allocate(sbuff_y(IscB:IecB))
-    wbuff_x(:) = 0.0 ; wbuff_y(:) = 0.0 ; sbuff_x(:) = 0.0 ; sbuff_y(:) = 0.0
-    call mpp_get_boundary(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                          wbufferx=wbuff_x, sbufferx=sbuff_x, &
-                          wbuffery=wbuff_y, sbuffery=sbuff_y, &
-                          gridtype=BGRID_NE)
-    do I=IscB,IecB
-      u_cmpt(I,JscB) = sbuff_x(I) ; v_cmpt(I,JscB) = sbuff_y(I)
-    enddo
-    do J=JscB,JecB
-      u_cmpt(IscB,J) = wbuff_x(J) ; v_cmpt(IscB,J) = wbuff_y(J)
-    enddo
-    deallocate(wbuff_x) ; deallocate(sbuff_x)
-    deallocate(wbuff_y) ; deallocate(sbuff_y)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine fill_vector_symmetric_edges_2d
-
-!> pass_vector_3d does a halo update for a pair of three-dimensional arrays
-!! representing the components of a three-dimensional horizontal vector.
-subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+module subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
                           clock)
   real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
                                                     !! pair which is having its halos points
@@ -688,36 +403,9 @@ subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
                                                     !! started then stopped to time this routine.
 
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-  logical :: block_til_complete
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-  block_til_complete = .true.
-  if (present(complete)) block_til_complete = complete
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_update_domains(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                   gridtype=stagger_local, complete = block_til_complete, &
-                   whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_update_domains(u_cmpt, v_cmpt, MOM_dom%mpp_domain, flags=dirflag, &
-                   gridtype=stagger_local, complete = block_til_complete)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_vector_3d
-
-!> pass_vector_start_2d starts a halo update for a pair of two-dimensional arrays
-!! representing the components of a two-dimensional horizontal vector.
-function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+module function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
                               clock)
   real, dimension(:,:),   intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
                                                     !! pair which is having its halos points
@@ -748,33 +436,9 @@ function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
                                                                 !! update.
 
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    pass_vector_start_2d = mpp_start_update_domains(u_cmpt, v_cmpt, &
-        MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local, &
-        whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    pass_vector_start_2d = mpp_start_update_domains(u_cmpt, v_cmpt, &
-        MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end function pass_vector_start_2d
-
-!> pass_vector_start_3d starts a halo update for a pair of three-dimensional arrays
-!! representing the components of a three-dimensional horizontal vector.
-function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+module function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
                               clock)
   real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
                                                     !! pair which is having its halos points
@@ -804,33 +468,9 @@ function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
   integer                               :: pass_vector_start_3d !< The integer index for this
                                                                 !! update.
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    pass_vector_start_3d = mpp_start_update_domains(u_cmpt, v_cmpt, &
-        MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local, &
-        whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    pass_vector_start_3d = mpp_start_update_domains(u_cmpt, v_cmpt, &
-        MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end function pass_vector_start_3d
-
-!> pass_vector_complete_2d completes a halo update for a pair of two-dimensional arrays
-!! representing the components of a two-dimensional horizontal vector.
-subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+module subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
                                    clock)
   integer,                intent(in)    :: id_update !< The integer id of this update which has been
                                                     !! returned from a previous call to
@@ -858,33 +498,9 @@ subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_complete_update_domains(id_update, u_cmpt, v_cmpt, &
-             MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local, &
-             whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_complete_update_domains(id_update, u_cmpt, v_cmpt, &
-             MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_vector_complete_2d
-
-!> pass_vector_complete_3d completes a halo update for a pair of three-dimensional
-!! arrays representing the components of a three-dimensional horizontal vector.
-subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+module subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
                                    clock)
   integer,                intent(in)    :: id_update !< The integer id of this update which has been
                                                     !! returned from a previous call to
@@ -912,32 +528,9 @@ subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_complete_update_domains(id_update, u_cmpt, v_cmpt, &
-             MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local, &
-                   whalo=halo, ehalo=halo, shalo=halo, nhalo=halo)
-  else
-    call mpp_complete_update_domains(id_update, u_cmpt, v_cmpt, &
-             MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_vector_complete_3d
-
-!> create_var_group_pass_2d sets up a group of two-dimensional array halo updates.
-subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
+module subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
                                     halo, clock)
   type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
                                                     !! group update. This data will be used in
@@ -959,30 +552,9 @@ subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
   ! Local variables
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (mpp_group_update_initialized(group)) then
-    call mpp_reset_group_update_field(group,array)
-  elseif (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_create_group_update(group, array, MOM_dom%mpp_domain, flags=dirflag, &
-                                 position=position, whalo=halo, ehalo=halo, &
-                                 shalo=halo, nhalo=halo)
-  else
-    call mpp_create_group_update(group, array, MOM_dom%mpp_domain, flags=dirflag, &
-                                 position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_var_group_pass_2d
-
-!> create_var_group_pass_3d sets up a group of three-dimensional array halo updates.
-subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, halo, &
+module subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, halo, &
                                     clock)
   type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
                                                     !! group update. This data will be used in
@@ -1004,30 +576,9 @@ subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, h
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
   ! Local variables
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  dirflag = To_All ! 60
-  if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
-
-  if (mpp_group_update_initialized(group)) then
-    call mpp_reset_group_update_field(group,array)
-  elseif (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_create_group_update(group, array, MOM_dom%mpp_domain, flags=dirflag, &
-                                 position=position, whalo=halo, ehalo=halo, &
-                                 shalo=halo, nhalo=halo)
-  else
-    call mpp_create_group_update(group, array, MOM_dom%mpp_domain, flags=dirflag, &
-                                 position=position)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_var_group_pass_3d
-
-!> create_vector_group_pass_2d sets up a group of two-dimensional vector halo updates.
-subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+module subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
                                        clock)
   type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
                                                     !! group update. This data will be used in
@@ -1056,34 +607,9 @@ subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction
   integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (mpp_group_update_initialized(group)) then
-    call mpp_reset_group_update_field(group,u_cmpt, v_cmpt)
-  elseif (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_create_group_update(group, u_cmpt, v_cmpt, MOM_dom%mpp_domain, &
-            flags=dirflag, gridtype=stagger_local, whalo=halo, ehalo=halo, &
-            shalo=halo, nhalo=halo)
-  else
-    call mpp_create_group_update(group, u_cmpt, v_cmpt, MOM_dom%mpp_domain, &
-            flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_vector_group_pass_2d
-
-!> create_vector_group_pass_3d sets up a group of three-dimensional vector halo updates.
-subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+module subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
                                        clock)
   type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
                                                     !! group update. This data will be used in
@@ -1113,34 +639,9 @@ subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction
                                                     !! started then stopped to time this routine.
 
   ! Local variables
-  integer :: stagger_local
-  integer :: dirflag
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  stagger_local = CGRID_NE ! Default value for type of grid
-  if (present(stagger)) stagger_local = stagger
-
-  dirflag = To_All ! 60
-  if (present(direction)) then ; if (direction > 0) dirflag = direction ; endif
-
-  if (mpp_group_update_initialized(group)) then
-    call mpp_reset_group_update_field(group,u_cmpt, v_cmpt)
-  elseif (present(halo) .and. MOM_dom%thin_halo_updates) then
-    call mpp_create_group_update(group, u_cmpt, v_cmpt, MOM_dom%mpp_domain, &
-            flags=dirflag, gridtype=stagger_local, whalo=halo, ehalo=halo, &
-            shalo=halo, nhalo=halo)
-  else
-    call mpp_create_group_update(group, u_cmpt, v_cmpt, MOM_dom%mpp_domain, &
-            flags=dirflag, gridtype=stagger_local)
-  endif
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_vector_group_pass_3d
-
-!> do_group_pass carries out a group halo update.
-subroutine do_group_pass(group, MOM_dom, clock)
+module subroutine do_group_pass(group, MOM_dom, clock)
   type(group_pass_type), intent(inout) :: group     !< The data type that store information for
                                                     !! group update. This data will be used in
                                                     !! do_group_pass.
@@ -1149,18 +650,9 @@ subroutine do_group_pass(group, MOM_dom, clock)
                                                     !! sent.
   integer,     optional, intent(in)    :: clock     !< The handle for a cpu time clock that should be
                                                     !! started then stopped to time this routine.
-  real :: d_type
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  call mpp_do_group_update(group, MOM_dom%mpp_domain, d_type)
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine do_group_pass
-
-!> start_group_pass starts out a group halo update.
-subroutine start_group_pass(group, MOM_dom, clock)
+module subroutine start_group_pass(group, MOM_dom, clock)
   type(group_pass_type), intent(inout) :: group    !< The data type that store information for
                                                    !! group update. This data will be used in
                                                    !! do_group_pass.
@@ -1170,18 +662,9 @@ subroutine start_group_pass(group, MOM_dom, clock)
   integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                    !! started then stopped to time this routine.
 
-  real                                 :: d_type
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  call mpp_start_group_update(group, MOM_dom%mpp_domain, d_type)
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine start_group_pass
-
-!> complete_group_pass completes a group halo update.
-subroutine complete_group_pass(group, MOM_dom, clock)
+module subroutine complete_group_pass(group, MOM_dom, clock)
   type(group_pass_type), intent(inout) :: group    !< The data type that store information for
                                                    !! group update. This data will be used in
                                                    !! do_group_pass.
@@ -1190,19 +673,9 @@ subroutine complete_group_pass(group, MOM_dom, clock)
                                                    !! sent.
   integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                    !! started then stopped to time this routine.
-  real                                 :: d_type
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
-
-  call mpp_complete_group_update(group, MOM_dom%mpp_domain, d_type)
-
-  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine complete_group_pass
-
-
-!> Pass a 2-D array from one MOM domain to another
-subroutine redistribute_array_2d(Domain1, array1, Domain2, array2, complete)
+module subroutine redistribute_array_2d(Domain1, array1, Domain2, array2, complete)
   type(domain2d), &
            intent(in)  :: Domain1 !< The MOM domain from which to extract information.
   real, dimension(:,:), intent(in) :: array1 !< The array from which to extract information.
@@ -1212,16 +685,9 @@ subroutine redistribute_array_2d(Domain1, array1, Domain2, array2, complete)
   logical, optional, intent(in) :: complete  !< If true, finish communication before proceeding.
 
   ! Local variables
-  logical :: do_complete
-
-  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
-
-  call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
 end subroutine redistribute_array_2d
-
-!> Pass a 3-D array from one MOM domain to another
-subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
+module subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
   type(domain2d), &
            intent(in)  :: Domain1 !< The MOM domain from which to extract information.
   real, dimension(:,:,:), intent(in) :: array1 !< The array from which to extract information.
@@ -1231,16 +697,9 @@ subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
   logical, optional, intent(in) :: complete  !< If true, finish communication before proceeding.
 
   ! Local variables
-  logical :: do_complete
-
-  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
-
-  call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
 end subroutine redistribute_array_3d
-
-!> Pass a 4-D array from one MOM domain to another
-subroutine redistribute_array_4d(Domain1, array1, Domain2, array2, complete)
+module subroutine redistribute_array_4d(Domain1, array1, Domain2, array2, complete)
   type(domain2d), &
            intent(in)  :: Domain1 !< The MOM domain from which to extract information.
   real, dimension(:,:,:,:), intent(in) :: array1 !< The array from which to extract information.
@@ -1250,17 +709,9 @@ subroutine redistribute_array_4d(Domain1, array1, Domain2, array2, complete)
   logical, optional, intent(in) :: complete  !< If true, finish communication before proceeding.
 
   ! Local variables
-  logical :: do_complete
-
-  do_complete=.true. ; if (PRESENT(complete)) do_complete = complete
-
-  call mpp_redistribute(Domain1, array1, Domain2, array2, do_complete)
 
 end subroutine redistribute_array_4d
-
-
-!> Rescale the values of a 4-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_4d(domain, array, scale, zero_zeros)
+module subroutine rescale_comp_data_4d(domain, array, scale, zero_zeros)
   type(MOM_domain_type),    intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:,:,:), intent(inout) :: array  !< The array which is having the data in its
                                                     !! computational domain rescaled
@@ -1268,28 +719,9 @@ subroutine rescale_comp_data_4d(domain, array, scale, zero_zeros)
                                                     !! values in the computational domain of array
   logical,        optional, intent(in)    :: zero_zeros !< If present and true, convert negative zeros
                                                     !! into ordinary signless zeros.
-  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
-  integer :: is, ie, js, je, i, j, k, m
-
-  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
-
-  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
-
-  call get_simple_array_i_ind(domain, size(array,1), is, ie)
-  call get_simple_array_j_ind(domain, size(array,2), js, je)
-  if (scale /= 1.0) &
-    array(is:ie,js:je,:,:) = scale*array(is:ie,js:je,:,:)
-
-  if (unsign_zeros) then ! Convert negative zeros into zeros
-    do m=1,size(array,4) ; do k=1,size(array,3) ; do j=js,je ; do i=is,ie
-      if (array(i,j,k,m) == 0.0) array(i,j,k,m) = 0.0
-    enddo ; enddo ; enddo ; enddo
-  endif
 
 end subroutine rescale_comp_data_4d
-
-!> Rescale the values of a 3-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_3d(domain, array, scale, zero_zeros)
+module subroutine rescale_comp_data_3d(domain, array, scale, zero_zeros)
   type(MOM_domain_type),  intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:,:), intent(inout) :: array  !< The array which is having the data in its
                                                   !! computational domain rescaled
@@ -1297,28 +729,9 @@ subroutine rescale_comp_data_3d(domain, array, scale, zero_zeros)
                                                   !! values in the computational domain of array
   logical,      optional, intent(in)    :: zero_zeros !< If present and true, convert negative zeros
                                                   !! into ordinary signless zeros.
-  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
-  integer :: is, ie, js, je, i, j, k
-
-  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
-
-  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
-
-  call get_simple_array_i_ind(domain, size(array,1), is, ie)
-  call get_simple_array_j_ind(domain, size(array,2), js, je)
-  if (scale /= 1.0) &
-    array(is:ie,js:je,:) = scale*array(is:ie,js:je,:)
-
-  if (unsign_zeros) then ! Convert negative zeros into zeros
-    do k=1,size(array,3) ; do j=js,je ; do i=is,ie
-      if (array(i,j,k) == 0.0) array(i,j,k) = 0.0
-    enddo ; enddo ; enddo
-  endif
 
 end subroutine rescale_comp_data_3d
-
-!> Rescale the values of a 2-D array in its computational domain by a constant factor
-subroutine rescale_comp_data_2d(domain, array, scale, zero_zeros)
+module subroutine rescale_comp_data_2d(domain, array, scale, zero_zeros)
   type(MOM_domain_type), intent(in)    :: domain !< MOM domain from which to extract information
   real, dimension(:,:),  intent(inout) :: array  !< The array which is having the data in its
                                                  !! computational domain rescaled
@@ -1326,29 +739,9 @@ subroutine rescale_comp_data_2d(domain, array, scale, zero_zeros)
                                                  !! values in the computational domain of array
   logical,      optional, intent(in)   :: zero_zeros !< If present and true, convert negative zeros
                                                   !! into ordinary signless zeros.
-  logical :: unsign_zeros ! If true, convert negative zeros into ordinary signless zeros.
-  integer :: is, ie, js, je, i, j
-
-  unsign_zeros = .false. ; if (present(zero_zeros)) unsign_zeros = zero_zeros
-
-  if ((scale == 1.0) .and. (.not.unsign_zeros)) return
-
-  call get_simple_array_i_ind(domain, size(array,1), is, ie)
-  call get_simple_array_j_ind(domain, size(array,2), js, je)
-  if (scale /= 1.0) &
-    array(is:ie,js:je) = scale*array(is:ie,js:je)
-
-  if (unsign_zeros) then ! Convert negative zeros into zeros
-    do j=js,je ; do i=is,ie
-      if (array(i,j) == 0.0) array(i,j) = 0.0
-    enddo ; enddo
-  endif
 
 end subroutine rescale_comp_data_2d
-
-!> create_MOM_domain creates and initializes a MOM_domain_type variables, based on the information
-!! provided in arguments.
-subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, layout, io_layout, &
+module subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, layout, io_layout, &
                              domain_name, mask_table, symmetric, thin_halos, nonblocking)
   type(MOM_domain_type),      pointer    :: MOM_dom   !< A pointer to the MOM_domain_type being defined here.
   integer, dimension(2),      intent(in) :: n_global  !< The number of points on the global grid in
@@ -1368,131 +761,22 @@ subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, l
                                                       !! nonblocking halo updates, or false if missing.
 
   ! local variables
-  integer, dimension(4) :: global_indices ! The lower and upper global i- and j-index bounds
-  integer :: X_FLAGS  ! A combination of integers encoding the x-direction grid connectivity.
-  integer :: Y_FLAGS  ! A combination of integers encoding the y-direction grid connectivity.
-  character(len=200) :: mesg    ! A string for use in error messages
-  logical :: mask_table_exists  ! Mask_table is present and the file it points to exists
-
-  if (.not.associated(MOM_dom)) then
-    allocate(MOM_dom)
-    allocate(MOM_dom%mpp_domain)
-  endif
-
-  MOM_dom%name = "MOM" ; if (present(domain_name)) MOM_dom%name = trim(domain_name)
-
-  X_FLAGS = 0 ; Y_FLAGS = 0
-  if (reentrant(1)) X_FLAGS = CYCLIC_GLOBAL_DOMAIN
-  if (reentrant(2)) Y_FLAGS = CYCLIC_GLOBAL_DOMAIN
-  if (tripolar_N) then
-    Y_FLAGS = FOLD_NORTH_EDGE
-    if (reentrant(2)) call MOM_error(FATAL,"MOM_domains: "// &
-      "TRIPOLAR_N and REENTRANT_Y may not be used together.")
-  endif
-
-  MOM_dom%nonblocking_updates = .false.
-  if (present(nonblocking)) MOM_dom%nonblocking_updates = nonblocking
-  MOM_dom%thin_halo_updates = .false.
-  if (present(thin_halos)) MOM_dom%thin_halo_updates = thin_halos
-  MOM_dom%symmetric = .true. ; if (present(symmetric)) MOM_dom%symmetric = symmetric
-  MOM_dom%niglobal = n_global(1) ; MOM_dom%njglobal = n_global(2)
-  MOM_dom%nihalo = n_halo(1) ; MOM_dom%njhalo = n_halo(2)
-
-  ! Save the extra data for creating other domains of different resolution that overlay this domain.
-  MOM_dom%X_FLAGS = X_FLAGS
-  MOM_dom%Y_FLAGS = Y_FLAGS
-  MOM_dom%layout(:) = layout(:)
-
-  ! Set up the io_layout, with error handling.
-  MOM_dom%io_layout(:) = (/ 1, 1 /)
-  if (present(io_layout)) then
-    if (io_layout(1) == 0) then
-      MOM_dom%io_layout(1) = layout(1)
-    elseif (io_layout(1) > 1) then
-      MOM_dom%io_layout(1) = io_layout(1)
-      if (modulo(layout(1), io_layout(1)) /= 0) then
-        write(mesg,'("MOM_domains_init: The i-direction I/O-layout, IO_LAYOUT(1)=",i4, &
-              &", does not evenly divide the i-direction layout, NIPROC=,",i4,".")') io_layout(1), layout(1)
-        call MOM_error(FATAL, mesg)
-      endif
-    endif
-
-    if (io_layout(2) == 0) then
-      MOM_dom%io_layout(2) = layout(2)
-    elseif (io_layout(2) > 1) then
-      MOM_dom%io_layout(2) = io_layout(2)
-      if (modulo(layout(2), io_layout(2)) /= 0) then
-        write(mesg,'("MOM_domains_init: The j-direction I/O-layout, IO_LAYOUT(2)=",i4, &
-              &", does not evenly divide the j-direction layout, NJPROC=,",i4,".")') io_layout(2), layout(2)
-        call MOM_error(FATAL, mesg)
-      endif
-    endif
-  endif
-
-  if (present(mask_table)) then
-    mask_table_exists = file_exists(mask_table)
-    if (mask_table_exists) then
-      allocate(MOM_dom%maskmap(layout(1), layout(2)))
-      call parse_mask_table(mask_table, MOM_dom%maskmap, MOM_dom%name)
-    endif
-  else
-    mask_table_exists = .false.
-  endif
-
-  ! Initialize as an unrotated domain
-  MOM_dom%turns = 0
-
-  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain)
 
 end subroutine create_MOM_domain
-
-!> dealloc_MOM_domain deallocates memory associated with a pointer to a MOM_domain_type
-!! and potentially all of its contents
-subroutine deallocate_MOM_domain(MOM_domain, cursory)
+module subroutine deallocate_MOM_domain(MOM_domain, cursory)
   type(MOM_domain_type), pointer :: MOM_domain !< A pointer to the MOM_domain_type being deallocated
   logical,  optional, intent(in) :: cursory    !< If true do not deallocate fields associated
                                                !! with the underlying infrastructure
-  logical :: invasive  ! If true, deallocate fields associated with the underlying infrastructure
-  integer :: n
-
-  invasive = .true. ; if (present(cursory)) invasive = .not.cursory
-
-  if (associated(MOM_domain)) then
-    if (associated(MOM_domain%mpp_domain)) then
-      if (invasive) call mpp_deallocate_domain(MOM_domain%mpp_domain)
-      deallocate(MOM_domain%mpp_domain)
-    endif
-    if (associated(MOM_domain%mpp_domain_d)) then
-      if (invasive) then ; do n=1,size(MOM_domain%mpp_domain_d)
-       call mpp_deallocate_domain(MOM_domain%mpp_domain_d(n))
-      enddo ; endif
-      deallocate(MOM_domain%mpp_domain_d)
-    endif
-    if (associated(MOM_domain%maskmap)) deallocate(MOM_domain%maskmap)
-    deallocate(MOM_domain)
-  endif
 
 end subroutine deallocate_MOM_domain
-
-!> MOM_thread_affinity_set returns true if the number of openMP threads have been set to a value greater than 1.
-function MOM_thread_affinity_set()
+module function MOM_thread_affinity_set()
   ! Local variables
   !$ integer :: ocean_nthreads       ! Number of openMP threads
   !$ integer :: omp_get_num_threads  ! An openMP function that returns the number of threads
   logical :: MOM_thread_affinity_set
 
-  MOM_thread_affinity_set = .false.
-  !$ call fms_affinity_init()
-  !$OMP PARALLEL
-  !$OMP   MASTER
-  !$        ocean_nthreads = omp_get_num_threads()
-  !$OMP   END MASTER
-  !$OMP END PARALLEL
-  !$ MOM_thread_affinity_set = (ocean_nthreads > 1 )
 end function MOM_thread_affinity_set
-
-!> set_MOM_thread_affinity sets the number of openMP threads to use with the ocean.
-subroutine set_MOM_thread_affinity(ocean_nthreads, ocean_hyper_thread)
+module subroutine set_MOM_thread_affinity(ocean_nthreads, ocean_hyper_thread)
   integer, intent(in) :: ocean_nthreads     !< Number of openMP threads to use for the ocean model
   logical, intent(in) :: ocean_hyper_thread !< If true, use hyper threading
 
@@ -1507,28 +791,19 @@ subroutine set_MOM_thread_affinity(ocean_nthreads, ocean_hyper_thread)
   !$ flush(6)
   !$OMP END PARALLEL
 end subroutine set_MOM_thread_affinity
-
-!> This subroutine retrieves the 1-d domains that make up the 2d-domain in a MOM_domain
-subroutine get_domain_components_MD(MOM_dom, x_domain, y_domain)
+module subroutine get_domain_components_MD(MOM_dom, x_domain, y_domain)
   type(MOM_domain_type),    intent(in)    :: MOM_dom  !< The MOM_domain whose contents are being extracted
   type(domain1D), optional, intent(inout) :: x_domain !< The 1-d logical x-domain
   type(domain1D), optional, intent(inout) :: y_domain !< The 1-d logical y-domain
 
-  call mpp_get_domain_components(MOM_dom%mpp_domain, x_domain, y_domain)
 end subroutine get_domain_components_MD
-
-!> This subroutine retrieves the 1-d domains that make up a 2d-domain
-subroutine get_domain_components_d2D(domain, x_domain, y_domain)
+module subroutine get_domain_components_d2D(domain, x_domain, y_domain)
   type(domain2D),           intent(in)    :: domain  !< The 2D domain whose contents are being extracted
   type(domain1D), optional, intent(inout) :: x_domain !< The 1-d logical x-domain
   type(domain1D), optional, intent(inout) :: y_domain !< The 1-d logical y-domain
 
-  call mpp_get_domain_components(domain, x_domain, y_domain)
 end subroutine get_domain_components_d2D
-
-!> clone_MD_to_MD copies one MOM_domain_type into another, while allowing
-!! some properties of the new type to differ from the original one.
-subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain_name, &
+module subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain_name, &
                           turns, refine, extra_halo, io_layout)
   type(MOM_domain_type), target, intent(in) :: MD_in  !< An existing MOM_domain
   type(MOM_domain_type), pointer :: MOM_dom
@@ -1556,157 +831,11 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, domain
     !< A user-defined IO layout to replace the domain's IO layout
 
 
-  integer :: global_indices(4)
-  logical :: mask_table_exists
-  integer, dimension(:), allocatable :: exni ! The extents of the grid for each i-row of the layout.
                                              ! The sum of exni must equal MOM_dom%niglobal.
-  integer, dimension(:), allocatable :: exnj ! The extents of the grid for each j-row of the layout.
                                              ! The sum of exni must equal MOM_dom%niglobal.
-  integer :: qturns ! The number of quarter turns, restricted to the range of 0 to 3.
-  integer :: i, j, nl1, nl2
-  integer :: io_layout_in(2)
-
-  qturns = 0
-  if (present(turns)) qturns = modulo(turns, 4)
-
-  if (present(io_layout)) then
-    io_layout_in(:) = io_layout(:)
-  else
-    io_layout_in(:) = MD_in%io_layout(:)
-  endif
-
-  if (.not.associated(MOM_dom)) then
-    allocate(MOM_dom)
-    allocate(MOM_dom%mpp_domain)
-  endif
-
-! Save the extra data for creating other domains of different resolution that overlay this domain
-  MOM_dom%symmetric = MD_in%symmetric
-  MOM_dom%nonblocking_updates = MD_in%nonblocking_updates
-  MOM_dom%thin_halo_updates = MD_in%thin_halo_updates
-
-  if (modulo(qturns, 2) /= 0) then
-    MOM_dom%niglobal = MD_in%njglobal ; MOM_dom%njglobal = MD_in%niglobal
-    MOM_dom%nihalo = MD_in%njhalo ; MOM_dom%njhalo = MD_in%nihalo
-    call get_layout_extents(MD_in, exnj, exni)
-
-    MOM_dom%X_FLAGS = MD_in%Y_FLAGS ; MOM_dom%Y_FLAGS = MD_in%X_FLAGS
-    ! Correct the position of a tripolar grid, assuming that flags are not additive.
-    if (modulo(qturns, 4) == 1) then
-      if (MD_in%Y_FLAGS == FOLD_NORTH_EDGE) MOM_dom%X_FLAGS = FOLD_EAST_EDGE
-      if (MD_in%Y_FLAGS == FOLD_SOUTH_EDGE) MOM_dom%X_FLAGS = FOLD_WEST_EDGE
-      if (MD_in%X_FLAGS == FOLD_EAST_EDGE) MOM_dom%Y_FLAGS = FOLD_SOUTH_EDGE
-      if (MD_in%X_FLAGS == FOLD_WEST_EDGE) MOM_dom%Y_FLAGS = FOLD_NORTH_EDGE
-    elseif (modulo(qturns, 4) == 3) then
-      if (MD_in%Y_FLAGS == FOLD_NORTH_EDGE) MOM_dom%X_FLAGS = FOLD_WEST_EDGE
-      if (MD_in%Y_FLAGS == FOLD_SOUTH_EDGE) MOM_dom%X_FLAGS = FOLD_EAST_EDGE
-      if (MD_in%X_FLAGS == FOLD_EAST_EDGE) MOM_dom%Y_FLAGS = FOLD_NORTH_EDGE
-      if (MD_in%X_FLAGS == FOLD_WEST_EDGE) MOM_dom%Y_FLAGS = FOLD_SOUTH_EDGE
-    endif
-
-    MOM_dom%layout(:) = MD_in%layout(2:1:-1)
-    MOM_dom%io_layout(:) = io_layout_in(2:1:-1)
-  else
-    MOM_dom%niglobal = MD_in%niglobal ; MOM_dom%njglobal = MD_in%njglobal
-    MOM_dom%nihalo = MD_in%nihalo ; MOM_dom%njhalo = MD_in%njhalo
-    call get_layout_extents(MD_in, exni, exnj)
-
-    MOM_dom%X_FLAGS = MD_in%X_FLAGS ; MOM_dom%Y_FLAGS = MD_in%Y_FLAGS
-    ! Correct the position of a tripolar grid, assuming that flags are not additive.
-    if (modulo(qturns, 4) == 2) then
-      if (MD_in%Y_FLAGS == FOLD_NORTH_EDGE) MOM_dom%Y_FLAGS = FOLD_SOUTH_EDGE
-      if (MD_in%Y_FLAGS == FOLD_SOUTH_EDGE) MOM_dom%Y_FLAGS = FOLD_NORTH_EDGE
-      if (MD_in%X_FLAGS == FOLD_EAST_EDGE) MOM_dom%X_FLAGS = FOLD_WEST_EDGE
-      if (MD_in%X_FLAGS == FOLD_WEST_EDGE) MOM_dom%X_FLAGS = FOLD_EAST_EDGE
-    endif
-
-    MOM_dom%layout(:) = MD_in%layout(:)
-    MOM_dom%io_layout(:) = io_layout_in(:)
-  endif
-
-  ! Ensure that the points per processor are the same on the source and destination grids.
-  select case (qturns)
-    case (1) ; call invert(exni)
-    case (2) ; call invert(exni) ; call invert(exnj)
-    case (3) ; call invert(exnj)
-  end select
-
-  if (associated(MD_in%maskmap)) then
-    mask_table_exists = .true.
-    allocate(MOM_dom%maskmap(MOM_dom%layout(1), MOM_dom%layout(2)))
-
-    nl1 = MOM_dom%layout(1) ; nl2 = MOM_dom%layout(2)
-    select case (qturns)
-      case (0)
-        do j=1,nl2 ; do i=1,nl1
-          MOM_dom%maskmap(i,j) = MD_in%maskmap(i, j)
-        enddo ; enddo
-      case (1)
-        do j=1,nl2 ; do i=1,nl1
-          MOM_dom%maskmap(i,j) = MD_in%maskmap(j, nl1+1-i)
-        enddo ; enddo
-      case (2)
-        do j=1,nl2 ; do i=1,nl1
-          MOM_dom%maskmap(i,j) = MD_in%maskmap(nl1+1-i, nl2+1-j)
-        enddo ; enddo
-      case (3)
-        do j=1,nl2 ; do i=1,nl1
-          MOM_dom%maskmap(i,j) = MD_in%maskmap(nl2+1-j, i)
-        enddo ; enddo
-    end select
-  else
-    mask_table_exists = .false.
-  endif
-
-  ! Optionally enhance the grid resolution.
-  if (present(refine)) then ; if (refine > 1) then
-    MOM_dom%niglobal = refine*MOM_dom%niglobal ; MOM_dom%njglobal = refine*MOM_dom%njglobal
-    MOM_dom%nihalo = refine*MOM_dom%nihalo ; MOM_dom%njhalo = refine*MOM_dom%njhalo
-    do i=1,MOM_dom%layout(1) ; exni(i) = refine*exni(i) ; enddo
-    do j=1,MOM_dom%layout(2) ; exnj(j) = refine*exnj(j) ; enddo
-  endif ; endif
-
-  ! Optionally enhance the grid resolution.
-  if (present(extra_halo)) then ; if (extra_halo > 0) then
-    MOM_dom%nihalo = MOM_dom%nihalo + extra_halo ; MOM_dom%njhalo = MOM_dom%njhalo + extra_halo
-  endif ; endif
-
-  if (present(halo_size) .and. present(min_halo)) call MOM_error(FATAL, &
-      "clone_MOM_domain can not have both halo_size and min_halo present.")
-
-  if (present(min_halo)) then
-    MOM_dom%nihalo = max(MOM_dom%nihalo, min_halo(1))
-    min_halo(1) = MOM_dom%nihalo
-    MOM_dom%njhalo = max(MOM_dom%njhalo, min_halo(2))
-    min_halo(2) = MOM_dom%njhalo
-  endif
-
-  if (present(halo_size)) then
-    MOM_dom%nihalo = halo_size ; MOM_dom%njhalo = halo_size
-  endif
-
-  if (present(symmetric)) then ; MOM_dom%symmetric = symmetric ; endif
-
-  if (present(domain_name)) then
-    MOM_dom%name = trim(domain_name)
-  else
-    MOM_dom%name = MD_in%name
-  endif
-
-  MOM_dom%turns = qturns
-  if (qturns /= 0) then
-    MOM_dom%domain_in => MD_in
-  endif
-
-  call clone_MD_to_d2D(MOM_dom, MOM_dom%mpp_domain, xextent=exni, yextent=exnj)
 
 end subroutine clone_MD_to_MD
-
-
-!> clone_MD_to_d2D uses information from a MOM_domain_type to create a new
-!! domain2d type, while allowing some properties of the new type to differ from
-!! the original one.
-subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
+module subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
                            domain_name, turns, xextent, yextent, coarsen)
   type(MOM_domain_type), intent(in)    :: MD_in !< An existing MOM_domain to be cloned
   type(domain2d),        intent(inout) :: mpp_domain !< The new mpp_domain to be set up
@@ -1732,67 +861,9 @@ subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
   integer, dimension(:), optional, intent(in) :: yextent !< The number of grid points in the
                                   !! tracer computational domain for division of the y-layout.
 
-  integer :: global_indices(4)
-  integer :: nihalo, njhalo
-  logical :: symmetric_dom, do_coarsen
-  character(len=64) :: dom_name
-
-  if (present(turns)) &
-    call MOM_error(FATAL, "Rotation not supported for MOM_domain to domain2d")
-
-  if (present(halo_size) .and. present(min_halo)) call MOM_error(FATAL, &
-      "clone_MOM_domain can not have both halo_size and min_halo present.")
-
-  do_coarsen = .false. ; if (present(coarsen)) then ; do_coarsen = (coarsen > 1) ; endif
-
-  nihalo = MD_in%nihalo ; njhalo = MD_in%njhalo
-  if (do_coarsen) then
-    nihalo = int(MD_in%nihalo / coarsen) ; njhalo = int(MD_in%njhalo / coarsen)
-  endif
-
-  if (present(min_halo)) then
-    nihalo = max(nihalo, min_halo(1))
-    njhalo = max(njhalo, min_halo(2))
-    min_halo(1) = nihalo ; min_halo(2) = njhalo
-  endif
-  if (present(halo_size)) then
-    nihalo = halo_size ; njhalo = halo_size
-  endif
-
-  symmetric_dom = MD_in%symmetric
-  if (present(symmetric)) then ; symmetric_dom = symmetric ; endif
-
-  dom_name = MD_in%name
-  if (do_coarsen) dom_name = trim(MD_in%name)//"c"
-  if (present(domain_name)) dom_name = trim(domain_name)
-
-  global_indices(1:4) = (/ 1, MD_in%niglobal, 1, MD_in%njglobal /)
-  if (do_coarsen) then
-    global_indices(1:4) = (/ 1, (MD_in%niglobal/coarsen), 1, (MD_in%njglobal/coarsen) /)
-  endif
-
-  if (associated(MD_in%maskmap)) then
-    call mpp_define_domains( global_indices, MD_in%layout, mpp_domain, &
-                xflags=MD_in%X_FLAGS, yflags=MD_in%Y_FLAGS, xhalo=nihalo, yhalo=njhalo, &
-                xextent=xextent, yextent=yextent, symmetry=symmetric_dom, name=dom_name, &
-                maskmap=MD_in%maskmap )
-  else
-    call mpp_define_domains( global_indices, MD_in%layout, mpp_domain, &
-                xflags=MD_in%X_FLAGS, yflags=MD_in%Y_FLAGS, xhalo=nihalo, yhalo=njhalo, &
-                symmetry=symmetric_dom, xextent=xextent, yextent=yextent, name=dom_name)
-  endif
-
-  if ((MD_in%io_layout(1) + MD_in%io_layout(2) > 0) .and. &
-      (MD_in%layout(1)*MD_in%layout(2) > 1)) then
-    call mpp_define_io_domain(mpp_domain, MD_in%io_layout)
-  else
-    call mpp_define_io_domain(mpp_domain, (/ 1, 1 /) )
-  endif
 
 end subroutine clone_MD_to_d2D
-
-!> Returns the index ranges that have been stored in a MOM_domain_type
-subroutine get_domain_extent_MD(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, &
+module subroutine get_domain_extent_MD(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, &
                                 isg, ieg, jsg, jeg, idg_offset, jdg_offset, &
                                 symmetric, local_indexing, index_offset, coarsen)
   type(MOM_domain_type), &
@@ -1823,55 +894,9 @@ subroutine get_domain_extent_MD(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, 
                                            !!  The default is 0, for no coarsening.
 
   ! Local variables
-  integer :: isg_, ieg_, jsg_, jeg_
-  integer :: ind_off, idg_off, jdg_off, coarsen_lev
-  logical :: local
-
-  local = .true. ; if (present(local_indexing)) local = local_indexing
-  ind_off = 0 ; if (present(index_offset)) ind_off = index_offset
-
-  coarsen_lev = 0 ; if (present(coarsen)) coarsen_lev = coarsen
-
-  if (coarsen_lev == 0) then
-    call mpp_get_compute_domain(Domain%mpp_domain, isc, iec, jsc, jec)
-    call mpp_get_data_domain(Domain%mpp_domain, isd, ied, jsd, jed)
-    call mpp_get_global_domain(Domain%mpp_domain, isg_, ieg_, jsg_, jeg_)
-  else
-    if (.not.associated(Domain%mpp_domain_d)) call MOM_error(FATAL, &
-            "get_domain_extent called with coarsen_lev, but Domain%mpp_domain_d(coarsen_lev) is not associated.")
-    call mpp_get_compute_domain(Domain%mpp_domain_d(coarsen_lev), isc, iec, jsc, jec)
-    call mpp_get_data_domain(Domain%mpp_domain_d(coarsen_lev), isd, ied, jsd, jed)
-    call mpp_get_global_domain(Domain%mpp_domain_d(coarsen_lev), isg_, ieg_, jsg_, jeg_)
-  endif
-
-  if (local) then
-    ! This code institutes the MOM convention that local array indices start at 1.
-    idg_off = isd - 1 ; jdg_off = jsd - 1
-    isc = isc - isd + 1 ; iec = iec - isd + 1 ; jsc = jsc - jsd + 1 ; jec = jec - jsd + 1
-    ied = ied - isd + 1 ; jed = jed - jsd + 1
-    isd = 1 ; jsd = 1
-  else
-    idg_off = 0 ; jdg_off = 0
-  endif
-  if (ind_off /= 0) then
-    idg_off = idg_off + ind_off ; jdg_off = jdg_off + ind_off
-    isc = isc + ind_off ; iec = iec + ind_off
-    jsc = jsc + ind_off ; jec = jec + ind_off
-    isd = isd + ind_off ; ied = ied + ind_off
-    jsd = jsd + ind_off ; jed = jed + ind_off
-  endif
-  if (present(isg)) isg = isg_
-  if (present(ieg)) ieg = ieg_
-  if (present(jsg)) jsg = jsg_
-  if (present(jeg)) jeg = jeg_
-  if (present(idg_offset)) idg_offset = idg_off
-  if (present(jdg_offset)) jdg_offset = jdg_off
-  if (present(symmetric)) symmetric = Domain%symmetric
 
 end subroutine get_domain_extent_MD
-
-!> Returns the index ranges that have been stored in a domain2D type
-subroutine get_domain_extent_d2D(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed)
+module subroutine get_domain_extent_d2D(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed)
   type(domain2d),    intent(in)  :: Domain !< The MOM domain from which to extract information
   integer,           intent(out) :: isc    !< The start i-index of the computational domain
   integer,           intent(out) :: iec    !< The end i-index of the computational domain
@@ -1883,21 +908,9 @@ subroutine get_domain_extent_d2D(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed)
   integer, optional, intent(out) :: jed    !< The end j-index of the data domain
 
   ! Local variables
-  integer :: isd_, ied_, jsd_, jed_, jsg_, jeg_, isg_, ieg_
-
-  call mpp_get_compute_domain(Domain, isc, iec, jsc, jec)
-  call mpp_get_data_domain(Domain, isd_, ied_, jsd_, jed_)
-
-  if (present(isd)) isd = isd_
-  if (present(ied)) ied = ied_
-  if (present(jsd)) jsd = jsd_
-  if (present(jed)) jed = jed_
 
 end subroutine get_domain_extent_d2D
-
-!> Return the (potentially symmetric) computational domain i-bounds for an array
-!! passed without index specifications (i.e. indices start at 1) based on an array size.
-subroutine get_simple_array_i_ind(domain, size, is, ie, symmetric)
+module subroutine get_simple_array_i_ind(domain, size, is, ie, symmetric)
   type(MOM_domain_type), intent(in)  :: domain !< MOM domain from which to extract information
   integer,               intent(in)  :: size   !< The i-array size
   integer,               intent(out) :: is     !< The computational domain starting i-index.
@@ -1905,36 +918,9 @@ subroutine get_simple_array_i_ind(domain, size, is, ie, symmetric)
   logical,     optional, intent(in)  :: symmetric !< If present, indicates whether symmetric sizes
                                                !! can be considered.
   ! Local variables
-  logical :: sym
-  character(len=120) :: mesg, mesg2
-  integer :: isc, iec, jsc, jec, isd, ied, jsd, jed
-
-  call mpp_get_compute_domain(Domain%mpp_domain, isc, iec, jsc, jec)
-  call mpp_get_data_domain(Domain%mpp_domain, isd, ied, jsd, jed)
-
-  isc = isc-isd+1 ; iec = iec-isd+1 ; ied = ied-isd+1 ; isd = 1
-  sym = Domain%symmetric ; if (present(symmetric)) sym = symmetric
-
-  if (size == ied) then ; is = isc ; ie = iec
-  elseif (size == 1+iec-isc) then ; is = 1 ; ie = size
-  elseif (sym .and. (size == 1+ied)) then ; is = isc ; ie = iec+1
-  elseif (sym .and. (size == 2+iec-isc)) then ; is = 1 ; ie = size+1
-  else
-    write(mesg,'("Unrecognized size ", i6, "in call to get_simple_array_i_ind.  \")') size
-    if (sym) then
-      write(mesg2,'("Valid sizes are : ", 2i7)') ied, 1+iec-isc
-    else
-      write(mesg2,'("Valid sizes are : ", 4i7)') ied, 1+iec-isc, 1+ied, 2+iec-isc
-    endif
-    call MOM_error(FATAL, trim(mesg)//trim(mesg2))
-  endif
 
 end subroutine get_simple_array_i_ind
-
-
-!> Return the (potentially symmetric) computational domain j-bounds for an array
-!! passed without index specifications (i.e. indices start at 1) based on an array size.
-subroutine get_simple_array_j_ind(domain, size, js, je, symmetric)
+module subroutine get_simple_array_j_ind(domain, size, js, je, symmetric)
   type(MOM_domain_type), intent(in)  :: domain !< MOM domain from which to extract information
   integer,               intent(in)  :: size   !< The j-array size
   integer,               intent(out) :: js     !< The computational domain starting j-index.
@@ -1942,143 +928,69 @@ subroutine get_simple_array_j_ind(domain, size, js, je, symmetric)
   logical,     optional, intent(in)  :: symmetric !< If present, indicates whether symmetric sizes
                                                !! can be considered.
   ! Local variables
-  logical :: sym
-  character(len=120) :: mesg, mesg2
-  integer :: isc, iec, jsc, jec, isd, ied, jsd, jed
-
-  call mpp_get_compute_domain(Domain%mpp_domain, isc, iec, jsc, jec)
-  call mpp_get_data_domain(Domain%mpp_domain, isd, ied, jsd, jed)
-
-  jsc = jsc-jsd+1 ; jec = jec-jsd+1 ; jed = jed-jsd+1 ; jsd = 1
-  sym = Domain%symmetric ; if (present(symmetric)) sym = symmetric
-
-  if (size == jed) then ; js = jsc ; je = jec
-  elseif (size == 1+jec-jsc) then ; js = 1 ; je = size
-  elseif (sym .and. (size == 1+jed)) then ; js = jsc ; je = jec+1
-  elseif (sym .and. (size == 2+jec-jsc)) then ; js = 1 ; je = size+1
-  else
-    write(mesg,'("Unrecognized size ", i6, "in call to get_simple_array_j_ind.  \")') size
-    if (sym) then
-      write(mesg2,'("Valid sizes are : ", 2i7)') jed, 1+jec-jsc
-    else
-      write(mesg2,'("Valid sizes are : ", 4i7)') jed, 1+jec-jsc, 1+jed, 2+jec-jsc
-    endif
-    call MOM_error(FATAL, trim(mesg)//trim(mesg2))
-  endif
 
 end subroutine get_simple_array_j_ind
-
-!> Invert the contents of a 1-d array
-subroutine invert(array)
+module subroutine invert(array)
   integer, dimension(:), intent(inout) :: array !< The 1-d array to invert
-  integer :: i, ni, swap
-  ni = size(array)
-  do i=1,ni
-    swap = array(i)
-    array(i) = array(ni+1-i)
-    array(ni+1-i) = swap
-  enddo
 end subroutine invert
-
-!> Returns the global shape of h-point arrays
-subroutine get_global_shape(domain, niglobal, njglobal)
+module subroutine get_global_shape(domain, niglobal, njglobal)
   type(MOM_domain_type), intent(in)  :: domain   !< MOM domain from which to extract information
   integer,               intent(out) :: niglobal !< i-index global size of h-point arrays
   integer,               intent(out) :: njglobal !< j-index global size of h-point arrays
 
-  niglobal = domain%niglobal
-  njglobal = domain%njglobal
 end subroutine get_global_shape
-
-!> Get the array ranges in one dimension for the divisions of a global index space (alternative to compute_extent)
-subroutine compute_block_extent(isg, ieg, ndivs, ibegin, iend)
+module subroutine compute_block_extent(isg, ieg, ndivs, ibegin, iend)
   integer,               intent(in)  :: isg    !< The starting index of the global index space
   integer,               intent(in)  :: ieg    !< The ending index of the global index space
   integer,               intent(in)  :: ndivs  !< The number of divisions
   integer, dimension(:), intent(out) :: ibegin !< The starting index of each division
   integer, dimension(:), intent(out) :: iend   !< The ending index of each division
 
-  call mpp_compute_block_extent(isg, ieg, ndivs, ibegin, iend)
 end subroutine compute_block_extent
-
-!> Get the array ranges in one dimension for the divisions of a global index space
-subroutine compute_extent(isg, ieg, ndivs, ibegin, iend)
+module subroutine compute_extent(isg, ieg, ndivs, ibegin, iend)
   integer,               intent(in)  :: isg    !< The starting index of the global index space
   integer,               intent(in)  :: ieg    !< The ending index of the global index space
   integer,               intent(in)  :: ndivs  !< The number of divisions
   integer, dimension(:), intent(out) :: ibegin !< The starting index of each division
   integer, dimension(:), intent(out) :: iend   !< The ending index of each division
 
-  call mpp_compute_extent(isg, ieg, ndivs, ibegin, iend)
 end subroutine compute_extent
-
-!> Broadcast a 2-d domain from the root PE to the other PEs
-subroutine broadcast_domain(domain)
+module subroutine broadcast_domain(domain)
   type(domain2d),  intent(inout) :: domain !< The domain2d type that will be shared across PEs.
 
-  call mpp_broadcast_domain(domain)
 end subroutine broadcast_domain
-
-!> Broadcast an entire 2-d array from the root processor to all others.
-subroutine global_field(domain, local, global)
+module subroutine global_field(domain, local, global)
   type(domain2d),       intent(inout) :: domain !< The domain2d type that describes the decomposition
   real, dimension(:,:), intent(in)    :: local  !< The portion of the array on the local PE
   real, dimension(:,:), intent(out)   :: global !< The whole global array
 
-  call mpp_global_field(domain, local, global)
 end subroutine global_field
-
-!> same_domain returns true if two domains use the same list of PEs and layouts and have the same
-!! size computational domains, and false if the domains do not conform with each other.
-!! Different halo sizes or indexing conventions do not alter the results.
-logical function same_domain(domain_a, domain_b)
+logical module function same_domain(domain_a, domain_b)
   type(domain2D), intent(in) :: domain_a !< The first domain in the comparison
   type(domain2D), intent(in) :: domain_b !< The second domain in the comparison
 
   ! Local variables
-  integer :: isc_a, iec_a, jsc_a, jec_a, isc_b, iec_b, jsc_b, jec_b
-  integer :: layout_a(2), layout_b(2)
 
   ! This routine currently does a few checks for consistent domains; more could be added.
-  call mpp_get_layout(domain_a, layout_a)
-  call mpp_get_layout(domain_b, layout_b)
-
-  call get_domain_extent(domain_a, isc_a, iec_a, jsc_a, jec_a)
-  call get_domain_extent(domain_b, isc_b, iec_b, jsc_b, jec_b)
-
-  same_domain = (layout_a(1) == layout_b(1)) .and. (layout_a(2) == layout_b(2)) .and. &
-                (iec_a - isc_a == iec_b - isc_b) .and. (jec_a - jsc_a == jec_b - jsc_b)
-
 end function same_domain
-
-!> Returns arrays of the i- and j- sizes of the h-point computational domains for each
-!! element of the grid layout.  Any input values in the extent arrays are discarded, so
-!! they are effectively intent out despite their declared intent of inout.
-subroutine get_layout_extents(Domain, extent_i, extent_j)
+module subroutine get_layout_extents(Domain, extent_i, extent_j)
   type(MOM_domain_type), intent(in)  :: domain !< MOM domain from which to extract information
   integer, dimension(:), allocatable, intent(inout) :: extent_i  !< The number of points in the
                                                !! i-direction in each i-row of the layout
   integer, dimension(:), allocatable, intent(inout) :: extent_j  !< The number of points in the
                                                !! j-direction in each j-row of the layout
 
-  if (allocated(extent_i)) deallocate(extent_i)
-  if (allocated(extent_j)) deallocate(extent_j)
-  allocate(extent_i(domain%layout(1))) ; extent_i(:) = 0
-  allocate(extent_j(domain%layout(2))) ; extent_j(:) = 0
-  call mpp_get_domain_extents(domain%mpp_domain, extent_i, extent_j)
 end subroutine get_layout_extents
-
-!> Set the associated domain for internal FMS I/O operations.
-subroutine set_domain(Domain)
+module subroutine set_domain(Domain)
   type(MOM_domain_type), intent(in) :: Domain
     !< MOM domain to be designated as the internal FMS I/O domain
 
   ! FMS2 does not have domain-based internal FMS I/O operations, so this
   ! function does nothing.
 end subroutine set_domain
-
-subroutine nullify_domain
+module subroutine nullify_domain
   ! No internal FMS I/O domain can be assigned, so this function does nothing.
 end subroutine nullify_domain
+  end interface
 
 end module MOM_domain_infra

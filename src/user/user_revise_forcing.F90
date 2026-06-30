@@ -26,10 +26,9 @@ type, public :: user_revise_forcing_CS ; private
   real :: cdrag  !< The quadratic bottom drag coefficient [nondim]
 end type user_revise_forcing_CS
 
-contains
 
-!> This subroutine sets the surface wind stresses.
-subroutine user_alter_forcing(sfc_state, fluxes, day, G, CS)
+  interface
+module subroutine user_alter_forcing(sfc_state, fluxes, day, G, CS)
   type(surface),            intent(in)    :: sfc_state  !< A structure containing fields that
                                                     !! describe the surface state of the ocean.
   type(forcing),            intent(inout) :: fluxes !< A structure containing pointers to any
@@ -40,12 +39,8 @@ subroutine user_alter_forcing(sfc_state, fluxes, day, G, CS)
   type(user_revise_forcing_CS), pointer   :: CS     !< A pointer to the control structure
                                                     !! returned by a previous call to
                                                     !! surface_forcing_init.
-  return
-
 end subroutine user_alter_forcing
-
-!> Initialize the user_revise_forcing control structure
-subroutine user_revise_forcing_init(param_file,CS)
+module subroutine user_revise_forcing_init(param_file,CS)
   type(param_file_type), intent(in) :: param_file   !< A structure indicating the open file to
                                                     !! parse for model parameter values.
   type(user_revise_forcing_CS), pointer   :: CS     !< A pointer to the control structure
@@ -53,11 +48,8 @@ subroutine user_revise_forcing_init(param_file,CS)
                                                     !! surface_forcing_init.
 
   ! This include declares and sets the variable "version".
-# include "version_variable.h"
-  character(len=40) :: mdl = "user_revise_forcing" !< This module's name.
-
-  call log_version(param_file, mdl, version)
 
 end subroutine user_revise_forcing_init
+  end interface
 
 end module user_revise_forcing

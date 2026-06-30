@@ -20,26 +20,13 @@ character(len=*), parameter :: TracerAdvectionSchemeDoc = &
                  "  PPM:H3 - Piecewise Parabolic Method (Huyhn 3rd order)\n"// &
                  "  PPM    - Piecewise Parabolic Method (Colella-Woodward)"
 
-contains
 
-!> Numeric value of tracer_advect_scheme corresponding to scheme name
-subroutine set_tracer_advect_scheme(scheme_value, advect_scheme_name)
+  interface
+module subroutine set_tracer_advect_scheme(scheme_value, advect_scheme_name)
   character(len=*), intent(in) :: advect_scheme_name !< Name of the advection scheme
   integer,         intent(out) :: scheme_value       !< Integer value of the advection scheme
 
-  select case (trim(advect_scheme_name))
-    case ("")
-      scheme_value = -1
-    case ("PLM")
-      scheme_value = ADVECT_PLM
-    case ("PPM:H3")
-      scheme_value = ADVECT_PPMH3
-    case ("PPM")
-      scheme_value = ADVECT_PPM
-    case default
-      call MOM_error(FATAL, "set_tracer_advect_scheme: "//&
-           "Unknown TRACER_ADVECTION_SCHEME = "//trim(advect_scheme_name))
-  end select
 end subroutine set_tracer_advect_scheme
+  end interface
 
 end module MOM_tracer_advect_schemes

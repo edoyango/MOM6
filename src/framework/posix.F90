@@ -263,47 +263,23 @@ abstract interface
   end subroutine
 end interface
 
-contains
 
-!> Change mode of a file
-!!
-!! This changes the file permission of file `path` to `mode` following POSIX
-!! conventions.  If successful, it returns zero.  Otherwise, it returns -1.
-function chmod(path, mode) result(rc)
+  interface
+module function chmod(path, mode) result(rc)
   character(len=*), intent(in) :: path
   integer, intent(in) :: mode
   integer :: rc
 
-  integer(kind=c_int) :: mode_c
-  integer(kind=c_int) :: rc_c
 
-  mode_c = int(mode, kind=c_int)
-  rc_c = chmod_posix(path//c_null_char, mode_c)
-  rc = int(rc_c)
 end function chmod
-
-!> Create a file directory
-!!
-!! This creates a new directory named `path` with permissons set by `mode`.
-!! If successful, it returns zero.  Otherwise, it returns -1.
-function mkdir(path, mode) result(rc)
+module function mkdir(path, mode) result(rc)
   character(len=*), intent(in) :: path
   integer, intent(in) :: mode
   integer :: rc
 
-  integer(kind=c_int) :: mode_c
-  integer(kind=c_int) :: rc_c
 
-  mode_c = int(mode, kind=c_int)
-  rc_c = mkdir_posix(path//c_null_char, mode_c)
-  rc = int(rc_c)
 end function mkdir
-
-!> Get file status
-!!
-!! This obtains information about the named file and writes it to buf.
-!! If found, it returns zero.  Otherwise, it returns -1.
-function stat(path, buf) result(rc)
+module function stat(path, buf) result(rc)
   character(len=*), intent(in) :: path
     !< Pathname of file to be inspected
   type(stat_buf), intent(out) :: buf
@@ -313,155 +289,66 @@ function stat(path, buf) result(rc)
   integer :: rc
     !< Function return code
 
-  integer(kind=c_int) :: rc_c
 
-  rc_c = stat_posix(path//c_null_char, buf)
-
-  rc = int(rc_c)
 end function stat
-
-!> Create a signal handler `handle` to be called when `sig` is detected.
-!!
-!! If successful, the previous handler for `sig` is returned.  Otherwise,
-!! SIG_ERR is returned.
-function signal(sig, func) result(handle)
+module function signal(sig, func) result(handle)
   integer, intent(in) :: sig
   procedure(handler_interface) :: func
   procedure(handler_interface), pointer :: handle
 
-  integer(kind=c_int) :: sig_c
-  type(c_funptr) :: handle_c
 
-  sig_c = int(sig, kind=c_int)
-  handle_c = signal_posix(sig_c, c_funloc(func))
-  call c_f_procpointer(handle_c, handle)
 end function signal
-
-!> Send signal `sig` to process `pid`.
-!!
-!! If successful, this function returns 0.  Otherwise, it returns -1.
-function kill(pid, sig) result(rc)
+module function kill(pid, sig) result(rc)
   integer, intent(in) :: pid
   integer, intent(in) :: sig
   integer :: rc
 
-  integer(kind=c_int) :: pid_c, sig_c, rc_c
 
-  pid_c = int(pid, kind=c_int)
-  sig_c = int(sig, kind=c_int)
-  rc_c = kill_posix(pid_c, sig_c)
-  rc = int(rc_c)
 end function kill
-
-!> Get the ID of the current process.
-function getpid() result(pid)
+module function getpid() result(pid)
   integer :: pid
 
-  integer(kind=c_long) :: pid_c
 
-  pid_c = getpid_posix()
-  pid = int(pid_c)
 end function getpid
-
-!> Get the ID of the parent process of the current process.
-function getppid() result(pid)
+module function getppid() result(pid)
   integer :: pid
 
-  integer(kind=c_long) :: pid_c
 
-  pid_c = getppid_posix()
-  pid = int(pid_c)
 end function getppid
-
-!> Force the process to a sleep state for `seconds` seconds.
-!!
-!! The sleep state may be interrupted by a signal.  If it sleeps for the entire
-!! duration, then it returns 0.  Otherwise, it returns the number of seconds
-!! remaining at the point of interruption.
-function sleep(seconds) result(rc)
+module function sleep(seconds) result(rc)
   ! NOTE: This function may replace an existing compiler `sleep()` extension.
   integer, intent(in) :: seconds
   integer :: rc
 
-  integer(kind=c_int) :: seconds_c
-  integer(kind=c_int) :: rc_c
 
-  seconds_c = int(seconds, kind=c_int)
-  rc_c = sleep_posix(seconds_c)
-  rc = int(rc_c)
 end function sleep
-
-!> Restore program to state saved by `env`, and return the value `val`.
-!!
-!! This "nonlocal goto" alters program execution to the state stored in `env`
-!! produced by a prior execution of `setjmp`.  Program execution is moved
-!! back to this `setjmp`, except the function will now return `val`.
-subroutine longjmp(env, val)
+module subroutine longjmp(env, val)
   type(jmp_buf), intent(in) :: env
   integer, intent(in) :: val
 
-  integer(kind=c_int) :: val_c
 
-  val_c = int(val, kind=c_int)
-  call longjmp_posix(env, val_c)
 end subroutine longjmp
-
-!> Restore program to state saved by `env`, and return the value `val`.
-!!
-!! This "nonlocal goto" alters program execution to the state stored in `env`
-!! produced by a prior execution of `setjmp`.  Program execution is moved back
-!! to this `setjmp`, except the function will now return `val`.
-!!
-!! `siglongjmp` behaves in the same manner as `longjmp`, but also provides
-!! predictable handling of the signal state.
-subroutine siglongjmp(env, val)
+module subroutine siglongjmp(env, val)
   type(sigjmp_buf), intent(in) :: env
   integer, intent(in) :: val
 
-  integer(kind=c_int) :: val_c
 
-  val_c = int(val, kind=c_int)
-  call siglongjmp_posix(env, val_c)
 end subroutine siglongjmp
-
-
-! Symbols in <setjmp.h> may be platform-dependent and may not exist if defined
-! as a macro.  The following functions permit compilation when they are
-! unavailable, and report a runtime error if used in the program.
-
-!> Placeholder function for a missing or unconfigured setjmp
-function setjmp_missing(env) result(rc) bind(c)
+module function setjmp_missing(env) result(rc) bind(c)
   type(jmp_buf), intent(in) :: env
     !< Current process state (unused)
   integer(kind=c_int) :: rc
     !< Function return code (unused)
 
-  print '(a)', 'ERROR: setjmp() is not implemented in this build.'
-  print '(a)', 'Recompile with autoconf or -DSETJMP_NAME=\"<symbol name>\".'
-  error stop
-
-  ! NOTE: compilers may expect a return value, even if it is unreachable
-  read env%state
-  rc = -1
 end function setjmp_missing
-
-!> Placeholder function for a missing or unconfigured longjmp
-subroutine longjmp_missing(env, val) bind(c)
+module subroutine longjmp_missing(env, val) bind(c)
   type(jmp_buf), intent(in) :: env
     !< Current process state (unused)
   integer(kind=c_int), value, intent(in) :: val
     !< Enable signal state flag (unused)
 
-  print '(a)', 'ERROR: longjmp() is not implemented in this build.'
-  print '(a)', 'Recompile with autoconf or -DLONGJMP_NAME=\"<symbol name>\".'
-  error stop
-
-  read env%state
-  read char(val)
 end subroutine longjmp_missing
-
-!> Placeholder function for a missing or unconfigured sigsetjmp
-function sigsetjmp_missing(env, savesigs) result(rc) bind(c)
+module function sigsetjmp_missing(env, savesigs) result(rc) bind(c)
   type(sigjmp_buf), intent(in) :: env
     !< Current process state (unused)
   integer(kind=c_int), value, intent(in) :: savesigs
@@ -469,28 +356,14 @@ function sigsetjmp_missing(env, savesigs) result(rc) bind(c)
   integer(kind=c_int) :: rc
     !< Function return code (unused)
 
-  print '(a)', 'ERROR: sigsetjmp() is not implemented in this build.'
-  print '(a)', 'Recompile with autoconf or -DSIGSETJMP_NAME=\"<symbol name>\".'
-  error stop
-
-  ! NOTE: compilers may expect a return value, even if it is unreachable
-  read env%state
-  read char(savesigs)
-  rc = -1
 end function sigsetjmp_missing
-
-!> Placeholder function for a missing or unconfigured siglongjmp
-subroutine siglongjmp_missing(env, val) bind(c)
+module subroutine siglongjmp_missing(env, val) bind(c)
   type(sigjmp_buf), intent(in) :: env
     !< Current process state (unused)
   integer(kind=c_int), value, intent(in) :: val
     !< Enable signal state flag (unused)
 
-  print '(a)', 'ERROR: siglongjmp() is not implemented in this build.'
-  print '(a)', 'Recompile with autoconf or -DSIGLONGJMP_NAME=\"<symbol name>\".'
-  read env%state
-  read char(val)
-  error stop
 end subroutine siglongjmp_missing
+  end interface
 
 end module posix

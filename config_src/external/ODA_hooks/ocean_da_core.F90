@@ -16,10 +16,9 @@ module ocean_da_core_mod
   public :: ocean_da_core_init
   public :: get_profiles
 
-contains
 
-  !> Initializes the MOM6 DA driver code.
-  subroutine ocean_da_core_init(Domain, global_grid, Profiles, model_time)
+  interface
+  module subroutine ocean_da_core_init(Domain, global_grid, Profiles, model_time)
     type(domain2D), pointer, intent(in) :: Domain !< A MOM domain type
     type(grid_type), pointer, intent(in) :: global_grid !< The global ODA horizontal grid type
     type(ocean_profile_type), pointer :: Profiles  !< This is an unstructured recursive list of profiles
@@ -29,23 +28,14 @@ contains
 
 
 
-    Profiles=>NULL()
-    return
   end subroutine ocean_da_core_init
-
-
-  !> Get profiles obs within the current analysis interval
-  subroutine get_profiles(model_time, Profiles, Current_profiles)
+  module subroutine get_profiles(model_time, Profiles, Current_profiles)
     type(time_type), intent(in) :: model_time !< The current analysis time.
     type(ocean_profile_type), pointer :: Profiles !< The full recursive list of profiles.
     type(ocean_profile_type), pointer :: Current_profiles !< A returned list of profiles for the
                                                           !! current analysis step.
 
-    Profiles=>NULL()
-    Current_Profiles=>NULL()
-
-    return
   end subroutine get_profiles
-
+  end interface
 
 end module ocean_da_core_mod

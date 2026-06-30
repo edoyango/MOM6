@@ -1,0 +1,5989 @@
+submodule (MOM_open_boundary) MOM_open_boundary_s
+#include <MOM_memory.h>
+  implicit none
+contains
+module procedure open_boundary_config
+  integer :: num_of_segs ! Number of open boundary segments
+  integer :: n, n_seg ! For looping over segments
+  logical :: debug, mask_outside, reentrant_x, reentrant_y
+  character(len=15) :: segment_param_str ! The run-time parameter name for each segment
+  character(len=1024) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
+  character(len=200) :: config ! A string to temporarily store a few runtime parameters
+  real               :: Lscale_in, Lscale_out ! parameters controlling tracer values at the boundaries [L ~> m]
+  integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
+  logical :: enable_bugs     ! If true, the defaults for recently added bug-fix flags are set to
+  logical :: debugging_tests ! If true, do additional calls resetting values to help debug the performance
+  logical :: obsolete_param_set, param_set
+  logical :: zero_vorticity, freeslip_vorticity, computed_vorticity, specified_vorticity
+  logical :: zero_strain, freeslip_strain, computed_strain, specified_strain
+# include "version_variable.h"
+  call log_version(param_file, mdl, version, "Controls where open boundaries are located, "//&
+                   "what kind of boundary condition to impose, and what data to apply, if any.", &
+                   all_default=.false.)
+  ! Parameter OBC_NUMBER_OF_SEGMENTS is always logged.
+  call get_param(param_file, mdl, "OBC_NUMBER_OF_SEGMENTS", num_of_segs, &
+                 "The number of open boundary segments.", default=0)
+  if (num_of_segs <= 0) & ! Do nothing if there is no OBC segments
+    return
+
+  allocate(OBC)
+  OBC%number_of_segments = num_of_segs
+  call get_param(param_file, mdl, "OBC_USER_CONFIG", config, &
+                 "A string that sets how the open boundary conditions are "//&
+                 " configured: \n", default="none", do_not_log=.true.)
+  call get_param(param_file, mdl, "NK", OBC%ke, &
+                 "The number of model layers", default=0, do_not_log=.true.)
+
+  if (config /= "none" .and. config /= "dyed_obcs") OBC%user_BCs_set_globally = .true.
+
+  ! Configuration for OBC relative vorticity.
+  !   Old setup method
+  obsolete_param_set = .false.
+  zero_vorticity = .false.
+  call read_param(param_file, "OBC_ZERO_VORTICITY", zero_vorticity, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  freeslip_vorticity = .true.
+  call read_param(param_file, "OBC_FREESLIP_VORTICITY", freeslip_vorticity, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  computed_vorticity = .false.
+  call read_param(param_file, "OBC_COMPUTED_VORTICITY", computed_vorticity, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  specified_vorticity = .false.
+  call read_param(param_file, "OBC_SPECIFIED_VORTICITY", specified_vorticity, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  if (obsolete_param_set) then
+    call MOM_error(WARNING, 'OBC_ZERO_VORTICITY, OBC_FREESLIP_VORTICITY, OBC_COMPUTED_VORTICITY'//&
+                   ' and OBC_SPECIFIED_VORTICITY are obsolete, use OBC_VORTICITY_CONFIG instead.')
+    if ((zero_vorticity .and. freeslip_vorticity) .or.  &
+        (zero_vorticity .and. computed_vorticity) .or.  &
+        (zero_vorticity .and. specified_vorticity) .or.  &
+        (freeslip_vorticity .and. computed_vorticity) .or.  &
+        (freeslip_vorticity .and. specified_vorticity) .or.  &
+        (computed_vorticity .and. specified_vorticity))  &
+      call MOM_error(FATAL, "MOM_open_boundary.F90, open_boundary_config:\n"//&
+      "Only one of OBC_ZERO_VORTICITY, OBC_FREESLIP_VORTICITY, OBC_COMPUTED_VORTICITY\n"//&
+      "and OBC_IMPORTED_VORTICITY can be True at once.")
+    ! "config" is set from OBC_XXX_VORTICITY if they are used.
+    if (zero_vorticity) then
+      config = 'zero'
+    elseif (freeslip_vorticity) then
+      config = 'freeslip'
+    elseif (computed_vorticity) then
+      config = 'computed'
+    elseif (specified_vorticity) then
+      config = 'specified'
+    else
+      config = 'none'
+    endif
+  else
+    config = 'freeslip' ! Default
+  endif
+  !   New setup method (overrides old method if specified)
+  call read_param(param_file, "OBC_VORTICITY_CONFIG", config)
+  call get_param(param_file, mdl, "OBC_VORTICITY_CONFIG", config, &
+                 "Configuration for relative vorticity in momentum advection at open "//&
+                 "boundaries.  Options are: \n"// &
+                 " \t none      - No adjustment.\n"//&
+                 " \t zero      - Sets relative vorticity to zero.\n"//&
+                 " \t freeslip  - Sets the normal gradient of tangential velocity to zero.\n"//&
+                 " \t computed  - Computes the normal gradient of tangential velocity using\n"//&
+                 " \t             external values of tangential velocity.\n"//&
+                 " \t specified - Uses the external values of the normal gradient of\n"//&
+                 " \t             tangential velocity.", default="freeslip", do_not_read=.true.)
+  select case (trim(config))
+    case ("none")      ; OBC%vorticity_config = OBC_VORTICITY_NONE
+    case ("zero")      ; OBC%vorticity_config = OBC_VORTICITY_ZERO
+    case ("freeslip")  ; OBC%vorticity_config = OBC_VORTICITY_FREESLIP
+    case ("computed")  ; OBC%vorticity_config = OBC_VORTICITY_COMPUTED
+    case ("specified") ; OBC%vorticity_config = OBC_VORTICITY_SPECIFIED
+    case default
+      call MOM_error(FATAL, "MOM_open_boundary: Unrecognized OBC_VORTICITY_CONFIG: "//trim(config))
+  end select
+
+  ! Configuration for OBC strain.
+  !   Old setup method
+  obsolete_param_set = .false.
+  zero_strain = .false.
+  call read_param(param_file, "OBC_ZERO_STRAIN", zero_strain, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  freeslip_strain = .true.
+  call read_param(param_file, "OBC_FREESLIP_STRAIN", freeslip_strain, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  computed_strain = .false.
+  call read_param(param_file, "OBC_COMPUTED_STRAIN", computed_strain, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  specified_strain = .false.
+  call read_param(param_file, "OBC_SPECIFIED_STRAIN", specified_strain, set=param_set)
+  obsolete_param_set = obsolete_param_set .or. param_set
+  if (obsolete_param_set) then
+    call MOM_error(WARNING, 'OBC_ZERO_STRAIN, OBC_FREESLIP_STRAIN, OBC_COMPUTED_STRAIN'//&
+                   ' and OBC_SPECIFIED_STRAIN are obsolete, use OBC_STRAIN_CONFIG instead.')
+    if ((zero_strain .and. freeslip_strain) .or.  &
+        (zero_strain .and. computed_strain) .or.  &
+        (zero_strain .and. specified_strain) .or.  &
+        (freeslip_strain .and. computed_strain) .or.  &
+        (freeslip_strain .and. specified_strain) .or.  &
+        (computed_strain .and. specified_strain))  &
+      call MOM_error(FATAL, "MOM_open_boundary.F90, open_boundary_config: \n"//&
+      "Only one of OBC_ZERO_STRAIN, OBC_FREESLIP_STRAIN, OBC_COMPUTED_STRAIN \n"//&
+      "and OBC_IMPORTED_STRAIN can be True at once.")
+    ! "config" is set from OBC_XXX_STRAIN if they are used.
+    if (zero_strain) then
+      config = 'zero'
+    elseif (freeslip_strain) then
+      config = 'freeslip'
+    elseif (computed_strain) then
+      config = 'computed'
+    elseif (specified_strain) then
+      config = 'specified'
+    else
+      config = 'none'
+    endif
+  else
+    config = 'freeslip' ! Default
+  endif
+  !   New setup method (overrides old method if specified)
+  call read_param(param_file, "OBC_STRAIN_CONFIG", config)
+  call get_param(param_file, mdl, "OBC_STRAIN_CONFIG", config, &
+                 "Configuration for strain in horizontal viscosity at open boundaries.  "//&
+                 "Options are: \n"// &
+                 " \t none      - No adjustment.\n"//&
+                 " \t zero      - Sets strain to zero.\n"//&
+                 " \t freeslip  - Sets the normal gradient of tangential velocity to zero.\n"//&
+                 " \t computed  - Computes the normal gradient of tangential velocity using\n"//&
+                 " \t             external values of tangential velocity.\n"//&
+                 " \t specified - Uses the external values of the normal gradient of\n"//&
+                 " \t             tangential velocity.", default="freeslip", do_not_read=.true.)
+  select case (trim(config))
+    case ("none")      ; OBC%strain_config = OBC_STRAIN_NONE
+    case ("zero")      ; OBC%strain_config = OBC_STRAIN_ZERO
+    case ("freeslip")  ; OBC%strain_config = OBC_STRAIN_FREESLIP
+    case ("computed")  ; OBC%strain_config = OBC_STRAIN_COMPUTED
+    case ("specified") ; OBC%strain_config = OBC_STRAIN_SPECIFIED
+    case default
+      call MOM_error(FATAL, "MOM_open_boundary: Unrecognized OBC_STRAIN_CONFIG: "//trim(config))
+  end select
+
+  call get_param(param_file, mdl, "OBC_ZERO_BIHARMONIC", OBC%zero_biharmonic, &
+       "If true, zeros the Laplacian of flow on open boundaries in the biharmonic "//&
+       "viscosity term.", default=.false.)
+  call get_param(param_file, mdl, "MASK_OUTSIDE_OBCS", mask_outside, &
+       "If true, set the areas outside open boundaries to be land.", &
+       default=.false.)
+  call get_param(param_file, mdl, "RAMP_OBCS", OBC%ramp, &
+       "If true, ramps from zero to the external values over time, with "//&
+       "a ramping timescale given by RAMP_TIMESCALE. Ramping SSH only so far.", &
+       default=.false.)
+  call get_param(param_file, mdl, "OBC_RAMP_TIMESCALE", OBC%ramp_timescale, &
+       "If RAMP_OBCS is true, this sets the ramping timescale.", &
+       units="days", default=1.0, scale=86400.0*US%s_to_T)
+  call get_param(param_file, mdl, "OBC_TIDE_N_CONSTITUENTS", OBC%n_tide_constituents, &
+       "Number of tidal constituents being added to the open boundary.", &
+       default=0)
+  OBC%add_tide_constituents = (OBC%n_tide_constituents > 0)
+
+  call get_param(param_file, mdl, "DEBUG", debug, default=.false.)
+  call get_param(param_file, mdl, "DEBUG_OBCS", OBC%debug, &
+                 "If true, do additional calls to help debug the performance "//&
+                 "of the open boundary condition code.", &
+                 default=.false., debuggingParam=.true.)
+  if (OBC%debug .and. (num_PEs() > 1)) &
+    call MOM_error(FATAL, "DEBUG_OBCS = True is currently only supported for single PE runs.")
+  call get_param(param_file, mdl, "OBC_DEBUGGING_TESTS", debugging_tests, &
+                 "If true, do additional calls resetting certain values to help verify the correctness "//&
+                 "of the open boundary condition code.", &
+                 default=.false., old_name="DEBUG_OBC", debuggingParam=.true.)
+  call get_param(param_file, mdl, "NK_OBC_DEBUG", OBC%nk_OBC_debug, &
+                 "The number of layers of OBC segment data to write out in full "//&
+                 "when DEBUG_OBCS is true.", &
+                 default=0, debuggingParam=.true., do_not_log=.not.OBC%debug)
+  call get_param(param_file, mdl, "OBC_REVERSE_SEGMENT_ORDER", OBC%reverse_segment_order, &
+                 "If true, store the OBC segments internally and handle them in the reverse "//&
+                 "order from that with which they are specified via external parameters to test "//&
+                 "for dependencies on the order with which the OBC segments are applied.", &
+                 default=.false., debuggingParam=.true., do_not_log=(OBC%number_of_segments<2))
+
+  call get_param(param_file, mdl, "OBC_SILLY_THICK", OBC%silly_h, &
+                 "A silly value of thicknesses used outside of open boundary "//&
+                 "conditions for debugging.", units="m", default=0.0, scale=US%m_to_Z, &
+                 do_not_log=.not.debugging_tests, debuggingParam=.true.)
+  call get_param(param_file, mdl, "OBC_SILLY_VEL", OBC%silly_u, &
+                 "A silly value of velocities used outside of open boundary "//&
+                 "conditions for debugging.", units="m/s", default=0.0, scale=US%m_s_to_L_T, &
+                 do_not_log=.not.debugging_tests, debuggingParam=.true.)
+  call get_param(param_file, mdl, "ENABLE_BUGS_BY_DEFAULT", enable_bugs, &
+                 default=.true., do_not_log=.true.)  ! This is logged from MOM.F90.
+  call get_param(param_file, mdl, "EXTERIOR_OBC_BUG", OBC%exterior_OBC_bug, &
+                 "If true, recover a bug in barotropic solver and other routines when "//&
+                 "boundary contitions interior to the domain are used.", &
+                 default=enable_bugs)
+  call get_param(param_file, mdl, "OBC_HOR_INDEXING_BUG", OBC%hor_index_bug, &
+                 "If true, recover set of a horizontal indexing bugs in the OBC code.", &
+                 default=enable_bugs)
+  call get_param(param_file, mdl, "OBC_RESERVOIR_INIT_BUG", OBC%reservoir_init_bug, &
+                 "If true, set the OBC tracer reservoirs at the startup of a new run from the "//&
+                 "interior tracer concentrations regardless of properties that may be explicitly "//&
+                 "specified for the reservoir concentrations.", default=enable_bugs, do_not_log=.true.)
+  call get_param(param_file, mdl, "OBC_TEMP_SALT_NEEDED_BUG", OBC%ts_needed_bug, &
+                 "If true, recover a bug that OBC temperature and salinity can be ignored "//&
+                 "even if they are registered tracers in the rest of the model.", default=.true.)
+  call get_param(param_file, mdl, "REENTRANT_X", reentrant_x, default=.true.)
+  call get_param(param_file, mdl, "REENTRANT_Y", reentrant_y, default=.false.)
+
+  ! Allocate everything
+  allocate(OBC%segment(1:OBC%number_of_segments))
+  do n=1,OBC%number_of_segments
+    OBC%segment(n)%Flather = .false.
+    OBC%segment(n)%radiation = .false.
+    OBC%segment(n)%radiation_tan = .false.
+    OBC%segment(n)%radiation_grad = .false.
+    OBC%segment(n)%oblique = .false.
+    OBC%segment(n)%oblique_tan = .false.
+    OBC%segment(n)%oblique_grad = .false.
+    OBC%segment(n)%nudged = .false.
+    OBC%segment(n)%nudged_tan = .false.
+    OBC%segment(n)%nudged_grad = .false.
+    OBC%segment(n)%specified = .false.
+    OBC%segment(n)%specified_tan = .false.
+    OBC%segment(n)%specified_grad = .false.
+    OBC%segment(n)%open = .false.
+    OBC%segment(n)%gradient = .false.
+    OBC%segment(n)%direction = OBC_NONE
+    OBC%segment(n)%is_N_or_S = .false.
+    OBC%segment(n)%is_E_or_W = .false.
+    OBC%segment(n)%is_E_or_W_2 = .false.
+    OBC%segment(n)%Velocity_nudging_timescale_in = 0.0
+    OBC%segment(n)%Velocity_nudging_timescale_out = 0.0
+    OBC%segment(n)%num_fields = 0
+  enddo
+  allocate(OBC%segnum_u(G%IsdB:G%IedB,G%jsd:G%jed), source=0)
+  allocate(OBC%segnum_v(G%isd:G%ied,G%JsdB:G%JedB), source=0)
+  OBC%u_OBCs_on_PE = .false.
+  OBC%v_OBCs_on_PE = .false.
+
+  do n=1,OBC%number_of_segments
+    n_seg = n ; if (OBC%reverse_segment_order) n_seg = OBC%number_of_segments + 1 - n
+    write(segment_param_str(1:15),"('OBC_SEGMENT_',i3.3)") n
+    call get_param(param_file, mdl, segment_param_str, segment_str, &
+         "Documentation needs to be dynamic?????", &
+         fail_if_missing=.true.)
+    segment_str = remove_spaces(segment_str)
+    if (segment_str(1:2) == 'I=') then
+      call setup_u_point_obc(OBC, G, US, segment_str, n_seg, n, param_file, reentrant_y)
+    elseif (segment_str(1:2) == 'J=') then
+      call setup_v_point_obc(OBC, G, US, segment_str, n_seg, n, param_file, reentrant_x)
+    else
+      call MOM_error(FATAL, "MOM_open_boundary.F90, open_boundary_config: "//&
+           "Unable to interpret "//segment_param_str//" = "//trim(segment_str))
+    endif
+  enddo
+  ! Set arrays indicating the segment number and segment direction, and also store the
+  ! range of indices within which various orientations of OBCs can be found on this PE.
+  call set_segnum_signs(OBC, G)
+
+  ! Moved this earlier because time_interp_external_init needs to be called
+  ! before anything that uses time_interp_external (such as initialize_segment_data)
+  if (OBC%specified_u_BCs_exist_globally .or. OBC%specified_v_BCs_exist_globally .or. &
+    OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally) then
+    ! Need this for ocean_only mode boundary interpolation.
+    call time_interp_external_init()
+  endif
+  ! if (open_boundary_query(OBC, needs_ext_seg_data=.true.)) &
+  !   call initialize_segment_data(G, OBC, param_file)
+
+  if (open_boundary_query(OBC, apply_open_OBC=.true.)) then
+    call get_param(param_file, mdl, "OBC_RADIATION_MAX", OBC%rx_max, &
+                   "The maximum magnitude of the baroclinic radiation velocity (or speed of "//&
+                   "characteristics), in gridpoints per timestep.  This is only "//&
+                   "used if one of the open boundary segments is using Orlanski.", &
+                   units="nondim", default=1.0)
+    call get_param(param_file, mdl, "OBC_RAD_VEL_WT", OBC%gamma_uv, &
+                   "The relative weighting for the baroclinic radiation "//&
+                   "velocities (or speed of characteristics) at the new "//&
+                   "time level (1) or the running mean (0) for velocities. "//&
+                   "Valid values range from 0 to 1. This is only used if "//&
+                   "one of the open boundary segments is using Orlanski.", &
+                   units="nondim", default=0.3)
+  endif
+
+  Lscale_in = 0.
+  Lscale_out = 0.
+  if (open_boundary_query(OBC, apply_open_OBC=.true.)) then
+    call get_param(param_file, mdl, "OBC_TRACER_RESERVOIR_LENGTH_SCALE_OUT ", Lscale_out, &
+                   "An effective length scale for restoring the tracer concentration "//&
+                   "at the boundaries to externally imposed values when the flow "//&
+                   "is exiting the domain.", units="m", default=0.0, scale=US%m_to_L)
+
+    call get_param(param_file, mdl, "OBC_TRACER_RESERVOIR_LENGTH_SCALE_IN ", Lscale_in, &
+                   "An effective length scale for restoring the tracer concentration "//&
+                   "at the boundaries to values from the interior when the flow "//&
+                   "is entering the domain.", units="m", default=0.0, scale=US%m_to_L)
+  endif
+
+  if (mask_outside) call mask_outside_OBCs(G, US, param_file, OBC)
+
+  ! All tracers are using the same restoring length scale for now, but we may want to make this
+  ! tracer-specific in the future for example, in cases where certain tracers are poorly constrained
+  ! by data while others are well constrained - MJH.
+  do n=1,OBC%number_of_segments
+    OBC%segment(n)%Tr_InvLscale_in = 0.0
+    if (Lscale_in>0.) OBC%segment(n)%Tr_InvLscale_in =  1.0/Lscale_in
+    OBC%segment(n)%Tr_InvLscale_out = 0.0
+    if (Lscale_out>0.) OBC%segment(n)%Tr_InvLscale_out =  1.0/Lscale_out
+  enddo
+
+  Lscale_in = 0.
+  Lscale_out = 0.
+  if (open_boundary_query(OBC, apply_open_OBC=.true.)) then
+    call get_param(param_file, mdl, "OBC_THICKNESS_RESERVOIR_LENGTH_SCALE_OUT ", Lscale_out, &
+                   "An effective length scale for restoring the layer thickness "//&
+                   "at the boundaries to externally imposed values when the flow "//&
+                   "is exiting the domain.", units="m", default=0.0, scale=US%m_to_L)
+
+    call get_param(param_file, mdl, "OBC_THICKNESS_RESERVOIR_LENGTH_SCALE_IN ", Lscale_in, &
+                   "An effective length scale for restoring the layer thickness "//&
+                   "at the boundaries to values from the interior when the flow "//&
+                   "is entering the domain.", units="m", default=0.0, scale=US%m_to_L)
+  endif
+
+  do n=1,OBC%number_of_segments
+    OBC%segment(n)%Th_InvLscale_in = 0.0
+    if (Lscale_in>0.) OBC%segment(n)%Th_InvLscale_in =  1.0/Lscale_in
+    OBC%segment(n)%Th_InvLscale_out = 0.0
+    if (Lscale_out>0.) OBC%segment(n)%Th_InvLscale_out =  1.0/Lscale_out
+    if (Lscale_in>0. .or. Lscale_out>0.) then
+      if (OBC%segment(n)%is_E_or_W_2) then
+        OBC%thickness_x_reservoirs_used = .true.
+        OBC%use_h_res = .true.
+      else
+        OBC%thickness_y_reservoirs_used = .true.
+        OBC%use_h_res = .true.
+      endif
+    endif
+  enddo
+
+  call get_param(param_file, mdl, "REMAPPING_SCHEME", OBC%remappingScheme, &
+       default=remappingDefaultScheme, do_not_log=.true.)
+  call get_param(param_file, mdl, "OBC_REMAPPING_SCHEME", OBC%remappingScheme, &
+       "This sets the reconstruction scheme used "//&
+       "for OBC vertical remapping for all variables. "//&
+       "It can be one of the following schemes: \n"//&
+       trim(remappingSchemesDoc), default=OBC%remappingScheme)
+  call get_param(param_file, mdl, "FATAL_CHECK_RECONSTRUCTIONS", OBC%check_reconstruction, &
+       "If true, cell-by-cell reconstructions are checked for "//&
+       "consistency and if non-monotonicity or an inconsistency is "//&
+       "detected then a FATAL error is issued.", default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "FATAL_CHECK_REMAPPING", OBC%check_remapping, &
+       "If true, the results of remapping are checked for "//&
+       "conservation and new extrema and if an inconsistency is "//&
+       "detected then a FATAL error is issued.", default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "BRUSHCUTTER_MODE", OBC%brushcutter_mode, &
+       "If true, read external OBC data on the supergrid.", &
+       default=.false.)
+  call get_param(param_file, mdl, "REMAP_BOUND_INTERMEDIATE_VALUES", OBC%force_bounds_in_subcell, &
+       "If true, the values on the intermediate grid used for remapping "//&
+       "are forced to be bounded, which might not be the case due to "//&
+       "round off.", default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "DEFAULT_ANSWER_DATE", default_answer_date, &
+                 "This sets the default value for the various _ANSWER_DATE parameters.", &
+                 default=99991231)
+  call get_param(param_file, mdl, "REMAPPING_ANSWER_DATE", OBC%remap_answer_date, &
+                 "The vintage of the expressions and order of arithmetic to use for remapping.  "//&
+                 "Values below 20190101 result in the use of older, less accurate expressions "//&
+                 "that were in use at the end of 2018.  Higher values result in the use of more "//&
+                 "robust and accurate forms of mathematically equivalent expressions.", &
+                 default=default_answer_date)
+  call get_param(param_file, mdl, "REMAPPING_USE_OM4_SUBCELLS", OBC%om4_remap_via_sub_cells, &
+                 do_not_log=.true., default=.true.)
+
+  call get_param(param_file, mdl, "OBC_REMAPPING_USE_OM4_SUBCELLS", OBC%om4_remap_via_sub_cells, &
+                 "If true, use the OM4 remapping-via-subcells algorithm for neutral diffusion. "//&
+                 "See REMAPPING_USE_OM4_SUBCELLS for more details. "//&
+                 "We recommend setting this option to false.", default=OBC%om4_remap_via_sub_cells)
+
+  ! Safety check
+  if ((OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally) .and. &
+       .not.G%symmetric ) call MOM_error(FATAL, &
+       "MOM_open_boundary, open_boundary_config: "//&
+       "Symmetric memory must be used when using Flather OBCs.")
+  ! Need to do this last, because it depends on time_interp_external_init having already been called
+  if (OBC%add_tide_constituents) then
+    call initialize_obc_tides(OBC, US, param_file)
+    ! Tide update is done within update_OBC_segment_data, so this should be true if tides are included.
+    OBC%update_OBC = .true.
+  endif
+
+  if (.not.(OBC%specified_u_BCs_exist_globally .or. OBC%specified_v_BCs_exist_globally .or. &
+              OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally)) then
+    ! No open boundaries have been requested
+    call open_boundary_dealloc(OBC)
+  endif
+
+end procedure open_boundary_config
+module procedure open_boundary_setup_vert
+  real :: dz_neglect, dz_neglect_edge ! Small thicknesses in vertical height units [Z ~> m]
+  if (associated(OBC)) then
+    if (OBC%number_of_segments > 0) then
+      ! Set up vertical remapping for open boundaries.  Remapping happens independently on each PE,
+      ! so this block could be skipped for PEs without open boundary conditions that use remapping.
+      if (GV%Boussinesq .and. (OBC%remap_answer_date < 20190101)) then
+        dz_neglect = US%m_to_Z * 1.0e-30 ; dz_neglect_edge = US%m_to_Z * 1.0e-10
+      elseif (GV%semi_Boussinesq .and. (OBC%remap_answer_date < 20190101)) then
+        dz_neglect = GV%kg_m2_to_H*GV%H_to_Z * 1.0e-30 ; dz_neglect_edge = GV%kg_m2_to_H*GV%H_to_Z * 1.0e-10
+      else
+        dz_neglect = GV%dZ_subroundoff ; dz_neglect_edge = GV%dZ_subroundoff
+      endif
+      allocate(OBC%remap_z_CS)
+      call initialize_remapping(OBC%remap_z_CS, OBC%remappingScheme, boundary_extrapolation=.false., &
+                 check_reconstruction=OBC%check_reconstruction, check_remapping=OBC%check_remapping, &
+                 om4_remap_via_sub_cells=OBC%om4_remap_via_sub_cells, &
+                 force_bounds_in_subcell=OBC%force_bounds_in_subcell, answer_date=OBC%remap_answer_date, &
+                 h_neglect=dz_neglect, h_neglect_edge=dz_neglect_edge)
+      allocate(OBC%remap_h_CS)
+      call initialize_remapping(OBC%remap_h_CS, OBC%remappingScheme, boundary_extrapolation=.false., &
+                 check_reconstruction=OBC%check_reconstruction, check_remapping=OBC%check_remapping, &
+                 om4_remap_via_sub_cells=OBC%om4_remap_via_sub_cells, &
+                 force_bounds_in_subcell=OBC%force_bounds_in_subcell, answer_date=OBC%remap_answer_date, &
+                 h_neglect=GV%H_subroundoff, h_neglect_edge=GV%H_subroundoff)
+    endif
+  endif
+
+end procedure open_boundary_setup_vert
+module procedure segment_determine_required_fields
+  logical :: use_tide ! Local switch for tidal variables
+  logical :: use_temp ! Local switch for thermodynamic variables
+  integer :: m
+  integer :: F_Vn, F_Vt, F_G
+  integer, parameter :: &
+    tide_idx(6) = (/ F_UAMP, F_UPHASE, F_VAMP, F_VPHASE, F_ZAMP, F_ZPHASE /), & ! Indices for tides
+    temp_idx(2) = (/ F_T, F_S /) ! Indices for thermodynamics
+  if (.not. associated(segment%field)) &
+    call MOM_error(FATAL, 'segment_determine_required_fields: segment%field is not allocated.')
+
+  use_tide = .false. ; if (present(tides)) use_tide = tides
+  use_temp = .false. ; if (present(temp_salt)) use_temp = temp_salt
+
+  ! Normal, tangential and gradient depend on segment orientation.
+  if (segment%is_E_or_W_2) then
+    F_Vn = F_U ; F_Vt = F_V ; F_G = F_VX
+  else
+    F_Vn = F_V ; F_Vt = F_U ; F_G = F_UY
+  endif
+  if (segment%Flather) &
+    segment%field(F_Z)%required = .true.
+
+  if (segment%Flather .or. segment%nudged .or. segment%specified) &
+    segment%field(F_Vn)%required = .true.
+
+  if (segment%nudged_tan .or. segment%specified_tan) &
+    segment%field(F_Vt)%required = .true.
+
+  if (segment%nudged_grad .or. segment%specified_grad) &
+    segment%field(F_G)%required = .true.
+
+  if (use_tide) then ; do m = 1, size(tide_idx)
+    segment%field(tide_idx(m))%required = .true.
+  enddo ; endif
+
+  if (use_temp) then ; do m = 1, size(temp_idx)
+    segment%field(temp_idx(m))%required = .true.
+  enddo ; endif
+
+end procedure segment_determine_required_fields
+module procedure find_phys_field_index
+  integer :: i
+  find_phys_field_index = 0
+  do i = 1, NUM_PHYS_FIELDS ; if (trim(name) == PHYS_FIELD_NAMES(i)) then
+    find_phys_field_index = i
+    return
+  endif ; enddo
+end procedure find_phys_field_index
+module procedure OBC_any_IO
+  integer :: m, n
+  logical :: use_IO
+  use_IO = .false.
+  do n=1,OBC%number_of_segments
+    do m=1,OBC%segment(n)%num_fields
+      if (OBC%segment(n)%field(m)%use_IO) then
+        use_IO = .true.
+        exit
+      endif
+    enddo
+    if (use_IO) exit
+  enddo
+
+  OBC%any_needs_IO_for_data = any_across_PEs(use_IO)
+end procedure OBC_any_IO
+module procedure allocate_segment_field_data
+  character(len=256) :: full_filename, full_varname ! Full filename and varname
+  character(len=512) :: mesg ! Error message
+  real :: init_value_dst ! Initial value for allocated buffer_dst array [a]
+  integer :: qturns ! The number of quarter turns in the range of 0 to 3
+  integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB ! Aliases of segment geometry indices
+  integer, dimension(4) :: siz, siz_check ! Four-dimensional shape of a variable in input file
+  integer :: dim ! Loop index for siz/siz_check
+  integer :: nk_dst ! k-axis size of buffer_dst
+  if (.not. segment%on_pe) return
+
+  isd = segment%HI%isd ; ied = segment%HI%ied ; IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+  jsd = segment%HI%jsd ; jed = segment%HI%jed ; JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+  nk_dst = nz
+
+  qturns = modulo(turns, 4)
+
+  field%on_face = field_is_on_face(field%name, segment%is_E_or_W)
+  ! The scale factor for tracers may also be set in register_segment_tracer, and a constant input
+  ! value is rescaled there.
+  field%scale = scale_factor_from_name(field%name, US, segment%tr_Reg)
+  field%use_IO = (trim(filename) /= 'none')
+
+  if (field%use_IO) then
+    full_filename = trim(inputdir) // trim(filename)
+    full_varname = trim(varname) // trim(suffix)
+
+    if (.not.file_exists(full_filename)) &
+      call MOM_error(FATAL," Unable to open OBC file " // trim(full_filename))
+
+    call field_size(full_filename, full_varname, siz, no_domain=.true.)
+    field%nk_src = siz(3)
+
+    if (OBC%brushcutter_mode .and. (modulo(siz(1),2) == 0 .or. modulo(siz(2),2) == 0)) then
+      write(mesg, '("Brushcutter mode sizes ",I0," ",I0)') siz(1), siz(2)
+      call MOM_error(WARNING, mesg // " " // trim(full_filename) // " " // trim(full_varname))
+      call MOM_error(FATAL,'segment data are not on the supergrid')
+    endif
+
+    ! Allocate src array
+    if (.not.field%on_face) then
+      allocate(field%buffer_src(IsdB:IedB, JsdB:JedB, field%nk_src), source=0.0)
+    elseif (segment%is_E_or_W) then
+      allocate(field%buffer_src(IsdB:IedB, jsd:jed, field%nk_src), source=0.0)
+    else
+      allocate(field%buffer_src(isd:ied, JsdB:JedB, field%nk_src), source=0.0)
+    endif
+
+    field%handle = init_external_field(trim(full_filename), trim(full_varname), &
+                                       ignore_axis_atts=.true., threading=SINGLE_FILE)
+
+    if ((field%nk_src > 1) .and. (.not. field_is_tidal(field%name))) then ! nk_src is depth
+      full_varname = 'dz_' // trim(full_varname)
+      call field_size(full_filename, full_varname, siz_check, no_domain=.true.)
+      do dim = 1, 4 ; if (siz(dim) /= siz_check(dim)) &
+        call MOM_error(FATAL, "'dz' field size is inconsistent with "//&
+                       "its corresponding variable.")
+      enddo
+
+      if (.not.field%on_face) then
+        allocate(field%dz_src(IsdB:IedB, JsdB:JedB, field%nk_src), source=0.0)
+      elseif (segment%is_E_or_W) then
+        allocate(field%dz_src(IsdB:IedB, jsd:jed, field%nk_src), source=0.0)
+      else
+        allocate(field%dz_src(isd:ied, JsdB:JedB, field%nk_src), source=0.0)
+      endif
+      field%dz_handle = init_external_field(trim(full_filename), trim(full_varname), &
+                ignore_axis_atts=.true., threading=SINGLE_FILE)
+
+    elseif (field_is_tidal(field%name)) then ! nk_src is constituent for tidal variables
+      ! expect third dimension to be number of constituents in MOM_input
+      if (OBC%add_tide_constituents .and. (field%nk_src /= OBC%n_tide_constituents)) &
+        call MOM_error(FATAL, 'Number of constituents in input data is not '//&
+                       'the same as the number specified')
+      nk_dst = field%nk_src
+
+    else ! nk_src = 1
+      nk_dst = 1
+
+    endif
+
+    init_value_dst = 0.0
+  else  ! This data is not being read from a file.
+    field%value = field%scale * value
+    ! Change the sign of the specified velocities, depending on the number of quarter turns of the grid.
+    if ( ( ((field%name == 'U') .or. (field%name == 'Uamp')) .and. &
+           ((qturns == 1) .or. (qturns == 2)) ) .or. &
+         ( ((field%name == 'V') .or. (field%name == 'Vamp')) .and. &
+           ((qturns == 3) .or. (qturns == 2)) ) ) &
+      field%value = -field%value
+
+    ! Check if this is a tidal field. If so, the number of expected constituents must be 1.
+    if (field_is_tidal(field%name)) then
+      if (OBC%add_tide_constituents .and. (OBC%n_tide_constituents > 1)) &
+        call MOM_error(FATAL, 'Only one constituent is supported when specifying '//&
+                       'tidal boundary conditions by value rather than file.')
+      nk_dst = 1
+    endif
+
+    if (field%name == 'SSH') &
+      nk_dst = 1
+
+    init_value_dst = field%value
+  endif
+
+  ! Allocate buffer_dst array
+  if (.not.field%on_face) then
+    allocate(field%buffer_dst(IsdB:IedB, JsdB:JedB, nk_dst), source=init_value_dst)
+  elseif (segment%is_E_or_W) then
+    allocate(field%buffer_dst(IsdB:IedB, jsd:jed, nk_dst), source=init_value_dst)
+  else
+    allocate(field%buffer_dst(isd:ied, JsdB:JedB, nk_dst), source=init_value_dst)
+  endif
+
+  ! This can be removed.
+  if (field%name == 'TEMP') segment%temp_segment_data_exists = .true.
+  if (field%name == 'SALT') segment%salt_segment_data_exists = .true.
+
+end procedure allocate_segment_field_data
+module procedure initialize_segment_data
+  integer :: n, n_seg, m, num_manifest_fields, mm
+  character(len=1024) :: segstr
+  character(len=256) :: filename
+  character(len=20)  :: segname, suffix
+  character(len=32)  :: varname
+  real               :: value  ! A value that is parsed from the segment data string [various units]
+  character(len=32), dimension(NUM_PHYS_FIELDS) :: phys_inputs  ! input physical field names
+  integer, dimension(NUM_PHYS_FIELDS) :: phys_idx ! input physical field indices to PHYS_FIELD_NAMES
+  character(len=32) :: bgc_input  ! segment field names
+  character(len=128) :: inputdir
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  character(len=256) :: mesg    ! Message for error messages.
+  integer, dimension(:), allocatable :: saved_pelist
+  integer :: current_pe
+  integer, dimension(1) :: single_pelist
+  type(external_tracers_segments_props), pointer :: obgc_segments_props_list =>NULL()
+  logical :: check_ts_needed ! Check if temperature and salinity are explicitly specified.
+  integer :: idx
+  character(len=256) :: routine_name ! Name of this subroutine
+  if (OBC%user_BCs_set_globally) return
+
+  routine_name = trim(mdl) // ', initialize_segment_data'
+
+  OBC%update_OBC = .true. ! Data is time-dependent if not using user BC.
+
+  check_ts_needed = use_temperature .and. (.not. OBC%ts_needed_bug)
+
+  call get_param(PF, mdl, "INPUTDIR", inputdir, default=".")
+  inputdir = slasher(inputdir)
+
+  ! Try this here just for the documentation. It is repeated below.
+  do n=1,OBC%number_of_segments
+    write(segname, "('OBC_SEGMENT_',i3.3,'_DATA')") n
+    call get_param(PF, mdl, segname, segstr, 'OBC segment docs')
+  enddo
+
+  !< temporarily disable communication in order to read segment data independently
+
+  allocate(saved_pelist(0:num_PEs()-1))
+  call Get_PElist(saved_pelist)
+  current_pe = PE_here()
+  single_pelist(1) = current_pe
+  call Set_PElist(single_pelist)
+
+  do n=1,OBC%number_of_segments
+    n_seg = n ; if (OBC%reverse_segment_order) n_seg = OBC%number_of_segments + 1 - n
+    segment => OBC%segment(n_seg)
+
+    if (.not. segment%on_pe) cycle
+
+    write(segname, "('OBC_SEGMENT_',i3.3,'_DATA')") n
+    write(suffix, "('_segment_',i3.3)") n
+    ! needs documentation !!  Yet, unsafe for now, causes grief for
+    ! MOM_parameter_docs in circle_obcs on two processes.
+    !   call get_param(PF, mdl, segname, segstr, 'xyz')
+    ! Clear out any old values
+    segstr = ''
+    call get_param(PF, mdl, segname, segstr)
+    if (segstr == '') then
+      write(mesg,'("No OBC_SEGMENT_XXX_DATA string for OBC segment ",I0)') n
+      call MOM_error(FATAL, mesg)
+    endif
+
+    segment%num_fields = NUM_PHYS_FIELDS + OBC%num_obgc_tracers
+    allocate(segment%field(segment%num_fields))
+
+    ! Initialize physical fields
+    do m = 1, NUM_PHYS_FIELDS
+      segment%field(m)%name = PHYS_FIELD_NAMES(m) ! The order of physical fields is fixed.
+      segment%field(m)%bgc_tracer = .false.
+      segment%field(m)%required = .false.
+      segment%field(m)%use_IO = .false.
+      segment%field(m)%tr_index = -1
+    enddo
+    segment%field(F_T)%tr_index = 1 ! Temperature tracer index is hard-coded.
+    segment%field(F_S)%tr_index = 2 ! Salinity tracer index is hard-coded.
+
+    call segment_determine_required_fields(segment, tides=OBC%add_tide_constituents, &
+                                           temp_salt=check_ts_needed)
+
+    ! Parse and find available physical fields
+    call parse_segment_manifest_str(trim(segstr), num_manifest_fields, phys_inputs)
+
+    phys_idx(:) = -1
+    do m = 1, num_manifest_fields
+      idx = find_phys_field_index(rotated_field_name(trim(phys_inputs(m)), turns))
+      if (idx == 0) then
+        write(mesg,'("OBC segment ",I0," has an unknown input field: ",a)') n, trim(phys_inputs(m))
+        call MOM_error(FATAL, trim(routine_name) // ", " // trim(mesg))
+      endif
+      if ((.not. segment%field(idx)%required) .and. &
+          ((.not. (idx == F_T .or. idx == F_S)) .or. check_ts_needed)) then
+        write(mesg,'("OBC segment ",I0," has an unnecessary field: ",a)') &
+              n, trim(phys_inputs(m))
+        call MOM_error(WARNING, trim(mesg))
+        ! Unnecessary field is allowed and allocated for now.
+        ! Otherwise, the next line can be uncommented.
+        ! cycle
+      endif
+      phys_idx(idx) = m
+    enddo
+
+    ! These can be removed.
+    segment%temp_segment_data_exists = .false.
+    segment%salt_segment_data_exists = .false.
+
+    ! Allocate physical fields
+    do m = 1, NUM_PHYS_FIELDS
+      if (segment%field(m)%required .and. (phys_idx(m) < 0)) then
+        write(mesg,'("OBC segment ",I0," requires field: ",a)') n, trim(segment%field(m)%name)
+        call MOM_error(FATAL, trim(routine_name) // ", " // trim(mesg))
+      endif
+      if ((phys_idx(m) > 0)) then ! Field is found in input, even if not required
+        call parse_segment_data_str(trim(segstr), phys_idx(m), trim(phys_inputs(phys_idx(m))), &
+                                    value, filename, varname)
+        call allocate_segment_field_data(segment%field(m), OBC, segment, US, &
+                                         inputdir, filename, varname, suffix, value, turns, GV%ke)
+      endif
+    enddo
+
+    ! Allocate BGC tracer fields
+    obgc_segments_props_list => OBC%obgc_segments_props ! pointer to the head node
+    do m = NUM_PHYS_FIELDS+1, segment%num_fields
+      segment%field(m)%bgc_tracer = .true.
+      ! Query the obgc segment properties by traversing the linked list
+      call get_obgc_segments_props(obgc_segments_props_list, bgc_input, filename, varname, &
+                                   segment%field(m)%resrv_lfac_in, segment%field(m)%resrv_lfac_out)
+      ! Make sure the obgc tracer is not specified in the MOM6 param file too.
+      do mm=1,num_manifest_fields ; if (trim(bgc_input) == trim(phys_inputs(mm))) then
+        write(mesg,'("Input parameter for OBC segment ",I0," contains a BGC tracer: ", A)') &
+              n, trim(bgc_input)
+        call MOM_error(FATAL, trim(routine_name) // ", " // trim(mesg))
+      endif ; enddo
+      segment%field(m)%name = rotated_field_name(bgc_input, turns)
+      segment%field(m)%tr_index = get_tracer_index(segment, trim(segment%field(m)%name))
+      call allocate_segment_field_data(segment%field(m), OBC, segment, US, &
+                                       inputdir, filename, varname, suffix, 0.0, turns, GV%ke)
+    enddo
+
+    ! write(stderr, '(A)') trim(suffix)//" segment checksum"
+    if (OBC%debug) call chksum_OBC_segment_data(OBC%segment(n_seg), GV, US, OBC%nk_OBC_debug, n)
+
+  enddo ! n-loop for segments
+
+  call Set_PElist(saved_pelist)
+
+  ! Determine global IO data requirement patterns.
+  call OBC_any_IO(OBC)
+end procedure initialize_segment_data
+module procedure field_is_on_face
+  field_is_on_face = .true.
+  if (is_E_or_W) then
+    if ((name == 'V') .or. (name == 'Vamp') .or. (name == 'Vphase') .or. (name == 'DVDX')) &
+      field_is_on_face = .false.
+  else
+    if ((name == 'U') .or. (name == 'Uamp') .or. (name == 'Uphase') .or. (name == 'DUDY')) &
+      field_is_on_face = .false.
+  endif
+end procedure field_is_on_face
+module procedure field_is_tidal
+  field_is_tidal = ((index(name, 'phase') > 0) .or. (index(name, 'amp') > 0))
+end procedure field_is_tidal
+module procedure set_segnum_signs
+  integer :: i, j
+  OBC%u_OBCs_on_PE = .false. ; OBC%v_OBCs_on_PE = .false.
+  do j=G%jsd,G%jed ; do I=G%IsdB,G%IedB
+    OBC%segnum_u(I,j) = abs(OBC%segnum_u(I,j))
+    if (abs(OBC%segnum_u(I,j)) > 0) then
+      OBC%u_OBCs_on_PE = .true.
+      if (OBC%segment(abs(OBC%segnum_u(I,j)))%direction == OBC_DIRECTION_W) &
+        OBC%segnum_u(I,j) = -abs(OBC%segnum_u(I,j))
+    endif
+  enddo ; enddo
+  do J=G%JsdB,G%JedB ; do i=G%isd,G%ied
+    OBC%segnum_v(i,J) = abs(OBC%segnum_v(i,J))
+    if (abs(OBC%segnum_v(i,J)) > 0) then
+      OBC%v_OBCs_on_PE = .true.
+      if (OBC%segment(abs(OBC%segnum_v(i,J)))%direction == OBC_DIRECTION_S) &
+        OBC%segnum_v(i,J) = -abs(OBC%segnum_v(i,J))
+    endif
+  enddo ; enddo
+
+  ! Determine the maximum and minimum index range for various directions of OBC points on this PE
+  ! by first setting these one point outside of the wrong side of the domain.
+  OBC%Is_u_W_obc = G%IedB + 1 ; OBC%Ie_u_W_obc = G%IsdB - 1
+  OBC%js_u_W_obc = G%jed + 1 ; OBC%je_u_W_obc = G%jsd - 1
+  OBC%Is_u_E_obc = G%IedB + 1 ; OBC%Ie_u_E_obc = G%IsdB - 1
+  OBC%js_u_E_obc = G%jed + 1 ; OBC%je_u_E_obc = G%jsd - 1
+  OBC%is_v_S_obc = G%ied + 1 ; OBC%ie_v_S_obc = G%isd - 1
+  OBC%Js_v_S_obc = G%JedB + 1 ; OBC%Je_v_S_obc = G%JsdB - 1
+  OBC%is_v_N_obc = G%ied + 1 ; OBC%ie_v_N_obc = G%isd - 1
+  OBC%Js_v_N_obc = G%JedB + 1 ; OBC%Je_v_N_obc = G%JsdB - 1
+  OBC%v_N_OBCs_on_PE = .false. ; OBC%v_S_OBCs_on_PE = .false.
+  OBC%u_E_OBCs_on_PE = .false. ; OBC%u_W_OBCs_on_PE = .false.
+  ! Note that the loop ranges are reduced because outward facing OBCs can not be applied at edge points.
+  do j=G%jsd,G%jed ; do I=G%IsdB,G%IedB-1
+    if (OBC%segnum_u(I,j) < 0) then ! This point has OBC_DIRECTION_W.
+      OBC%Is_u_W_obc = min(I, OBC%Is_u_W_obc) ; OBC%Ie_u_W_obc = max(I, OBC%Ie_u_W_obc)
+      OBC%js_u_W_obc = min(j, OBC%js_u_W_obc) ; OBC%je_u_W_obc = max(j, OBC%je_u_W_obc)
+      OBC%u_W_OBCs_on_PE = .true.
+    endif
+  enddo ; enddo
+  do j=G%jsd,G%jed ; do I=G%IsdB+1,G%IedB
+    if (OBC%segnum_u(I,j) > 0) then ! This point has OBC_DIRECTION_E.
+      OBC%Is_u_E_obc = min(I, OBC%Is_u_E_obc) ; OBC%Ie_u_E_obc = max(I, OBC%Ie_u_E_obc)
+      OBC%js_u_E_obc = min(j, OBC%js_u_E_obc) ; OBC%je_u_E_obc = max(j, OBC%je_u_E_obc)
+      OBC%u_E_OBCs_on_PE = .true.
+    endif
+  enddo ; enddo
+  do J=G%JsdB,G%JedB-1 ; do i=G%isd,G%ied
+    if (OBC%segnum_v(i,J) < 0)  then ! This point has OBC_DIRECTION_S.
+      OBC%is_v_S_obc = min(i, OBC%is_v_S_obc) ; OBC%ie_v_S_obc = max(i, OBC%ie_v_S_obc)
+      OBC%Js_v_S_obc = min(J, OBC%Js_v_S_obc) ; OBC%Je_v_S_obc = max(J, OBC%Je_v_S_obc)
+      OBC%v_S_OBCs_on_PE = .true.
+    endif
+  enddo ; enddo
+  do J=G%JsdB+1,G%JedB ; do i=G%isd,G%ied
+    if (OBC%segnum_v(i,J) > 0) then ! This point has OBC_DIRECTION_N.
+      OBC%is_v_N_obc = min(i, OBC%is_v_N_obc) ; OBC%ie_v_N_obc = max(i, OBC%ie_v_N_obc)
+      OBC%Js_v_N_obc = min(J, OBC%Js_v_N_obc) ; OBC%Je_v_N_obc = max(J, OBC%Je_v_N_obc)
+      OBC%v_N_OBCs_on_PE = .true.
+    endif
+  enddo ; enddo
+
+end procedure set_segnum_signs
+module procedure scale_factor_from_name
+  integer :: m
+  select case (trim(name))
+    case ('U') ; scale_factor_from_name = US%m_s_to_L_T
+    case ('V') ; scale_factor_from_name = US%m_s_to_L_T
+    case ('Uamp') ; scale_factor_from_name = US%m_s_to_L_T
+    case ('Vamp') ; scale_factor_from_name = US%m_s_to_L_T
+    case ('DVDX') ; scale_factor_from_name = US%T_to_s
+    case ('DUDY') ; scale_factor_from_name = US%T_to_s
+    case ('SSH') ; scale_factor_from_name = US%m_to_Z
+    case ('SSHamp') ; scale_factor_from_name = US%m_to_Z
+    case default ; scale_factor_from_name = 1.0
+  end select
+
+  if (associated(Tr_Reg) .and. (scale_factor_from_name == 1.0)) then
+    ! Check for name matches with previously registered tracers.
+    do m=1,Tr_Reg%ntseg
+      if (uppercase(name) == uppercase(Tr_Reg%Tr(m)%name)) then
+        scale_factor_from_name = Tr_Reg%Tr(m)%scale
+        exit
+      endif
+    enddo
+  endif
+
+end procedure scale_factor_from_name
+module procedure initialize_obc_tides
+  integer, dimension(3) :: tide_ref_date      !< Reference date (t = 0) for tidal forcing (year, month, day).
+  integer, dimension(3) :: nodal_ref_date     !< Date to calculate nodal modulation for (year, month, day).
+  character(len=50) :: tide_constituent_str   !< List of tidal constituents to include on boundary.
+  type(astro_longitudes) :: nodal_longitudes  !< Solar and lunar longitudes for tidal forcing
+  type(time_type) :: nodal_time               !< Model time to calculate nodal modulation for.
+  integer :: c                                !< Index to tidal constituent.
+  logical :: tides                            !< True if astronomical tides are also used.
+  call get_param(param_file, mdl, "OBC_TIDE_CONSTITUENTS", tide_constituent_str, &
+      "Names of tidal constituents being added to the open boundaries.", &
+      fail_if_missing=.true.)
+
+  call get_param(param_file, mdl, "TIDES", tides, &
+      "If true, apply tidal momentum forcing.", default=.false., do_not_log=.true.)
+
+  call get_param(param_file, mdl, "TIDE_USE_EQ_PHASE", OBC%add_eq_phase, &
+      "If true, add the equilibrium phase argument to the specified tidal phases.", &
+      old_name="OBC_TIDE_ADD_EQ_PHASE", default=.false., do_not_log=tides)
+
+  call get_param(param_file, mdl, "TIDE_ADD_NODAL", OBC%add_nodal_terms, &
+      "If true, include 18.6 year nodal modulation in the boundary tidal forcing.", &
+      old_name="OBC_TIDE_ADD_NODAL", default=.false., do_not_log=tides)
+
+  call get_param(param_file, mdl, "TIDE_REF_DATE", tide_ref_date, &
+      "Reference date to use for tidal calculations and equilibrium phase.", &
+      old_name="OBC_TIDE_REF_DATE", defaults=(/0, 0, 0/), do_not_log=tides)
+
+  call get_param(param_file, mdl, "TIDE_NODAL_REF_DATE", nodal_ref_date, &
+      "Fixed reference date to use for nodal modulation of boundary tides.", &
+      old_name="OBC_TIDE_NODAL_REF_DATE", defaults=(/0, 0, 0/), do_not_log=tides)
+
+  allocate(OBC%tide_names(OBC%n_tide_constituents))
+  read(tide_constituent_str, *) OBC%tide_names
+
+  ! Set reference time (t = 0) for boundary tidal forcing.
+  if (sum(tide_ref_date) == 0) then  ! tide_ref_date defaults to 0.
+    OBC%time_ref = set_date(1, 1, 1, 0, 0, 0)
+  else
+    if (.not. OBC%add_eq_phase) then
+      ! If equilibrium phase argument is not added, the input phases
+      ! should already be relative to the reference time.
+      call MOM_mesg('OBC tidal phases will *not* be corrected with equilibrium arguments.')
+    endif
+    OBC%time_ref = set_date(tide_ref_date(1), tide_ref_date(2), tide_ref_date(3), 0, 0, 0)
+  endif
+
+  ! Find relevant lunar and solar longitudes at the reference time
+  if (OBC%add_eq_phase) call astro_longitudes_init(OBC%time_ref, OBC%tidal_longitudes)
+
+  ! If the nodal correction is based on a different time, initialize that.
+  ! Otherwise, it can use N from the time reference.
+  if (OBC%add_nodal_terms) then
+    if (sum(nodal_ref_date) /= 0) then
+      ! A reference date was provided for the nodal correction
+      nodal_time = set_date(nodal_ref_date(1), nodal_ref_date(2), nodal_ref_date(3), 0, 0, 0)
+      call astro_longitudes_init(nodal_time, nodal_longitudes)
+    elseif (OBC%add_eq_phase) then
+      ! Astronomical longitudes were already calculated for use in equilibrium phases,
+      ! so use nodal longitude from that.
+      nodal_longitudes = OBC%tidal_longitudes
+    else
+      ! Tidal reference time is a required parameter, so calculate the longitudes from that.
+      call astro_longitudes_init(OBC%time_ref, nodal_longitudes)
+    endif
+  endif
+
+  allocate(OBC%tide_frequencies(OBC%n_tide_constituents))
+  allocate(OBC%tide_eq_phases(OBC%n_tide_constituents))
+  allocate(OBC%tide_fn(OBC%n_tide_constituents))
+  allocate(OBC%tide_un(OBC%n_tide_constituents))
+
+  do c=1,OBC%n_tide_constituents
+    ! If tidal frequency is overridden by setting TIDE_*_FREQ, use that, otherwise use the
+    ! default realistic frequency for this constituent.
+    call get_param(param_file, mdl, "TIDE_"//trim(OBC%tide_names(c))//"_FREQ", OBC%tide_frequencies(c), &
+        "Frequency of the "//trim(OBC%tide_names(c))//" tidal constituent. "//&
+        "This is only used if TIDES and TIDE_"//trim(OBC%tide_names(c))// &
+        " are true, or if OBC_TIDE_N_CONSTITUENTS > 0 and "//trim(OBC%tide_names(c))//&
+        " is in OBC_TIDE_CONSTITUENTS.", &
+        units="rad s-1", default=tidal_frequency(trim(OBC%tide_names(c))), scale=US%T_to_s)
+
+    ! Find equilibrium phase if needed
+    if (OBC%add_eq_phase) then
+      OBC%tide_eq_phases(c) = eq_phase(trim(OBC%tide_names(c)), OBC%tidal_longitudes)
+    else
+      OBC%tide_eq_phases(c) = 0.0
+    endif
+
+    ! Find nodal corrections if needed
+    if (OBC%add_nodal_terms) then
+      call nodal_fu(trim(OBC%tide_names(c)), nodal_longitudes%N, OBC%tide_fn(c), OBC%tide_un(c))
+    else
+      OBC%tide_fn(c) = 1.0
+      OBC%tide_un(c) = 0.0
+    endif
+  enddo
+end procedure initialize_obc_tides
+module procedure setup_segment_indices
+  integer :: IsgB, IegB, JsgB, JegB  ! Global corner point indices at the ends of the OBC segments
+  integer :: isg, ieg, jsg, jeg
+  if (Ie_obc < Is_obc) then
+    IsgB = Ie_obc
+    IegB = Is_obc
+  else
+    IsgB = Is_obc
+    IegB = Ie_obc
+  endif
+
+  if (Je_obc < Js_obc) then
+    JsgB = Je_obc
+    JegB = Js_obc
+  else
+    JsgB = Js_obc
+    JegB = Je_obc
+  endif
+
+  ! NOTE: h-points are defined along the interior of the segment q-points.
+  !   For a given segment and its start and end index pairs, [IJ][se]gB, the
+  !   h-cell corresponding to this pair are shown in the figure below.
+  !
+  ! x-x----------------x-x
+  ! | |        N       | |
+  ! x-x   W         E  x-x
+  !   |        S         |
+  ! x-x----------------x-x
+  ! | |                | |
+  ! x-x                x-x
+  !
+  ! For segment points on the west and south, h-point indices are incremented
+  ! in order to move to the interior cell.
+
+  if (Is_obc > Ie_obc) then
+    ! Northern boundary
+    isg = IsgB + 1
+    jsg = JsgB
+    ieg = IegB
+    jeg = JegB
+  endif
+
+  if (Is_obc < Ie_obc) then
+    ! Southern boundary
+    isg = IsgB + 1
+    jsg = JsgB + 1
+    ieg = IegB
+    jeg = JegB + 1
+  endif
+
+  if (Js_obc < Je_obc) then
+    ! Eastern boundary
+    isg = IsgB
+    jsg = JsgB + 1
+    ieg = IegB
+    jeg = JegB
+  endif
+
+  if (Js_obc > Je_obc) then
+    ! Western boundary
+    isg = IsgB + 1
+    jsg = JsgB + 1
+    ieg = IegB + 1
+    jeg = JegB
+  endif
+
+  ! Global space I*_obc but sorted
+  seg%HI%IsgB = IsgB
+  seg%HI%JegB = JegB
+  seg%HI%IegB = IegB
+  seg%HI%JsgB = JsgB
+
+  seg%HI%isg = isg
+  seg%HI%jsg = jsg
+  seg%HI%ieg = ieg
+  seg%HI%jeg = jeg
+
+  ! Move into local index space
+  IsgB = IsgB - G%idg_offset
+  JsgB = JsgB - G%jdg_offset
+  IegB = IegB - G%idg_offset
+  JegB = JegB - G%jdg_offset
+
+  isg = isg - G%idg_offset
+  jsg = jsg - G%jdg_offset
+  ieg = ieg - G%idg_offset
+  jeg = jeg - G%jdg_offset
+
+  ! This is the i-extent of the segment on this PE.
+  ! The values are nonsense if the segment is not on this PE.
+  seg%HI%IsdB = min(max(IsgB, G%HI%IsdB), G%HI%IedB)
+  seg%HI%IedB = min(max(IegB, G%HI%IsdB), G%HI%IedB)
+  seg%HI%isd = min(max(isg, G%HI%isd), G%HI%ied)
+  seg%HI%ied = min(max(ieg, G%HI%isd), G%HI%ied)
+  seg%HI%IscB = min(max(IsgB, G%HI%IscB), G%HI%IecB)
+  seg%HI%IecB = min(max(IegB, G%HI%IscB), G%HI%IecB)
+  seg%HI%isc = min(max(isg, G%HI%isc), G%HI%iec)
+  seg%HI%iec = min(max(ieg, G%HI%isc), G%HI%iec)
+
+  ! This is the j-extent of the segment on this PE.
+  ! The values are nonsense if the segment is not on this PE.
+  seg%HI%JsdB = min(max(JsgB, G%HI%JsdB), G%HI%JedB)
+  seg%HI%JedB = min(max(JegB, G%HI%JsdB), G%HI%JedB)
+  seg%HI%jsd = min(max(jsg, G%HI%jsd), G%HI%jed)
+  seg%HI%jed = min(max(jeg, G%HI%jsd), G%HI%jed)
+  seg%HI%JscB = min(max(JsgB, G%HI%JscB), G%HI%JecB)
+  seg%HI%JecB = min(max(JegB, G%HI%JscB), G%HI%JecB)
+  seg%HI%jsc = min(max(jsg, G%HI%jsc), G%HI%jec)
+  seg%HI%jec = min(max(jeg, G%HI%jsc), G%HI%jec)
+
+end procedure setup_segment_indices
+module procedure setup_u_point_obc
+  integer :: I_obc, Js_obc, Je_obc ! Position of segment in global index space
+  integer :: j, a_loop
+  character(len=32) :: action_str(8)
+  character(len=128) :: segment_param_str
+  real, allocatable, dimension(:)  :: tnudge ! Nudging timescales [T ~> s]
+  call parse_segment_str(G%ieg, G%jeg, segment_str, I_obc, Js_obc, Je_obc, action_str, reentrant_y)
+
+  call setup_segment_indices(G, OBC%segment(l_seg),I_obc,I_obc,Js_obc,Je_obc)
+
+  I_obc = I_obc - G%idg_offset ! Convert to local tile indices on this tile
+  Js_obc = Js_obc - G%jdg_offset ! Convert to local tile indices on this tile
+  Je_obc = Je_obc - G%jdg_offset ! Convert to local tile indices on this tile
+
+  if (Je_obc>Js_obc) then
+    OBC%segment(l_seg)%direction = OBC_DIRECTION_E
+  elseif (Je_obc<Js_obc) then
+    OBC%segment(l_seg)%direction = OBC_DIRECTION_W
+    j = js_obc ; js_obc = je_obc ; je_obc = j
+  endif
+
+  OBC%segment(l_seg)%on_pe = .false.
+
+  do a_loop = 1,8 ! up to 8 options available
+    if (len_trim(action_str(a_loop)) == 0) then
+      cycle
+    elseif (trim(action_str(a_loop)) == 'FLATHER') then
+      OBC%segment(l_seg)%Flather = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%Flather_u_BCs_exist_globally = .true.
+      OBC%open_u_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%open_u_BCs_exist_globally = .true.
+      OBC%radiation_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI_TAN') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%radiation_tan = .true.
+      OBC%radiation_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI_GRAD') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%radiation_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%oblique_BCs_exist_globally = .true.
+      OBC%open_u_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE_TAN') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%oblique_tan = .true.
+      OBC%oblique_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE_GRAD') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%oblique_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED') then
+      OBC%segment(l_seg)%nudged = .true.
+      OBC%nudged_u_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED_TAN') then
+      OBC%segment(l_seg)%nudged_tan = .true.
+      OBC%nudged_u_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED_GRAD') then
+      OBC%segment(l_seg)%nudged_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'GRADIENT') then
+      OBC%segment(l_seg)%gradient = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%open_u_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'SIMPLE') then
+      OBC%segment(l_seg)%specified = .true.
+      OBC%specified_u_BCs_exist_globally = .true. ! This avoids deallocation
+    elseif (trim(action_str(a_loop)) == 'SIMPLE_TAN') then
+      OBC%segment(l_seg)%specified_tan = .true.
+    elseif (trim(action_str(a_loop)) == 'SIMPLE_GRAD') then
+      OBC%segment(l_seg)%specified_grad = .true.
+    else
+      call MOM_error(FATAL, "MOM_open_boundary.F90, setup_u_point_obc: "//&
+                     "String '"//trim(action_str(a_loop))//"' not understood.")
+    endif
+    if (OBC%segment(l_seg)%nudged .or. OBC%segment(l_seg)%nudged_tan) then
+      write(segment_param_str(1:43),"('OBC_SEGMENT_',i3.3,'_VELOCITY_NUDGING_TIMESCALES')") l_seg_io
+      allocate(tnudge(2))
+      call get_param(PF, mdl, segment_param_str(1:43), tnudge, &
+                     "Timescales in days for nudging along a segment, "//&
+                     "for inflow, then outflow. Setting both to zero should "//&
+                     "behave like SIMPLE obcs for the baroclinic velocities.", &
+                     fail_if_missing=.true., units="days", scale=86400.0*US%s_to_T)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_in = tnudge(1)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_out = tnudge(2)
+      deallocate(tnudge)
+    endif
+
+  enddo ! a_loop
+
+  OBC%segment(l_seg)%is_E_or_W_2 = .true.
+
+  if (I_obc<=G%HI%IsdB+1 .or. I_obc>=G%HI%IedB-1) return ! Boundary is not on tile
+  if (Je_obc<=G%HI%JsdB .or. Js_obc>=G%HI%JedB) return ! Segment is not on tile
+
+  OBC%segment(l_seg)%on_pe = .true.
+  OBC%segment(l_seg)%is_E_or_W = .true.
+
+  do j=G%HI%jsd, G%HI%jed
+    if (j>Js_obc .and. j<=Je_obc) then
+      OBC%segnum_u(I_obc,j) = l_seg
+      if (OBC%segment(l_seg)%direction == OBC_DIRECTION_W) OBC%segnum_u(I_obc,j) = -l_seg
+      OBC%u_OBCs_on_PE = .true.
+    endif
+  enddo
+  OBC%segment(l_seg)%Is_obc = I_obc
+  OBC%segment(l_seg)%Ie_obc = I_obc
+  OBC%segment(l_seg)%Js_obc = Js_obc
+  OBC%segment(l_seg)%Je_obc = Je_obc
+  call allocate_OBC_segment_data(OBC, OBC%segment(l_seg))
+
+  if (OBC%segment(l_seg)%oblique .and.  OBC%segment(l_seg)%radiation) &
+         call MOM_error(FATAL, "MOM_open_boundary.F90, setup_u_point_obc: \n"//&
+         "Orlanski and Oblique OBC options cannot be used together on one segment.")
+end procedure setup_u_point_obc
+module procedure setup_v_point_obc
+  integer :: J_obc, Is_obc, Ie_obc ! Position of segment in global index space
+  integer :: i, a_loop
+  character(len=32) :: action_str(8)
+  character(len=128) :: segment_param_str
+  real, allocatable, dimension(:)  :: tnudge ! Nudging timescales [T ~> s]
+  call parse_segment_str(G%ieg, G%jeg, segment_str, J_obc, Is_obc, Ie_obc, action_str, reentrant_x)
+
+  call setup_segment_indices(G, OBC%segment(l_seg),Is_obc,Ie_obc,J_obc,J_obc)
+
+  J_obc = J_obc - G%jdg_offset ! Convert to local tile indices on this tile
+  Is_obc = Is_obc - G%idg_offset ! Convert to local tile indices on this tile
+  Ie_obc = Ie_obc - G%idg_offset ! Convert to local tile indices on this tile
+
+  if (Ie_obc>Is_obc) then
+    OBC%segment(l_seg)%direction = OBC_DIRECTION_S
+  elseif (Ie_obc<Is_obc) then
+    OBC%segment(l_seg)%direction = OBC_DIRECTION_N
+    i = Is_obc ; Is_obc = Ie_obc ; Ie_obc = i
+  endif
+
+  OBC%segment(l_seg)%on_pe = .false.
+
+  do a_loop = 1,8
+    if (len_trim(action_str(a_loop)) == 0) then
+      cycle
+    elseif (trim(action_str(a_loop)) == 'FLATHER') then
+      OBC%segment(l_seg)%Flather = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%Flather_v_BCs_exist_globally = .true.
+      OBC%open_v_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%open_v_BCs_exist_globally = .true.
+      OBC%radiation_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI_TAN') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%radiation_tan = .true.
+      OBC%radiation_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'ORLANSKI_GRAD') then
+      OBC%segment(l_seg)%radiation = .true.
+      OBC%segment(l_seg)%radiation_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%oblique_BCs_exist_globally = .true.
+      OBC%open_v_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE_TAN') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%oblique_tan = .true.
+      OBC%oblique_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'OBLIQUE_GRAD') then
+      OBC%segment(l_seg)%oblique = .true.
+      OBC%segment(l_seg)%oblique_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED') then
+      OBC%segment(l_seg)%nudged = .true.
+      OBC%nudged_v_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED_TAN') then
+      OBC%segment(l_seg)%nudged_tan = .true.
+      OBC%nudged_v_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'NUDGED_GRAD') then
+      OBC%segment(l_seg)%nudged_grad = .true.
+    elseif (trim(action_str(a_loop)) == 'GRADIENT') then
+      OBC%segment(l_seg)%gradient = .true.
+      OBC%segment(l_seg)%open = .true.
+      OBC%open_v_BCs_exist_globally = .true.
+    elseif (trim(action_str(a_loop)) == 'SIMPLE') then
+      OBC%segment(l_seg)%specified = .true.
+      OBC%specified_v_BCs_exist_globally = .true. ! This avoids deallocation
+    elseif (trim(action_str(a_loop)) == 'SIMPLE_TAN') then
+      OBC%segment(l_seg)%specified_tan = .true.
+    elseif (trim(action_str(a_loop)) == 'SIMPLE_GRAD') then
+      OBC%segment(l_seg)%specified_grad = .true.
+    else
+      call MOM_error(FATAL, "MOM_open_boundary.F90, setup_v_point_obc: "//&
+                     "String '"//trim(action_str(a_loop))//"' not understood.")
+    endif
+    if (OBC%segment(l_seg)%nudged .or. OBC%segment(l_seg)%nudged_tan) then
+      write(segment_param_str(1:43),"('OBC_SEGMENT_',i3.3,'_VELOCITY_NUDGING_TIMESCALES')") l_seg_io
+      allocate(tnudge(2))
+      call get_param(PF, mdl, segment_param_str(1:43), tnudge, &
+                     "Timescales in days for nudging along a segment, "//&
+                     "for inflow, then outflow. Setting both to zero should "//&
+                     "behave like SIMPLE obcs for the baroclinic velocities.", &
+                     fail_if_missing=.true., units="days", scale=86400.0*US%s_to_T)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_in = tnudge(1)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_out = tnudge(2)
+      deallocate(tnudge)
+    endif
+
+  enddo ! a_loop
+
+  if (J_obc<=G%HI%JsdB+1 .or. J_obc>=G%HI%JedB-1) return ! Boundary is not on tile
+  if (Ie_obc<=G%HI%IsdB .or. Is_obc>=G%HI%IedB) return ! Segment is not on tile
+
+  OBC%segment(l_seg)%on_pe = .true.
+  OBC%segment(l_seg)%is_N_or_S = .true.
+
+  do i=G%HI%isd, G%HI%ied
+    if (i>Is_obc .and. i<=Ie_obc) then
+      OBC%segnum_v(i,J_obc) = l_seg
+      if (OBC%segment(l_seg)%direction == OBC_DIRECTION_S) OBC%segnum_v(i,J_obc) = -l_seg
+      OBC%v_OBCs_on_PE = .true.
+    endif
+  enddo
+  OBC%segment(l_seg)%Is_obc = Is_obc
+  OBC%segment(l_seg)%Ie_obc = Ie_obc
+  OBC%segment(l_seg)%Js_obc = J_obc
+  OBC%segment(l_seg)%Je_obc = J_obc
+  call allocate_OBC_segment_data(OBC, OBC%segment(l_seg))
+
+  if (OBC%segment(l_seg)%oblique .and.  OBC%segment(l_seg)%radiation) &
+         call MOM_error(FATAL, "MOM_open_boundary.F90, setup_v_point_obc: \n"//&
+         "Orlanski and Oblique OBC options cannot be used together on one segment.")
+
+end procedure setup_v_point_obc
+module procedure parse_segment_str
+  character(len=24) :: word1, word2, m_word, n_word !< Words delineated by commas in a string in form of
+  character(len=3) :: max_words !< maximum number of OBC types per segment
+  integer :: l_max !< Either ni_global or nj_global, depending on whether segment_str begins with "I=" or "J="
+  integer :: mn_max !< Either nj_global or ni_global, depending on whether segment_str begins with "I=" or "J="
+  integer :: j
+  integer, parameter :: halo = 10
+  word1 = extract_word(segment_str,',',1)
+  word2 = extract_word(segment_str,',',2)
+  if (word1(1:2)=='I=') then
+    l_max = ni_global
+    mn_max = nj_global
+    if (.not. (word2(1:2)=='J=')) call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "Second word of string '"//trim(segment_str)//"' must start with 'J='.")
+  elseif (word1(1:2)=='J=') then ! Note that the file_parser uniformly expands "=" to " = "
+    l_max = nj_global
+    mn_max = ni_global
+    if (.not. (word2(1:2)=='I=')) call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "Second word of string '"//trim(segment_str)//"' must start with 'I='.")
+  else
+    call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                   "String '"//segment_str//"' must start with 'I=' or 'J='.")
+  endif
+
+  ! Read l
+  l = interpret_int_expr( word1(3:24), l_max )
+  if (l<0 .or. l>l_max) then
+    call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                   "First value from string '"//trim(segment_str)//"' is outside of the physical domain.")
+  endif
+
+  ! Read m
+  m_word = extract_word(word2(3:24),':',1)
+  m = interpret_int_expr( m_word, mn_max )
+  if (reentrant) then
+    if (m<-halo .or. m>mn_max+halo) then
+      call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "Beginning of range in string '"//trim(segment_str)//"' is outside of the physical domain.")
+    endif
+  else
+    if (m<-1 .or. m>mn_max+1) then
+      call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "Beginning of range in string '"//trim(segment_str)//"' is outside of the physical domain.")
+    endif
+  endif
+
+  ! Read n
+  n_word = extract_word(word2(3:24),':',2)
+  n = interpret_int_expr( n_word, mn_max )
+  if (reentrant) then
+    if (n<-halo .or. n>mn_max+halo) then
+      call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "End of range in string '"//trim(segment_str)//"' is outside of the physical domain.")
+    endif
+  else
+    if (n<-1 .or. n>mn_max+1) then
+      call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                     "End of range in string '"//trim(segment_str)//"' is outside of the physical domain.")
+    endif
+  endif
+
+  if (abs(n-m)==0) then
+    call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                   "Range in string '"//trim(segment_str)//"' must span one cell.")
+  endif
+
+  ! checking if the number of provided OBC types is less than or equal to 8
+  if (extract_word(segment_str,',',3+size(action_str))/="") then
+    write(max_words, '(I0)') size(action_str)
+    call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "// &
+                   "Number of OBC descriptor words in '" // trim(segment_str) // "' is too large. " // &
+                   "There can be at most " // trim(max_words) // " descriptor words.")
+  endif
+
+  ! Type of open boundary condition
+  do j = 1, size(action_str)
+    action_str(j) = extract_word(segment_str,',',2+j)
+  enddo
+
+  contains
+
+  ! Returns integer value interpreted from string in form of %I, N or N+-%I
+  integer function interpret_int_expr(string, imax)
+    character(len=*), intent(in) :: string !< Integer in form or %I, N or N-%I
+    integer,          intent(in) :: imax !< Value to replace 'N' with
+    ! Local variables
+    integer slen
+
+    slen = len_trim(string)
+    if (slen==0) call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                                "Parsed string was empty!")
+    if (len_trim(string)==1 .and. string(1:1)=='N') then
+      interpret_int_expr = imax
+    elseif (string(1:1)=='N') then
+      if (string(2:2)=='+') then
+        read(string(3:slen),*,err=911) interpret_int_expr
+        interpret_int_expr = imax + interpret_int_expr
+      elseif (string(2:2)=='-') then
+        read(string(3:slen),*,err=911) interpret_int_expr
+        interpret_int_expr = imax - interpret_int_expr
+      endif
+    else
+      read(string(1:slen),*,err=911) interpret_int_expr
+    endif
+    return
+    911 call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_str: "//&
+                       "Problem reading value from string '"//trim(string)//"'.")
+  end function interpret_int_expr
+end procedure parse_segment_str
+module procedure parse_segment_manifest_str
+  character(len=128) :: field_spec, field
+  integer :: i
+  num_fields = 0
+  fields(:) = ''
+
+  do
+    field_spec = extract_word(segment_str, ',', num_fields + 1)
+    if (trim(field_spec) == '') exit
+
+    if (num_fields >= NUM_PHYS_FIELDS) &
+      call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_manifest_str: " // &
+                     "too many fields in OBC segment manifest '" //trim(segment_str) // "'.")
+
+    field = trim(extract_word(field_spec, '=', 1))
+
+    ! Check for duplicate fields
+    do i=1, num_fields
+      if (fields(i) == trim(field)) &
+        call MOM_error(FATAL, "MOM_open_boundary.F90, parse_segment_manifest_str: "//&
+                       "duplicate field '" // trim(field) // "' in '" // trim(segment_str) // "'.")
+    enddo
+
+    num_fields = num_fields + 1
+    fields(num_fields) = trim(field)
+  enddo
+end procedure parse_segment_manifest_str
+module procedure parse_segment_data_str
+  character(len=128) :: word1, word2, word3, method
+  integer :: lword
+  word3 = extract_word(segment_str, ',', idx)
+  word1 = extract_word(word3, ':', 1)
+  !if (trim(word1) == '') exit
+  word2 = extract_word(word1, '=', 1)
+  if (trim(word2) == trim(var)) then
+    method = trim(extract_word(word1, '=', 2))
+    lword = len_trim(method)
+    if (method(lword-3:lword) == 'file') then
+      ! raise an error id filename/fieldname not in argument list
+      word1 = extract_word(word3, ':', 2)
+      filename = extract_word(word1, '(', 1)
+      fieldname = extract_word(word1, '(', 2)
+      lword = len_trim(fieldname)
+      fieldname = fieldname(1:lword-1)  ! remove trailing parenth
+      value = -999.
+    elseif (method(lword-4:lword) == 'value') then
+      filename = 'none'
+      fieldname = 'none'
+      word1 = extract_word(word3, ':', 2)
+      lword = len_trim(word1)
+      read(word1(1:lword), *, end=986, err=987) value
+    endif
+  endif
+
+  return
+986 call MOM_error(FATAL,'End of record while parsing segment data specification! '//trim(segment_str))
+987 call MOM_error(FATAL,'Error while parsing segment data specification! '//trim(segment_str))
+end procedure parse_segment_data_str
+module procedure parse_for_tracer_reservoirs
+  integer :: n      ! The segment number used to read in input data
+  integer :: n_seg  ! The internal segment number
+  integer :: m, num_fields  ! Used to loop over the fields on a segment
+  integer :: na
+  character(len=1024) :: segstr
+  character(len=256) :: filename
+  character(len=20)  :: segname, suffix
+  character(len=32)  :: fieldname
+  real               :: value  ! A value that is parsed from the segment data string [various units]
+  character(len=32), dimension(NUM_PHYS_FIELDS) :: fields  ! segment field names
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  do n=1,OBC%number_of_segments
+    n_seg = n ; if (OBC%reverse_segment_order) n_seg = OBC%number_of_segments + 1 - n
+    segment => OBC%segment(n_seg)
+    write(segname, "('OBC_SEGMENT_',i3.3,'_DATA')") n
+    write(suffix, "('_segment_',i3.3)") n
+    ! Clear out any old values
+    segstr = ''
+    call get_param(PF, mdl, segname, segstr)
+    if (segstr == '') cycle
+
+    call parse_segment_manifest_str(trim(segstr), num_fields, fields)
+    if (num_fields == 0) cycle
+
+    ! At this point, just search for TEMP and SALT as tracers 1 and 2.
+    do m=1,num_fields
+      call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
+      if (trim(filename) /= 'none') then
+        if (fields(m) == 'TEMP') then
+          if (segment%is_E_or_W_2) then
+            OBC%tracer_x_reservoirs_used(1) = .true.
+          else
+            OBC%tracer_y_reservoirs_used(1) = .true.
+          endif
+        endif
+        if (fields(m) == 'SALT') then
+          if (segment%is_E_or_W_2) then
+            OBC%tracer_x_reservoirs_used(2) = .true.
+          else
+            OBC%tracer_y_reservoirs_used(2) = .true.
+          endif
+        endif
+      endif
+    enddo
+    ! Alternately, set first two to true if use_temperature is true
+    if (use_temperature) then
+      if (segment%is_E_or_W_2) then
+        OBC%tracer_x_reservoirs_used(1) = .true.
+        OBC%tracer_x_reservoirs_used(2) = .true.
+      else
+        OBC%tracer_y_reservoirs_used(1) = .true.
+        OBC%tracer_y_reservoirs_used(2) = .true.
+      endif
+    endif
+    !Add reservoirs for external/obgc tracers
+    !There is a diconnect in the above logic between tracer index and reservoir index.
+    !It arbitarily assigns reservoir indexes 1&2 to tracers T&S,
+    !So we need to start from reservoir index for non-native tracers from 3, hence na=2 below.
+    !num_fields is the number of vars in segstr (6 of them now,   U,V,SSH,TEMP,SALT,dye)
+    !but OBC%tracer_x_reservoirs_used is allocated to size Reg%ntr, which is the total number of tracers
+    na = 2 ! Number of native MOM6 tracers (T&S) with reservoirs
+    do m=1,OBC%num_obgc_tracers
+       !This logic assumes all external tarcers need a reservoir
+       !The segments for tracers are not initialized yet (that happens later in initialize_segment_data())
+       !so we cannot query to determine if this tracer needs a reservoir.
+      if (segment%is_E_or_W_2) then
+        OBC%tracer_x_reservoirs_used(m+na) = .true.
+      else
+        OBC%tracer_y_reservoirs_used(m+na) = .true.
+      endif
+    enddo
+  enddo
+
+  return
+
+end procedure parse_for_tracer_reservoirs
+module procedure open_boundary_halo_update
+  integer :: m
+  if (.not.associated(OBC)) return
+
+  id_clock_pass = cpu_clock_id('(Ocean OBC halo updates)', grain=CLOCK_ROUTINE)
+  if (OBC%radiation_BCs_exist_globally) call pass_vector(OBC%rx_normal, OBC%ry_normal, G%Domain, &
+                     To_All+Scalar_Pair)
+  if (OBC%oblique_BCs_exist_globally) then
+!   call pass_vector(OBC%rx_oblique_u, OBC%ry_oblique_v, G%Domain, To_All+Scalar_Pair)
+!   call pass_vector(OBC%ry_oblique_u, OBC%rx_oblique_v, G%Domain, To_All+Scalar_Pair)
+!   call pass_vector(OBC%cff_normal_u, OBC%cff_normal_v, G%Domain, To_All+Scalar_Pair)
+    call create_group_pass(OBC%pass_oblique, OBC%rx_oblique_u, OBC%ry_oblique_v, G%Domain, To_All+Scalar_Pair)
+    call create_group_pass(OBC%pass_oblique, OBC%ry_oblique_u, OBC%rx_oblique_v, G%Domain, To_All+Scalar_Pair)
+    call create_group_pass(OBC%pass_oblique, OBC%cff_normal_u, OBC%cff_normal_v, G%Domain, To_All+Scalar_Pair)
+    call do_group_pass(OBC%pass_oblique, G%Domain)
+  endif
+  if (allocated(OBC%tres_x) .and. allocated(OBC%tres_y)) then
+    do m=1,OBC%ntr
+      call pass_vector(OBC%tres_x(:,:,:,m), OBC%tres_y(:,:,:,m), G%Domain, To_All+Scalar_Pair)
+    enddo
+  elseif (allocated(OBC%tres_x)) then
+    do m=1,OBC%ntr
+      call pass_var(OBC%tres_x(:,:,:,m), G%Domain, position=EAST_FACE)
+    enddo
+  elseif (allocated(OBC%tres_y)) then
+    do m=1,OBC%ntr
+      call pass_var(OBC%tres_y(:,:,:,m), G%Domain, position=NORTH_FACE)
+    enddo
+  endif
+  if (allocated(OBC%h_res_x) .and. allocated(OBC%h_res_y)) then
+    call pass_vector(OBC%h_res_x(:,:,:), OBC%h_res_y(:,:,:), G%Domain, To_All+Scalar_Pair)
+  elseif (allocated(OBC%h_res_x)) then
+    call pass_var(OBC%h_res_x(:,:,:), G%Domain, position=EAST_FACE)
+  elseif (allocated(OBC%h_res_y)) then
+    call pass_var(OBC%h_res_y(:,:,:), G%Domain, position=NORTH_FACE)
+  endif
+
+end procedure open_boundary_halo_update
+module procedure open_boundary_query
+  open_boundary_query = .false.
+  if (.not. associated(OBC)) return
+  if (present(apply_open_OBC)) open_boundary_query = OBC%open_u_BCs_exist_globally .or. &
+                                                     OBC%open_v_BCs_exist_globally
+  if (present(apply_specified_OBC)) open_boundary_query = OBC%specified_u_BCs_exist_globally .or. &
+                                                          OBC%specified_v_BCs_exist_globally
+  if (present(apply_Flather_OBC)) open_boundary_query = OBC%Flather_u_BCs_exist_globally .or. &
+                                                        OBC%Flather_v_BCs_exist_globally
+  if (present(apply_nudged_OBC)) open_boundary_query = OBC%nudged_u_BCs_exist_globally .or. &
+                                                       OBC%nudged_v_BCs_exist_globally
+  if (present(needs_ext_seg_data)) open_boundary_query = OBC%any_needs_IO_for_data
+
+end procedure open_boundary_query
+module procedure open_boundary_dealloc
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: n
+  if (.not. associated(OBC)) return
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    call deallocate_OBC_segment_data(segment)
+  enddo
+  if (allocated(OBC%segment)) deallocate(OBC%segment)
+  if (allocated(OBC%segnum_u)) deallocate(OBC%segnum_u)
+  if (allocated(OBC%segnum_v)) deallocate(OBC%segnum_v)
+  if (allocated(OBC%rx_normal)) deallocate(OBC%rx_normal)
+  if (allocated(OBC%ry_normal)) deallocate(OBC%ry_normal)
+  if (allocated(OBC%rx_oblique_u)) deallocate(OBC%rx_oblique_u)
+  if (allocated(OBC%ry_oblique_u)) deallocate(OBC%ry_oblique_u)
+  if (allocated(OBC%rx_oblique_v)) deallocate(OBC%rx_oblique_v)
+  if (allocated(OBC%ry_oblique_v)) deallocate(OBC%ry_oblique_v)
+  if (allocated(OBC%cff_normal_u)) deallocate(OBC%cff_normal_u)
+  if (allocated(OBC%cff_normal_v)) deallocate(OBC%cff_normal_v)
+  if (allocated(OBC%tres_x)) deallocate(OBC%tres_x)
+  if (allocated(OBC%tres_y)) deallocate(OBC%tres_y)
+  if (allocated(OBC%h_res_x)) deallocate(OBC%h_res_x)
+  if (allocated(OBC%h_res_y)) deallocate(OBC%h_res_y)
+  if (associated(OBC%remap_z_CS)) deallocate(OBC%remap_z_CS)
+  if (associated(OBC%remap_h_CS)) deallocate(OBC%remap_h_CS)
+  deallocate(OBC)
+end procedure open_boundary_dealloc
+module procedure open_boundary_end
+  call open_boundary_dealloc(OBC)
+end procedure open_boundary_end
+module procedure open_boundary_impose_normal_slope
+  integer :: i, j, n
+  type(OBC_segment_type), pointer :: segment => NULL()
+  if (.not.associated(OBC)) return
+
+  if (.not.(OBC%specified_u_BCs_exist_globally .or. OBC%specified_v_BCs_exist_globally .or. &
+              OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally)) &
+    return
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    if (segment%direction == OBC_DIRECTION_E) then
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        depth(i+1,j) = depth(i,j)
+      enddo
+    elseif (segment%direction == OBC_DIRECTION_W) then
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        depth(i,j) = depth(i+1,j)
+      enddo
+    elseif (segment%direction == OBC_DIRECTION_N) then
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        depth(i,j+1) = depth(i,j)
+      enddo
+    elseif (segment%direction == OBC_DIRECTION_S) then
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        depth(i,j) = depth(i,j+1)
+      enddo
+    endif
+  enddo
+
+end procedure open_boundary_impose_normal_slope
+module procedure open_boundary_impose_land_mask
+  integer :: i, j, n
+  type(OBC_segment_type), pointer :: segment => NULL()
+  logical :: any_U, any_V
+  if (.not.associated(OBC)) return
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    if (segment%is_E_or_W) then
+      ! Sweep along u-segments and delete the OBC for blocked points.
+      ! Also, mask all points outside.
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        if (G%mask2dCu(I,j) == 0) OBC%segnum_u(I,j) = 0
+        if (segment%direction == OBC_DIRECTION_W) then
+          G%mask2dT(i,j) = 0.0
+        else
+          G%mask2dT(i+1,j) = 0.0
+        endif
+      enddo
+      do J=segment%HI%JsdB+1,segment%HI%JedB-1
+        if (segment%direction == OBC_DIRECTION_W) then
+          G%mask2dCv(i,J) = 0 ; G%OBCmaskCv(i,J) = 0.0 ; G%IdyCv_OBCmask(i,J) = 0.0
+        else
+          G%mask2dCv(i+1,J) = 0.0 ; G%OBCmaskCv(i+1,J) = 0.0 ; G%IdyCv_OBCmask(i+1,J) = 0.0
+        endif
+      enddo
+    else
+      ! Sweep along v-segments and delete the OBC for blocked points.
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        if (G%mask2dCv(i,J) == 0) OBC%segnum_v(i,J) = 0
+        if (segment%direction == OBC_DIRECTION_S) then
+          G%mask2dT(i,j) = 0.0
+        else
+          G%mask2dT(i,j+1) = 0.0
+        endif
+      enddo
+      do I=segment%HI%IsdB+1,segment%HI%IedB-1
+        if (segment%direction == OBC_DIRECTION_S) then
+          G%mask2dCu(I,j) = 0.0 ; G%OBCmaskCu(I,j) = 0.0 ; G%IdxCu_OBCmask(I,j) = 0.0
+        else
+          G%mask2dCu(I,j+1) = 0.0 ; G%OBCmaskCu(I,j+1) = 0.0 ; G%IdxCu_OBCmask(I,j+1) = 0.0
+        endif
+      enddo
+    endif
+  enddo
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. (segment%on_pe .and. segment%open)) cycle
+    ! Set the OBCmask values to help eliminate certain terms at u- or v- OBC points.
+    ! Testing suggests this could be applied at all u- or v- OBC points without changing answers.
+    if (segment%is_E_or_W) then
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        G%OBCmaskCu(I,j) = 0.0 ; G%IdxCu_OBCmask(I,j) = 0.0
+      enddo
+    else
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        G%OBCmaskCv(i,J) = 0.0 ; G%IdyCv_OBCmask(i,J) = 0.0
+      enddo
+    endif
+  enddo
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe .or. .not. segment%specified) cycle
+    if (segment%is_E_or_W) then
+      ! Sweep along u-segments and for %specified BC points reset the u-point area which was masked out
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        if (segment%direction == OBC_DIRECTION_E) then
+          areaCu(I,j) = G%areaT(i,j)   ! Both of these are in [L2 ~> m2]
+        else   ! West
+          areaCu(I,j) = G%areaT(i+1,j) ! Both of these are in [L2 ~> m2]
+        endif
+      enddo
+    else
+      ! Sweep along v-segments and for %specified BC points reset the v-point area which was masked out
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        if (segment%direction == OBC_DIRECTION_S) then
+          areaCv(i,J) = G%areaT(i,j+1) ! Both of these are in [L2 ~> m2]
+        else      ! North
+          areaCv(i,J) = G%areaT(i,j)   ! Both of these are in [L2 ~> m2]
+        endif
+      enddo
+    endif
+  enddo
+
+  ! G%mask2du will be open wherever bathymetry allows it.
+  ! Bathymetry outside of the open boundary was adjusted to match
+  ! the bathymetry inside so these points will be open unless the
+  ! bathymetry inside the boundary was too shallow and flagged as land.
+  any_U = .false.
+  any_V = .false.
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    if (segment%is_E_or_W) then
+      I=segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        if (OBC%segnum_u(I,j) /= 0) any_U = .true.
+      enddo
+    else
+      J=segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        if (OBC%segnum_v(i,J) /= 0) any_V = .true.
+      enddo
+    endif
+  enddo
+
+  OBC%u_OBCs_on_PE = any_U
+  OBC%v_OBCs_on_PE = any_V
+  OBC%OBC_pe = (any_U .or. any_V)
+
+end procedure open_boundary_impose_land_mask
+module procedure setup_OBC_tracer_reservoirs
+  type(OBC_segment_type), pointer :: segment => NULL()
+  real :: I_scale         ! The inverse of the scaling factor for the tracers.
+  logical :: set_tres_x, set_tres_y
+  character(len=12) :: x_var_name, y_var_name
+  integer :: i, j, k, m, n
+  do m=1,OBC%ntr
+
+    set_tres_x = allocated(OBC%tres_x) .and. OBC%tracer_x_reservoirs_used(m)
+    set_tres_y = allocated(OBC%tres_y) .and. OBC%tracer_y_reservoirs_used(m)
+
+    if (present(restart_CS)) then
+      ! Set the names of the reservoirs for this tracer in the restart file, and inquire whether
+      ! they have been initialized
+      if (modulo(G%HI%turns, 2) == 0) then
+        write(x_var_name,'("tres_x_",I3.3)') m
+        write(y_var_name,'("tres_y_",I3.3)') m
+      else
+        write(x_var_name,'("tres_y_",I3.3)') m
+        write(y_var_name,'("tres_x_",I3.3)') m
+      endif
+      if (set_tres_x) set_tres_x = .not.query_initialized(OBC%tres_x, x_var_name, restart_CS)
+      if (set_tres_y) set_tres_y = .not.query_initialized(OBC%tres_y, y_var_name, restart_CS)
+    endif
+
+    do n=1,OBC%number_of_segments
+      segment => OBC%segment(n)
+      if (associated(segment%tr_Reg)) then ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+        I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
+
+        if (segment%is_E_or_W .and. set_tres_x) then
+          I = segment%HI%IsdB
+          if (segment%tr_Reg%Tr(m)%is_initialized) then
+            do k=1,GV%ke ; do j=segment%HI%jsd,segment%HI%jed
+              OBC%tres_x(I,j,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(i,j,k)
+            enddo ; enddo
+          else
+            do k=1,GV%ke ; do j=segment%HI%jsd,segment%HI%jed
+              OBC%tres_x(I,j,k,m) = I_scale * segment%tr_Reg%Tr(m)%t(i,j,k)
+            enddo ; enddo
+          endif
+        elseif (segment%is_N_or_S .and. set_tres_y) then
+          J = segment%HI%JsdB
+          if (segment%tr_Reg%Tr(m)%is_initialized) then
+            do k=1,GV%ke ; do i=segment%HI%isd,segment%HI%ied
+              OBC%tres_y(i,J,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(i,J,k)
+            enddo ; enddo
+          else
+            do k=1,GV%ke ; do i=segment%HI%isd,segment%HI%ied
+              OBC%tres_y(i,J,k,m) = I_scale * segment%tr_Reg%Tr(m)%t(i,J,k)
+            enddo ; enddo
+          endif
+        endif
+      endif ; endif
+    enddo
+  enddo
+
+end procedure setup_OBC_tracer_reservoirs
+module procedure setup_OBC_thickness_reservoirs
+  type(OBC_segment_type), pointer :: segment => NULL()
+  real :: I_scale         ! The inverse of the scaling factor for the thicknesses.
+  logical :: set_h_res_x, set_h_res_y
+  character(len=12) :: x_var_name, y_var_name
+  integer :: i, j, k, n
+  set_h_res_x = allocated(OBC%h_res_x) .and. OBC%thickness_x_reservoirs_used
+  set_h_res_y = allocated(OBC%h_res_y) .and. OBC%thickness_y_reservoirs_used
+
+  if (present(restart_CS)) then
+    ! Set the names of the reservoirs for the layer thickness in the restart file, and inquire
+    ! whether they have been initialized
+    if (modulo(G%HI%turns, 2) == 0) then
+      write(x_var_name,'("h_res_x")')
+      write(y_var_name,'("h_res_y")')
+    else
+      write(x_var_name,'("h_res_y")')
+      write(y_var_name,'("h_res_x")')
+    endif
+    if (set_h_res_x) set_h_res_x = .not.query_initialized(OBC%h_res_x, x_var_name, restart_CS)
+    if (set_h_res_y) set_h_res_y = .not.query_initialized(OBC%h_res_y, y_var_name, restart_CS)
+  endif
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (associated(segment%h_Reg)) then ; if (allocated(segment%h_Reg%h_res)) then
+      I_scale = 1.0 ; if (segment%h_Reg%scale /= 0.0) I_scale = 1.0 / segment%h_Reg%scale
+
+      if (segment%is_E_or_W .and. set_h_res_x) then
+        I = segment%HI%IsdB
+        if (segment%h_Reg%is_initialized) then
+          do k=1,GV%ke ; do j=segment%HI%jsd,segment%HI%jed
+            OBC%h_res_x(I,j,k) = I_scale * segment%h_Reg%h_res(i,j,k)
+          enddo ; enddo
+        else
+          do k=1,GV%ke ; do j=segment%HI%jsd,segment%HI%jed
+            OBC%h_res_x(I,j,k) = I_scale * segment%h_Reg%h(i,j,k)
+          enddo ; enddo
+        endif
+      elseif (segment%is_N_or_S .and. set_h_res_y) then
+        J = segment%HI%JsdB
+        if (segment%h_Reg%is_initialized) then
+          do k=1,GV%ke ; do i=segment%HI%isd,segment%HI%ied
+            OBC%h_res_y(i,J,k) = I_scale * segment%h_Reg%h_res(i,J,k)
+          enddo ; enddo
+        else
+          do k=1,GV%ke ; do i=segment%HI%isd,segment%HI%ied
+            OBC%h_res_y(i,J,k) = I_scale * segment%h_Reg%h(i,J,k)
+          enddo ; enddo
+        endif
+      endif
+    endif ; endif
+  enddo
+
+end procedure setup_OBC_thickness_reservoirs
+module procedure set_initialized_OBC_tracer_reservoirs
+  character(len=12) :: x_var_name, y_var_name
+  integer :: m
+  do m=1,OBC%ntr
+    ! Set the names of the reservoirs for this tracer in the restart file
+    if (modulo(G%HI%turns, 2) == 0) then
+      write(x_var_name,'("tres_x_",I3.3)') m
+      write(y_var_name,'("tres_y_",I3.3)') m
+    else
+      write(x_var_name,'("tres_y_",I3.3)') m
+      write(y_var_name,'("tres_x_",I3.3)') m
+    endif
+
+    if (OBC%tracer_x_reservoirs_used(m)) call set_initialized(OBC%tres_x, x_var_name, restart_CS)
+    if (OBC%tracer_y_reservoirs_used(m)) call set_initialized(OBC%tres_y, y_var_name, restart_CS)
+  enddo
+
+end procedure set_initialized_OBC_tracer_reservoirs
+module procedure copy_thickness_reservoirs
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: i, j, k, n
+  logical :: sym
+  if (.not.associated(OBC)) return
+
+  if (.not.(OBC%thickness_x_reservoirs_used .or. OBC%thickness_y_reservoirs_used)) &
+    return
+
+  ! Now thickness reservoirs
+  do n=1,OBC%number_of_segments
+    segment=>OBC%segment(n)
+    if (associated(segment%h_Reg)) then
+      if (segment%is_E_or_W) then
+        I = segment%HI%IsdB
+        if (allocated(segment%h_Reg%h_res)) then
+          do k=1,GV%ke
+            do j=segment%HI%jsd,segment%HI%jed
+              segment%h_Reg%h_res(I,j,k) = segment%h_Reg%scale * OBC%h_res_x(I,j,k)
+            enddo
+          enddo
+        endif
+      else
+        J = segment%HI%JsdB
+        if (allocated(segment%h_Reg%h_res)) then
+          do k=1,GV%ke
+            do i=segment%HI%isd,segment%HI%ied
+              segment%h_Reg%h_res(i,J,k) = segment%h_Reg%scale * OBC%h_res_y(i,J,k)
+            enddo
+          enddo
+        endif
+      endif
+    endif
+  enddo
+
+  if (OBC%debug) then
+    sym = G%Domain%symmetric
+    if (allocated(OBC%h_res_x) .and. allocated(OBC%h_res_y)) then
+        call uvchksum("radiation_OBCs: OBC%h_res_[xy]", OBC%h_res_x(:,:,:), OBC%h_res_y(:,:,:), G%HI, &
+                      haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0)
+    endif
+  endif
+
+end procedure copy_thickness_reservoirs
+module procedure radiation_open_bdry_conds
+  real :: dhdt, dhdx, dhdy  ! One-point differences in time or space [L T-1 ~> m s-1]
+  real :: gamma_u, gamma_2  ! Fractional weightings of new values [nondim]
+  real :: tau            ! A local nudging timescale [T ~> s]
+  real :: rx_max, ry_max ! coefficients for radiation [nondim]
+  real :: rx_new, rx_avg ! coefficients for radiation [nondim] or [L2 T-2 ~> m2 s-2]
+  real :: ry_new, ry_avg ! coefficients for radiation [nondim] or [L2 T-2 ~> m2 s-2]
+  real :: cff_new, cff_avg ! denominator in oblique [L2 T-2 ~> m2 s-2]
+  real, allocatable, dimension(:,:,:) :: &
+    rx_tang_rad, & ! The phase speed at u-points for tangential oblique OBCs
+                   ! in units of grid points per timestep [nondim],
+    ry_tang_rad, & ! The phase speed at v-points for tangential oblique OBCs
+                   ! in units of grid points per timestep [nondim],
+                   ! discretized at the corner (PV) points.
+    rx_tang_obl, & ! The x-coefficient for tangential oblique OBCs [L2 T-2 ~> m2 s-2],
+                   ! discretized at the corner (PV) points.
+    ry_tang_obl, & ! The y-coefficient for tangential oblique OBCs [L2 T-2 ~> m2 s-2],
+                   ! discretized at the corner (PV) points.
+    cff_tangential ! The denominator for tangential oblique OBCs [L2 T-2 ~> m2 s-2],
+                   ! discretized at the corner (PV) points.
+  real :: eps      ! A small velocity squared [L2 T-2 ~> m2 s-2]
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: i, j, k, is, ie, js, je, m, nz, n
+  integer :: is_obc, ie_obc, js_obc, je_obc
+  logical :: sym
+  character(len=3) :: var_num
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+
+  if (.not.associated(OBC)) return
+
+  if (.not.(OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally)) &
+    return
+
+  if (OBC%debug) call chksum_OBC_segments(OBC, G, GV, US, OBC%nk_OBC_debug)
+
+  eps = 1.0e-20*US%m_s_to_L_T**2
+
+  !! Copy previously calculated phase velocity from global arrays into segments
+  !! This is terribly inefficient and temporary solution for continuity across restarts
+  !! and needs to be revisited in the future.
+  if (OBC%gamma_uv < 1.0) then
+    do n=1,OBC%number_of_segments
+      segment => OBC%segment(n)
+      if (.not. segment%on_pe) cycle
+      if (segment%is_E_or_W .and. segment%radiation) then
+        do k=1,GV%ke
+          I=segment%HI%IsdB
+          do j=segment%HI%jsd,segment%HI%jed
+            segment%rx_norm_rad(I,j,k) = OBC%rx_normal(I,j,k)
+          enddo
+        enddo
+      elseif (segment%is_N_or_S .and. segment%radiation) then
+        do k=1,GV%ke
+          J=segment%HI%JsdB
+          do i=segment%HI%isd,segment%HI%ied
+            segment%ry_norm_rad(i,J,k) = OBC%ry_normal(i,J,k)
+          enddo
+        enddo
+      endif
+      if (segment%is_E_or_W .and. segment%oblique) then
+        do k=1,GV%ke
+          I=segment%HI%IsdB
+          do j=segment%HI%jsd,segment%HI%jed
+            segment%rx_norm_obl(I,j,k) = OBC%rx_oblique_u(I,j,k)
+            segment%ry_norm_obl(I,j,k) = OBC%ry_oblique_u(I,j,k)
+            segment%cff_normal(I,j,k) = OBC%cff_normal_u(I,j,k)
+          enddo
+        enddo
+      elseif (segment%is_N_or_S .and. segment%oblique) then
+        do k=1,GV%ke
+          J=segment%HI%JsdB
+          do i=segment%HI%isd,segment%HI%ied
+            segment%rx_norm_obl(i,J,k) = OBC%rx_oblique_v(i,J,k)
+            segment%ry_norm_obl(i,J,k) = OBC%ry_oblique_v(i,J,k)
+            segment%cff_normal(i,J,k) = OBC%cff_normal_v(i,J,k)
+          enddo
+        enddo
+      endif
+    enddo
+  endif
+
+  ! Now tracers (if any)
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (associated(segment%tr_Reg)) then
+      if (segment%is_E_or_W) then
+        I = segment%HI%IsdB
+        do m=1,OBC%ntr
+          if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+            do k=1,GV%ke
+              do j=segment%HI%jsd,segment%HI%jed
+                segment%tr_Reg%Tr(m)%tres(I,j,k) = segment%tr_Reg%Tr(m)%scale * OBC%tres_x(I,j,k,m)
+              enddo
+            enddo
+          endif
+        enddo
+      else
+        J = segment%HI%JsdB
+        do m=1,OBC%ntr
+          if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+            do k=1,GV%ke
+              do i=segment%HI%isd,segment%HI%ied
+                segment%tr_Reg%Tr(m)%tres(i,J,k) = segment%tr_Reg%Tr(m)%scale * OBC%tres_y(i,J,k,m)
+              enddo
+            enddo
+          endif
+        enddo
+      endif
+    endif
+  enddo
+
+  gamma_u = OBC%gamma_uv
+  rx_max = OBC%rx_max ; ry_max = OBC%rx_max
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    if (segment%oblique) call gradient_at_q_points(G, GV, segment, u_new(:,:,:), v_new(:,:,:))
+    if (segment%direction == OBC_DIRECTION_E) then
+      I=segment%HI%IsdB
+      if (I<G%HI%IscB) cycle
+      do k=1,nz ;  do j=segment%HI%jsd,segment%HI%jed
+        if (segment%radiation) then
+          dhdt = (u_old(I-1,j,k) - u_new(I-1,j,k)) !old-new
+          dhdx = (u_new(I-1,j,k) - u_new(I-2,j,k)) !in new time backward sashay for I-1
+          rx_new = 0.0
+          if (dhdt*dhdx > 0.0) rx_new = min( (dhdt/dhdx), rx_max) ! outward phase speed
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_rad(I,j,k) + gamma_u*rx_new
+          else
+            rx_avg = rx_new
+          endif
+          segment%rx_norm_rad(I,j,k) = rx_avg
+          ! The new boundary value is interpolated between future interior
+          ! value, u_new(I-1) and past boundary value but with barotropic
+          ! accelerations, u_new(I).
+          segment%normal_vel(I,j,k) = (u_new(I,j,k) + rx_avg*u_new(I-1,j,k)) / (1.0+rx_avg)
+          ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+          ! implemented as a work-around to limitations in restart capability
+          if (gamma_u < 1.0) then
+            OBC%rx_normal(I,j,k) = segment%rx_norm_rad(I,j,k)
+          endif
+        elseif (segment%oblique) then
+          dhdt = (u_old(I-1,j,k) - u_new(I-1,j,k)) !old-new
+          dhdx = (u_new(I-1,j,k) - u_new(I-2,j,k)) !in new time backward sashay for I-1
+          if (dhdt*(segment%grad_normal(J,1,k) + segment%grad_normal(J-1,1,k)) > 0.0) then
+            dhdy = segment%grad_normal(J-1,1,k)
+          elseif (dhdt*(segment%grad_normal(J,1,k) + segment%grad_normal(J-1,1,k)) == 0.0) then
+            dhdy = 0.0
+          else
+            dhdy = segment%grad_normal(J,1,k)
+          endif
+          if (dhdt*dhdx < 0.0) dhdt = 0.0
+          cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+          rx_new = min(dhdt*dhdx, cff_new*rx_max)
+          ry_new = min(cff_new,max(dhdt*dhdy,-cff_new))
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_obl(I,j,k) + gamma_u*rx_new
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_obl(I,j,k) + gamma_u*ry_new
+            cff_avg = (1.0-gamma_u)*segment%cff_normal(I,j,k) + gamma_u*cff_new
+          else
+            rx_avg = rx_new
+            ry_avg = ry_new
+            cff_avg = cff_new
+          endif
+          segment%rx_norm_obl(I,j,k) = rx_avg
+          segment%ry_norm_obl(I,j,k) = ry_avg
+          segment%cff_normal(I,j,k) = cff_avg
+          segment%normal_vel(I,j,k) = ((cff_avg*u_new(I,j,k) + rx_avg*u_new(I-1,j,k)) - &
+                             (max(ry_avg,0.0)*segment%grad_normal(J-1,2,k) + &
+                              min(ry_avg,0.0)*segment%grad_normal(J,2,k))) / &
+                           (cff_avg + rx_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary
+            ! implementation as a work-around to limitations in restart capability
+            OBC%rx_oblique_u(I,j,k) = segment%rx_norm_obl(I,j,k)
+            OBC%ry_oblique_u(I,j,k) = segment%ry_norm_obl(I,j,k)
+            OBC%cff_normal_u(I,j,k) = segment%cff_normal(I,j,k)
+          endif
+        elseif (segment%gradient) then
+          segment%normal_vel(I,j,k) = u_new(I-1,j,k)
+        endif
+        if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
+          ! dhdt gets set to 0 on inflow in oblique case
+          if (dhdt*dhdx <= 0.0) then
+            tau = segment%Velocity_nudging_timescale_in
+          else
+            tau = segment%Velocity_nudging_timescale_out
+          endif
+          gamma_2 = dt / (tau + dt)
+          segment%normal_vel(I,j,k) = (1.0 - gamma_2) * segment%normal_vel(I,j,k) + &
+                                gamma_2 * segment%nudged_normal_vel(I,j,k)
+        endif
+      enddo ; enddo
+      if (segment%radiation_tan .or. segment%radiation_grad) then
+        I=segment%HI%IsdB
+        allocate(rx_tang_rad(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_rad(I,segment%HI%JsdB,k) = segment%rx_norm_rad(I,segment%HI%jsd,k)
+            rx_tang_rad(I,segment%HI%JedB,k) = segment%rx_norm_rad(I,segment%HI%jed,k)
+            do J=segment%HI%JsdB+1,segment%HI%JedB-1
+              rx_tang_rad(I,J,k) = 0.5*(segment%rx_norm_rad(I,j,k) + segment%rx_norm_rad(I,j+1,k))
+            enddo
+          else
+            do J=segment%HI%JsdB,segment%HI%JedB
+              dhdt = v_old(i,J,k)-v_new(i,J,k)   !old-new
+              dhdx = v_new(i,J,k)-v_new(i-1,J,k) !in new time backward sashay for I-1
+              rx_tang_rad(I,J,k) = 0.0
+              if (dhdt*dhdx > 0.0) rx_tang_rad(I,J,k) = min( (dhdt/dhdx), rx_max) ! outward phase speed
+            enddo
+          endif
+        enddo
+        if (segment%radiation_tan) then
+          do k=1,nz ;  do J=segment%HI%JsdB,segment%HI%JedB
+            rx_avg = rx_tang_rad(I,J,k)
+            segment%tangential_vel(I,J,k) = (v_new(i,J,k) + rx_avg*v_new(i-1,J,k)) / (1.0+rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%radiation_grad) then
+          Js_obc = max(segment%HI%JsdB,G%jsd+1)
+          Je_obc = min(segment%HI%JedB,G%jed-1)
+          do k=1,nz ; do J=Js_obc,Je_obc
+            rx_avg = rx_tang_rad(I,J,k)
+            !           if (G%mask2dCu(I-1,j) > 0.0 .and. G%mask2dCu(I-1,j+1) > 0.0) then
+            !             rx_avg = 0.5*(u_new(I-1,j,k) + u_new(I-1,j+1,k)) * dt * G%IdxBu(I-1,J)
+            !           elseif (G%mask2dCu(I-1,j) > 0.0) then
+            !             rx_avg = u_new(I-1,j,k) * dt * G%IdxBu(I-1,J)
+            !           elseif (G%mask2dCu(I-1,j+1) > 0.0) then
+            !             rx_avg = u_new(I-1,j+1,k) * dt * G%IdxBu(I-1,J)
+            !           else
+            !             rx_avg = 0.0
+            !           endif
+            segment%tangential_grad(I,J,k) = ((v_new(i,J,k) - v_new(i-1,J,k))*G%IdxBu(I-1,J) + &
+                              rx_avg*(v_new(i-1,J,k) - v_new(i-2,J,k))*G%IdxBu(I-2,J)) / (1.0+rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_rad)
+      endif
+      if (segment%oblique_tan .or. segment%oblique_grad) then
+        I=segment%HI%IsdB
+        allocate(rx_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(ry_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(cff_tangential(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_obl(I,segment%HI%JsdB,k) = segment%rx_norm_obl(I,segment%HI%jsd,k)
+            rx_tang_obl(I,segment%HI%JedB,k) = segment%rx_norm_obl(I,segment%HI%jed,k)
+            ry_tang_obl(I,segment%HI%JsdB,k) = segment%ry_norm_obl(I,segment%HI%jsd,k)
+            ry_tang_obl(I,segment%HI%JedB,k) = segment%ry_norm_obl(I,segment%HI%jed,k)
+            cff_tangential(I,segment%HI%JsdB,k) = segment%cff_normal(I,segment%HI%jsd,k)
+            cff_tangential(I,segment%HI%JedB,k) = segment%cff_normal(I,segment%HI%jed,k)
+            do J=segment%HI%JsdB+1,segment%HI%JedB-1
+              rx_tang_obl(I,J,k) = 0.5*(segment%rx_norm_obl(I,j,k) + segment%rx_norm_obl(I,j+1,k))
+              ry_tang_obl(I,J,k) = 0.5*(segment%ry_norm_obl(I,j,k) + segment%ry_norm_obl(I,j+1,k))
+              cff_tangential(I,J,k) = 0.5*(segment%cff_normal(I,j,k) + segment%cff_normal(I,j+1,k))
+            enddo
+          else
+            do J=segment%HI%JsdB,segment%HI%JedB
+              dhdt = v_old(i,J,k)-v_new(i,J,k)   !old-new
+              dhdx = v_new(i,J,k)-v_new(i-1,J,k) !in new time backward sashay for I-1
+              if (dhdt*(segment%grad_tan(j,1,k) + segment%grad_tan(j+1,1,k)) > 0.0) then
+                dhdy = segment%grad_tan(j,1,k)
+              elseif (dhdt*(segment%grad_tan(j,1,k) + segment%grad_tan(j+1,1,k)) == 0.0) then
+                dhdy = 0.0
+              else
+                dhdy = segment%grad_tan(j+1,1,k)
+              endif
+              if (dhdt*dhdx < 0.0) dhdt = 0.0
+              cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+              rx_new = min(dhdt*dhdx, cff_new*rx_max)
+              ry_new = min(cff_new,max(dhdt*dhdy,-cff_new))
+              rx_tang_obl(I,J,k) = rx_new
+              ry_tang_obl(I,J,k) = ry_new
+              cff_tangential(I,J,k) = cff_new
+            enddo
+          endif
+        enddo
+        if (segment%oblique_tan) then
+          do k=1,nz ;  do J=segment%HI%JsdB,segment%HI%JedB
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_vel(I,J,k) = ((cff_avg*v_new(i,J,k) + rx_avg*v_new(i-1,J,k)) - &
+                                             (max(ry_avg,0.0)*segment%grad_tan(j,2,k) + &
+                                              min(ry_avg,0.0)*segment%grad_tan(j+1,2,k))) / &
+                                            (cff_avg + rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%oblique_grad) then
+          Js_obc = max(segment%HI%JsdB,G%jsd+1)
+          Je_obc = min(segment%HI%JedB,G%jed-1)
+          do k=1,nz ;  do J=segment%HI%JsdB+1,segment%HI%JedB-1
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_grad(I,J,k) =  &
+                ((cff_avg*(v_new(i,J,k)  - v_new(i-1,J,k))*G%IdxBu(I-1,J) + &
+                  rx_avg*(v_new(i-1,J,k) - v_new(i-2,J,k))*G%IdxBu(I-2,J)) - &
+                 (max(ry_avg,0.0)*segment%grad_gradient(J,2,k) + &
+                  min(ry_avg,0.0)*segment%grad_gradient(J+1,2,k)) ) / &
+                (cff_avg + rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_obl)
+        deallocate(ry_tang_obl)
+        deallocate(cff_tangential)
+      endif
+    endif
+
+    if (segment%direction == OBC_DIRECTION_W) then
+      I=segment%HI%IsdB
+      if (I>G%HI%IecB) cycle
+      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+        if (segment%radiation) then
+          dhdt = (u_old(I+1,j,k) - u_new(I+1,j,k)) !old-new
+          dhdx = (u_new(I+1,j,k) - u_new(I+2,j,k)) !in new time forward sashay for I+1
+          rx_new = 0.0
+          if (dhdt*dhdx > 0.0) rx_new = min( (dhdt/dhdx), rx_max)
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_rad(I,j,k) + gamma_u*rx_new
+          else
+            rx_avg = rx_new
+          endif
+          segment%rx_norm_rad(I,j,k) = rx_avg
+          ! The new boundary value is interpolated between future interior
+          ! value, u_new(I+1) and past boundary value but with barotropic
+          ! accelerations, u_new(I).
+          segment%normal_vel(I,j,k) = (u_new(I,j,k) + rx_avg*u_new(I+1,j,k)) / (1.0+rx_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%rx_normal(I,j,k) = segment%rx_norm_rad(I,j,k)
+          endif
+        elseif (segment%oblique) then
+          dhdt = (u_old(I+1,j,k) - u_new(I+1,j,k)) !old-new
+          dhdx = (u_new(I+1,j,k) - u_new(I+2,j,k)) !in new time forward sashay for I+1
+          if (dhdt*(segment%grad_normal(J,1,k) + segment%grad_normal(J-1,1,k)) > 0.0) then
+            dhdy = segment%grad_normal(J-1,1,k)
+          elseif (dhdt*(segment%grad_normal(J,1,k) + segment%grad_normal(J-1,1,k)) == 0.0) then
+            dhdy = 0.0
+          else
+            dhdy = segment%grad_normal(J,1,k)
+          endif
+          if (dhdt*dhdx < 0.0) dhdt = 0.0
+
+          cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+          rx_new = min(dhdt*dhdx, cff_new*rx_max)
+          ry_new = min(cff_new,max(dhdt*dhdy,-cff_new))
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_obl(I,j,k) + gamma_u*rx_new
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_obl(I,j,k) + gamma_u*ry_new
+            cff_avg = (1.0-gamma_u)*segment%cff_normal(I,j,k) + gamma_u*cff_new
+          else
+            rx_avg = rx_new
+            ry_avg = ry_new
+            cff_avg = cff_new
+          endif
+          segment%rx_norm_obl(I,j,k) = rx_avg
+          segment%ry_norm_obl(I,j,k) = ry_avg
+          segment%cff_normal(I,j,k) = cff_avg
+          segment%normal_vel(I,j,k) = ((cff_avg*u_new(I,j,k) + rx_avg*u_new(I+1,j,k)) - &
+                                       (max(ry_avg,0.0)*segment%grad_normal(J-1,2,k) + &
+                                        min(ry_avg,0.0)*segment%grad_normal(J,2,k))) / &
+                                      (cff_avg + rx_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%rx_oblique_u(I,j,k) = segment%rx_norm_obl(I,j,k)
+            OBC%ry_oblique_u(I,j,k) = segment%ry_norm_obl(I,j,k)
+            OBC%cff_normal_u(I,j,k) = segment%cff_normal(I,j,k)
+          endif
+        elseif (segment%gradient) then
+          segment%normal_vel(I,j,k) = u_new(I+1,j,k)
+        endif
+        if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
+          ! dhdt gets set to 0. on inflow in oblique case
+          if (dhdt*dhdx <= 0.0) then
+            tau = segment%Velocity_nudging_timescale_in
+          else
+            tau = segment%Velocity_nudging_timescale_out
+          endif
+          gamma_2 = dt / (tau + dt)
+          segment%normal_vel(I,j,k) = (1.0 - gamma_2) * segment%normal_vel(I,j,k) + &
+                                gamma_2 * segment%nudged_normal_vel(I,j,k)
+        endif
+      enddo ; enddo
+      if (segment%radiation_tan .or. segment%radiation_grad) then
+        I=segment%HI%IsdB
+        allocate(rx_tang_rad(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_rad(I,segment%HI%JsdB,k) = segment%rx_norm_rad(I,segment%HI%jsd,k)
+            rx_tang_rad(I,segment%HI%JedB,k) = segment%rx_norm_rad(I,segment%HI%jed,k)
+            do J=segment%HI%JsdB+1,segment%HI%JedB-1
+              rx_tang_rad(I,J,k) = 0.5*(segment%rx_norm_rad(I,j,k) + segment%rx_norm_rad(I,j+1,k))
+            enddo
+          else
+            do J=segment%HI%JsdB,segment%HI%JedB
+              dhdt = v_old(i+1,J,k)-v_new(i+1,J,k)   !old-new
+              dhdx = v_new(i+1,J,k)-v_new(i+2,J,k) !in new time backward sashay for I-1
+              rx_tang_rad(I,J,k) = 0.0
+              if (dhdt*dhdx > 0.0) rx_tang_rad(I,J,k) = min( (dhdt/dhdx), rx_max) ! outward phase speed
+            enddo
+          endif
+        enddo
+        if (segment%radiation_tan) then
+          do k=1,nz ;  do J=segment%HI%JsdB,segment%HI%JedB
+            rx_avg = rx_tang_rad(I,J,k)
+            segment%tangential_vel(I,J,k) = (v_new(i+1,J,k) + rx_avg*v_new(i+2,J,k)) / (1.0+rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%radiation_grad) then
+          Js_obc = max(segment%HI%JsdB,G%jsd+1)
+          Je_obc = min(segment%HI%JedB,G%jed-1)
+          do k=1,nz ;  do J=Js_obc,Je_obc
+            rx_avg = rx_tang_rad(I,J,k)
+            !           if (G%mask2dCu(I+1,j) > 0.0 .and. G%mask2dCu(I+1,j+1) > 0.0) then
+            !             rx_avg = 0.5*(u_new(I+1,j,k) + u_new(I+1,j+1,k)) * dt * G%IdxBu(I+1,J)
+            !           elseif (G%mask2dCu(I+1,j) > 0.0) then
+            !             rx_avg = u_new(I+1,j,k) * dt * G%IdxBu(I+1,J)
+            !           elseif (G%mask2dCu(I+1,j+1) > 0.0) then
+            !             rx_avg = u_new(I+1,j+1,k) * dt * G%IdxBu(I+1,J)
+            !           else
+            !             rx_avg = 0.0
+            !           endif
+            segment%tangential_grad(I,J,k) = ((v_new(i+2,J,k) - v_new(i+1,J,k))*G%IdxBu(I+1,J) + &
+                              rx_avg*(v_new(i+3,J,k) - v_new(i+2,J,k))*G%IdxBu(I+2,J)) / (1.0+rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_rad)
+      endif
+      if (segment%oblique_tan .or. segment%oblique_grad) then
+        I=segment%HI%IsdB
+        allocate(rx_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(ry_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(cff_tangential(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_obl(I,segment%HI%JsdB,k) = segment%rx_norm_obl(I,segment%HI%jsd,k)
+            rx_tang_obl(I,segment%HI%JedB,k) = segment%rx_norm_obl(I,segment%HI%jed,k)
+            ry_tang_obl(I,segment%HI%JsdB,k) = segment%ry_norm_obl(I,segment%HI%jsd,k)
+            ry_tang_obl(I,segment%HI%JedB,k) = segment%ry_norm_obl(I,segment%HI%jed,k)
+            cff_tangential(I,segment%HI%JsdB,k) = segment%cff_normal(I,segment%HI%jsd,k)
+            cff_tangential(I,segment%HI%JedB,k) = segment%cff_normal(I,segment%HI%jed,k)
+            do J=segment%HI%JsdB+1,segment%HI%JedB-1
+              rx_tang_obl(I,J,k) = 0.5*(segment%rx_norm_obl(I,j,k) + segment%rx_norm_obl(I,j+1,k))
+              ry_tang_obl(I,J,k) = 0.5*(segment%ry_norm_obl(I,j,k) + segment%ry_norm_obl(I,j+1,k))
+              cff_tangential(I,J,k) = 0.5*(segment%cff_normal(I,j,k) + segment%cff_normal(I,j+1,k))
+            enddo
+          else
+            do J=segment%HI%JsdB,segment%HI%JedB
+              dhdt = v_old(i+1,J,k)-v_new(i+1,J,k)   !old-new
+              dhdx = v_new(i+1,J,k)-v_new(i+2,J,k) !in new time backward sashay for I-1
+              if (dhdt*(segment%grad_tan(j,1,k) + segment%grad_tan(j+1,1,k)) > 0.0) then
+                dhdy = segment%grad_tan(j,1,k)
+              elseif (dhdt*(segment%grad_tan(j,1,k) + segment%grad_tan(j+1,1,k)) == 0.0) then
+                dhdy = 0.0
+              else
+                dhdy = segment%grad_tan(j+1,1,k)
+              endif
+              if (dhdt*dhdx < 0.0) dhdt = 0.0
+              cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+              rx_new = min(dhdt*dhdx, cff_new*rx_max)
+              ry_new = min(cff_new,max(dhdt*dhdy,-cff_new))
+              rx_tang_obl(I,J,k) = rx_new
+              ry_tang_obl(I,J,k) = ry_new
+              cff_tangential(I,J,k) = cff_new
+            enddo
+          endif
+        enddo
+        if (segment%oblique_tan) then
+          do k=1,nz ;  do J=segment%HI%JsdB,segment%HI%JedB
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_vel(I,J,k) = ((cff_avg*v_new(i+1,J,k) + rx_avg*v_new(i+2,J,k)) - &
+                                             (max(ry_avg,0.0)*segment%grad_tan(j,2,k) + &
+                                              min(ry_avg,0.0)*segment%grad_tan(j+1,2,k))) / &
+                                            (cff_avg + rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%oblique_grad) then
+          Js_obc = max(segment%HI%JsdB,G%jsd+1)
+          Je_obc = min(segment%HI%JedB,G%jed-1)
+          do k=1,nz ;  do J=segment%HI%JsdB+1,segment%HI%JedB-1
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_grad(I,J,k) = &
+                ((cff_avg*(v_new(i+2,J,k) - v_new(i+1,J,k))*G%IdxBu(I+1,J) + &
+                   rx_avg*(v_new(i+3,J,k) - v_new(i+2,J,k))*G%IdxBu(I+2,J)) - &
+                 (max(ry_avg,0.0)*segment%grad_gradient(J,2,k) + &
+                  min(ry_avg,0.0)*segment%grad_gradient(J+1,2,k))) / &
+                (cff_avg + rx_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (rx_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_obl)
+        deallocate(ry_tang_obl)
+        deallocate(cff_tangential)
+      endif
+    endif
+
+    if (segment%direction == OBC_DIRECTION_N) then
+      J=segment%HI%JsdB
+      if (J<G%HI%JscB) cycle
+      do k=1,nz ;  do i=segment%HI%isd,segment%HI%ied
+        if (segment%radiation) then
+          dhdt = (v_old(i,J-1,k) - v_new(i,J-1,k)) !old-new
+          dhdy = (v_new(i,J-1,k) - v_new(i,J-2,k)) !in new time backward sashay for J-1
+          ry_new = 0.0
+          if (dhdt*dhdy > 0.0) ry_new = min( (dhdt/dhdy), ry_max)
+          if (gamma_u < 1.0) then
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_rad(I,j,k) + gamma_u*ry_new
+          else
+            ry_avg = ry_new
+          endif
+          segment%ry_norm_rad(i,J,k) = ry_avg
+          ! The new boundary value is interpolated between future interior
+          ! value, v_new(J-1) and past boundary value but with barotropic
+          ! accelerations, v_new(J).
+          segment%normal_vel(i,J,k) = (v_new(i,J,k) + ry_avg*v_new(i,J-1,k)) / (1.0+ry_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%ry_normal(i,J,k) = segment%ry_norm_rad(i,J,k)
+          endif
+        elseif (segment%oblique) then
+          dhdt = (v_old(i,J-1,k) - v_new(i,J-1,k)) !old-new
+          dhdy = (v_new(i,J-1,k) - v_new(i,J-2,k)) !in new time backward sashay for J-1
+          if (dhdt*(segment%grad_normal(I,1,k) + segment%grad_normal(I-1,1,k)) > 0.0) then
+            dhdx = segment%grad_normal(I-1,1,k)
+          elseif (dhdt*(segment%grad_normal(I,1,k) + segment%grad_normal(I-1,1,k)) == 0.0) then
+            dhdx = 0.0
+          else
+            dhdx = segment%grad_normal(I,1,k)
+          endif
+          if (dhdt*dhdy < 0.0) dhdt = 0.0
+          cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+          ry_new = min(dhdt*dhdy, cff_new*ry_max)
+          rx_new = min(cff_new,max(dhdt*dhdx,-cff_new))
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_obl(I,j,k) + gamma_u*rx_new
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_obl(i,J,k) + gamma_u*ry_new
+            cff_avg = (1.0-gamma_u)*segment%cff_normal(i,J,k) + gamma_u*cff_new
+          else
+            rx_avg = rx_new
+            ry_avg = ry_new
+            cff_avg = cff_new
+          endif
+          segment%rx_norm_obl(i,J,k) = rx_avg
+          segment%ry_norm_obl(i,J,k) = ry_avg
+          segment%cff_normal(i,J,k) = cff_avg
+          segment%normal_vel(i,J,k) = ((cff_avg*v_new(i,J,k) + ry_avg*v_new(i,J-1,k)) - &
+                                       (max(rx_avg,0.0)*segment%grad_normal(I-1,2,k) +&
+                                        min(rx_avg,0.0)*segment%grad_normal(I,2,k))) / &
+                                      (cff_avg + ry_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%rx_oblique_v(i,J,k) = segment%rx_norm_obl(i,J,k)
+            OBC%ry_oblique_v(i,J,k) = segment%ry_norm_obl(i,J,k)
+            OBC%cff_normal_v(i,J,k) = segment%cff_normal(i,J,k)
+          endif
+        elseif (segment%gradient) then
+          segment%normal_vel(i,J,k) = v_new(i,J-1,k)
+        endif
+        if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
+          ! dhdt gets set to 0 on inflow in oblique case
+          if (dhdt*dhdy <= 0.0) then
+            tau = segment%Velocity_nudging_timescale_in
+          else
+            tau = segment%Velocity_nudging_timescale_out
+          endif
+          gamma_2 = dt / (tau + dt)
+          segment%normal_vel(i,J,k) = (1.0 - gamma_2) * segment%normal_vel(i,J,k) + &
+                                gamma_2 * segment%nudged_normal_vel(i,J,k)
+        endif
+      enddo ; enddo
+      if (segment%radiation_tan .or. segment%radiation_grad) then
+        J=segment%HI%JsdB
+        allocate(ry_tang_rad(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            ry_tang_rad(segment%HI%IsdB,J,k) = segment%ry_norm_rad(segment%HI%isd,J,k)
+            ry_tang_rad(segment%HI%IedB,J,k) = segment%ry_norm_rad(segment%HI%ied,J,k)
+            do I=segment%HI%IsdB+1,segment%HI%IedB-1
+              ry_tang_rad(I,J,k) = 0.5*(segment%ry_norm_rad(i,J,k) + segment%ry_norm_rad(i+1,J,k))
+            enddo
+          else
+            do I=segment%HI%IsdB,segment%HI%IedB
+              dhdt = u_old(I,j-1,k)-u_new(I,j-1,k)   !old-new
+              dhdy = u_new(I,j-1,k)-u_new(I,j-2,k) !in new time backward sashay for I-1
+              ry_tang_rad(I,J,k) = 0.0
+              if (dhdt*dhdy > 0.0) ry_tang_rad(I,J,k) = min( (dhdt/dhdy), rx_max) ! outward phase speed
+            enddo
+          endif
+        enddo
+        if (segment%radiation_tan) then
+          do k=1,nz ;  do I=segment%HI%IsdB,segment%HI%IedB
+            ry_avg = ry_tang_rad(I,J,k)
+            segment%tangential_vel(I,J,k) = (u_new(I,j,k) + ry_avg*u_new(I,j-1,k)) / (1.0+ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%radiation_grad) then
+          Is_obc = max(segment%HI%IsdB,G%isd+1)
+          Ie_obc = min(segment%HI%IedB,G%ied-1)
+          do k=1,nz ;  do I=Is_obc,Ie_obc
+            ry_avg = ry_tang_rad(I,J,k)
+            !           if (G%mask2dCv(i,J-1) > 0.0 .and. G%mask2dCv(i+1,J-1) > 0.0) then
+            !             ry_avg = 0.5*(v_new(i,J-1,k) + v_new(i+1,J-1,k) * dt * G%IdyBu(I,J-1))
+            !           elseif (G%mask2dCv(i,J-1) > 0.0) then
+            !             ry_avg = v_new(i,J-1,k) * dt *G%IdyBu(I,J-1)
+            !           elseif (G%mask2dCv(i+1,J-1) > 0.0) then
+            !             ry_avg = v_new(i+1,J-1,k) * dt *G%IdyBu(I,J-1)
+            !           else
+            !             ry_avg = 0.0
+            !           endif
+            segment%tangential_grad(I,J,k) = ((u_new(I,j,k) - u_new(I,j-1,k))*G%IdyBu(I,J-1) + &
+                              ry_avg*(u_new(I,j-1,k) - u_new(I,j-2,k))*G%IdyBu(I,J-2)) / (1.0+ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(ry_tang_rad)
+      endif
+      if (segment%oblique_tan .or. segment%oblique_grad) then
+        J=segment%HI%JsdB
+        allocate(rx_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(ry_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(cff_tangential(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_obl(segment%HI%IsdB,J,k) = segment%rx_norm_obl(segment%HI%isd,J,k)
+            rx_tang_obl(segment%HI%IedB,J,k) = segment%rx_norm_obl(segment%HI%ied,J,k)
+            ry_tang_obl(segment%HI%IsdB,J,k) = segment%ry_norm_obl(segment%HI%isd,J,k)
+            ry_tang_obl(segment%HI%IedB,J,k) = segment%ry_norm_obl(segment%HI%ied,J,k)
+            cff_tangential(segment%HI%IsdB,J,k) = segment%cff_normal(segment%HI%isd,J,k)
+            cff_tangential(segment%HI%IedB,J,k) = segment%cff_normal(segment%HI%ied,J,k)
+            do I=segment%HI%IsdB+1,segment%HI%IedB-1
+              rx_tang_obl(I,J,k) = 0.5*(segment%rx_norm_obl(i,J,k) + segment%rx_norm_obl(i+1,J,k))
+              ry_tang_obl(I,J,k) = 0.5*(segment%ry_norm_obl(i,J,k) + segment%ry_norm_obl(i+1,J,k))
+              cff_tangential(I,J,k) = 0.5*(segment%cff_normal(i,J,k) + segment%cff_normal(i+1,J,k))
+            enddo
+          else
+            do I=segment%HI%IsdB,segment%HI%IedB
+              dhdt = u_old(I,j,k)-u_new(I,j,k)   !old-new
+              dhdy = u_new(I,j,k)-u_new(I,j-1,k) !in new time backward sashay for I-1
+              if (dhdt*(segment%grad_tan(i,1,k) + segment%grad_tan(i+1,1,k)) > 0.0) then
+                dhdx = segment%grad_tan(i,1,k)
+              elseif (dhdt*(segment%grad_tan(i,1,k) + segment%grad_tan(i+1,1,k)) == 0.0) then
+                dhdx = 0.0
+              else
+                dhdx = segment%grad_tan(i+1,1,k)
+              endif
+              if (dhdt*dhdy < 0.0) dhdt = 0.0
+              cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+              ry_new = min(dhdt*dhdy, cff_new*ry_max)
+              rx_new = min(cff_new,max(dhdt*dhdx,-cff_new))
+              rx_tang_obl(I,J,k) = rx_new
+              ry_tang_obl(I,J,k) = ry_new
+              cff_tangential(I,J,k) = cff_new
+            enddo
+          endif
+        enddo
+        if (segment%oblique_tan) then
+          do k=1,nz ;  do I=segment%HI%IsdB,segment%HI%IedB
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_vel(I,J,k) = ((cff_avg*u_new(I,j,k) + ry_avg*u_new(I,j-1,k)) - &
+                                             (max(rx_avg,0.0)*segment%grad_tan(i,2,k) + &
+                                              min(rx_avg,0.0)*segment%grad_tan(i+1,2,k))) / &
+                                            (cff_avg + ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%oblique_grad) then
+          Is_obc = max(segment%HI%IsdB,G%isd+1)
+          Ie_obc = min(segment%HI%IedB,G%ied-1)
+          do k=1,nz ;  do I=segment%HI%IsdB+1,segment%HI%IedB-1
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_grad(I,J,k) =  &
+                ((cff_avg*(u_new(I,j,k)   - u_new(I,j-1,k))*G%IdyBu(I,J-1) + &
+                   ry_avg*(u_new(I,j-1,k) - u_new(I,j-2,k))*G%IdyBu(I,J-2)) - &
+                                 (max(rx_avg,0.0)*segment%grad_gradient(I,2,k) + &
+                                  min(rx_avg,0.0)*segment%grad_gradient(I+1,2,k))) / &
+                                (cff_avg + ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_obl)
+        deallocate(ry_tang_obl)
+        deallocate(cff_tangential)
+      endif
+    endif
+
+    if (segment%direction == OBC_DIRECTION_S) then
+      J=segment%HI%JsdB
+      if (J>G%HI%JecB) cycle
+      do k=1,nz ;  do i=segment%HI%isd,segment%HI%ied
+        if (segment%radiation) then
+          dhdt = (v_old(i,J+1,k) - v_new(i,J+1,k)) !old-new
+          dhdy = (v_new(i,J+1,k) - v_new(i,J+2,k)) !in new time backward sashay for J-1
+          ry_new = 0.0
+          if (dhdt*dhdy > 0.0) ry_new = min( (dhdt/dhdy), ry_max)
+          if (gamma_u < 1.0) then
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_rad(I,j,k) + gamma_u*ry_new
+          else
+            ry_avg = ry_new
+          endif
+          segment%ry_norm_rad(i,J,k) = ry_avg
+          ! The new boundary value is interpolated between future interior
+          ! value, v_new(J+1) and past boundary value but with barotropic
+          ! accelerations, v_new(J).
+          segment%normal_vel(i,J,k) = (v_new(i,J,k) + ry_avg*v_new(i,J+1,k)) / (1.0+ry_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%ry_normal(i,J,k) = segment%ry_norm_rad(i,J,k)
+          endif
+        elseif (segment%oblique) then
+          dhdt = (v_old(i,J+1,k) - v_new(i,J+1,k)) !old-new
+          dhdy = (v_new(i,J+1,k) - v_new(i,J+2,k)) !in new time backward sashay for J-1
+          if (dhdt*(segment%grad_normal(I,1,k) + segment%grad_normal(I-1,1,k)) > 0.0) then
+            dhdx = segment%grad_normal(I-1,1,k)
+          elseif (dhdt*(segment%grad_normal(I,1,k) + segment%grad_normal(I-1,1,k)) == 0.0) then
+            dhdx = 0.0
+          else
+            dhdx = segment%grad_normal(I,1,k)
+          endif
+          if (dhdt*dhdy < 0.0) dhdt = 0.0
+
+          cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+          ry_new = min(dhdt*dhdy, cff_new*ry_max)
+          rx_new = min(cff_new,max(dhdt*dhdx,-cff_new))
+          if (gamma_u < 1.0) then
+            rx_avg = (1.0-gamma_u)*segment%rx_norm_obl(i,J,k) + gamma_u*rx_new
+            ry_avg = (1.0-gamma_u)*segment%ry_norm_obl(i,J,k) + gamma_u*ry_new
+            cff_avg = (1.0-gamma_u)*segment%cff_normal(i,J,k) + gamma_u*cff_new
+          else
+            rx_avg = rx_new
+            ry_avg = ry_new
+            cff_avg = cff_new
+          endif
+          segment%rx_norm_obl(i,J,k) = rx_avg
+          segment%ry_norm_obl(i,J,k) = ry_avg
+          segment%cff_normal(i,J,k) = cff_avg
+          segment%normal_vel(i,J,k) = ((cff_avg*v_new(i,J,k) + ry_avg*v_new(i,J+1,k)) - &
+                                       (max(rx_avg,0.0)*segment%grad_normal(I-1,2,k) + &
+                                        min(rx_avg,0.0)*segment%grad_normal(I,2,k))) / &
+                                      (cff_avg + ry_avg)
+          if (gamma_u < 1.0) then
+            ! Copy restart fields into 3-d arrays. This is an inefficient and temporary issues
+            ! implemented as a work-around to limitations in restart capability
+            OBC%rx_oblique_v(i,J,k) = segment%rx_norm_obl(i,J,k)
+            OBC%ry_oblique_v(i,J,k) = segment%ry_norm_obl(i,J,k)
+            OBC%cff_normal_v(i,J,k) = segment%cff_normal(i,J,k)
+          endif
+        elseif (segment%gradient) then
+          segment%normal_vel(i,J,k) = v_new(i,J+1,k)
+        endif
+        if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
+          ! dhdt gets set to 0 on inflow in oblique case
+          if (dhdt*dhdy <= 0.0) then
+            tau = segment%Velocity_nudging_timescale_in
+          else
+            tau = segment%Velocity_nudging_timescale_out
+          endif
+          gamma_2 = dt / (tau + dt)
+          segment%normal_vel(i,J,k) = (1.0 - gamma_2) * segment%normal_vel(i,J,k) + &
+                                gamma_2 * segment%nudged_normal_vel(i,J,k)
+        endif
+      enddo ; enddo
+      if (segment%radiation_tan .or. segment%radiation_grad) then
+        J=segment%HI%JsdB
+        allocate(ry_tang_rad(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            ry_tang_rad(segment%HI%IsdB,J,k) = segment%ry_norm_rad(segment%HI%isd,J,k)
+            ry_tang_rad(segment%HI%IedB,J,k) = segment%ry_norm_rad(segment%HI%ied,J,k)
+            do I=segment%HI%IsdB+1,segment%HI%IedB-1
+              ry_tang_rad(I,J,k) = 0.5*(segment%ry_norm_rad(i,J,k) + segment%ry_norm_rad(i+1,J,k))
+            enddo
+          else
+            do I=segment%HI%IsdB,segment%HI%IedB
+              dhdt = u_old(I,j+1,k)-u_new(I,j+1,k)   !old-new
+              dhdy = u_new(I,j+1,k)-u_new(I,j+2,k) !in new time backward sashay for I-1
+              ry_tang_rad(I,J,k) = 0.0
+              if (dhdt*dhdy > 0.0) ry_tang_rad(I,J,k) = min( (dhdt/dhdy), rx_max) ! outward phase speed
+            enddo
+          endif
+        enddo
+        if (segment%radiation_tan) then
+          do k=1,nz ;  do I=segment%HI%IsdB,segment%HI%IedB
+            ry_avg = ry_tang_rad(I,J,k)
+            segment%tangential_vel(I,J,k) = (u_new(I,j+1,k) + ry_avg*u_new(I,j+2,k)) / (1.0+ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%radiation_grad) then
+          Is_obc = max(segment%HI%IsdB,G%isd+1)
+          Ie_obc = min(segment%HI%IedB,G%ied-1)
+          do k=1,nz ;  do I=Is_obc,Ie_obc
+            ry_avg = ry_tang_rad(I,J,k)
+            !           if (G%mask2dCv(i,J+1) > 0.0 .and. G%mask2dCv(i+1,J+1) > 0.0) then
+            !             ry_avg = 0.5*(v_new(i,J+1,k) + v_new(i+1,J+1,k)) * dt * G%IdyBu(I,J+1)
+            !           elseif (G%mask2dCv(i,J+1) > 0.0) then
+            !             ry_avg = v_new(i,J+1,k) * dt * G%IdyBu(I,J+1)
+            !           elseif (G%mask2dCv(i+1,J+1) > 0.0) then
+            !             ry_avg = v_new(i+1,J+1,k) * dt * G%IdyBu(I,J+1)
+            !           else
+            !             ry_avg = 0.0
+            !           endif
+            segment%tangential_grad(I,J,k) = ((u_new(I,j+2,k) - u_new(I,j+1,k))*G%IdyBu(I,J+1) + &
+                              ry_avg*(u_new(I,j+3,k) - u_new(I,j+2,k))*G%IdyBu(I,J+2)) / (1.0+ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_rad(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(ry_tang_rad)
+      endif
+      if (segment%oblique_tan .or. segment%oblique_grad) then
+        J=segment%HI%JsdB
+        allocate(rx_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(ry_tang_obl(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        allocate(cff_tangential(segment%HI%IsdB:segment%HI%IedB,segment%HI%JsdB:segment%HI%JedB,nz))
+        do k=1,nz
+          if (gamma_u < 1.0) then
+            rx_tang_obl(segment%HI%IsdB,J,k) = segment%rx_norm_obl(segment%HI%isd,J,k)
+            rx_tang_obl(segment%HI%IedB,J,k) = segment%rx_norm_obl(segment%HI%ied,J,k)
+            ry_tang_obl(segment%HI%IsdB,J,k) = segment%ry_norm_obl(segment%HI%isd,J,k)
+            ry_tang_obl(segment%HI%IedB,J,k) = segment%ry_norm_obl(segment%HI%ied,J,k)
+            cff_tangential(segment%HI%IsdB,J,k) = segment%cff_normal(segment%HI%isd,J,k)
+            cff_tangential(segment%HI%IedB,J,k) = segment%cff_normal(segment%HI%ied,J,k)
+            do I=segment%HI%IsdB+1,segment%HI%IedB-1
+              rx_tang_obl(I,J,k) = 0.5*(segment%rx_norm_obl(i,J,k) + segment%rx_norm_obl(i+1,J,k))
+              ry_tang_obl(I,J,k) = 0.5*(segment%ry_norm_obl(i,J,k) + segment%ry_norm_obl(i+1,J,k))
+              cff_tangential(I,J,k) = 0.5*(segment%cff_normal(i,J,k) + segment%cff_normal(i+1,J,k))
+            enddo
+          else
+            do I=segment%HI%IsdB,segment%HI%IedB
+              dhdt = u_old(I,j+1,k)-u_new(I,j+1,k)   !old-new
+              dhdy = u_new(I,j+1,k)-u_new(I,j+2,k) !in new time backward sashay for I-1
+              if (dhdt*(segment%grad_tan(i,1,k) + segment%grad_tan(i+1,1,k)) > 0.0) then
+                dhdx = segment%grad_tan(i,1,k)
+              elseif (dhdt*(segment%grad_tan(i,1,k) + segment%grad_tan(i+1,1,k)) == 0.0) then
+                dhdx = 0.0
+              else
+                dhdx = segment%grad_tan(i+1,1,k)
+              endif
+              if (dhdt*dhdy < 0.0) dhdt = 0.0
+              cff_new = max((dhdx*dhdx) + (dhdy*dhdy), eps)
+              ry_new = min(dhdt*dhdy, cff_new*ry_max)
+              rx_new = min(cff_new,max(dhdt*dhdx,-cff_new))
+              rx_tang_obl(I,J,k) = rx_new
+              ry_tang_obl(I,J,k) = ry_new
+              cff_tangential(I,J,k) = cff_new
+            enddo
+          endif
+        enddo
+        if (segment%oblique_tan) then
+          do k=1,nz ;  do I=segment%HI%IsdB,segment%HI%IedB
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_vel(I,J,k) = ((cff_avg*u_new(I,j+1,k) + ry_avg*u_new(I,j+2,k)) - &
+                                             (max(rx_avg,0.0)*segment%grad_tan(i,2,k) + &
+                                              min(rx_avg,0.0)*segment%grad_tan(i+1,2,k)) ) / &
+                                            (cff_avg + ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_tan) then
+          do k=1,nz ; do I=segment%HI%IsdB,segment%HI%IedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_vel(I,J,k) = (1.0 - gamma_2) * segment%tangential_vel(I,J,k) + &
+                                            gamma_2 * segment%nudged_tangential_vel(I,J,k)
+          enddo ; enddo
+        endif
+        if (segment%oblique_grad) then
+          Is_obc = max(segment%HI%IsdB,G%isd+1)
+          Ie_obc = min(segment%HI%IedB,G%ied-1)
+          do k=1,nz ;  do I=segment%HI%IsdB+1,segment%HI%IedB-1
+            rx_avg = rx_tang_obl(I,J,k)
+            ry_avg = ry_tang_obl(I,J,k)
+            cff_avg = cff_tangential(I,J,k)
+            segment%tangential_grad(I,J,k) = &
+                ((cff_avg*(u_new(I,j+2,k) - u_new(I,j+1,k))*G%IdyBu(I,J+1) + &
+                   ry_avg*(u_new(I,j+3,k) - u_new(I,j+2,k))*G%IdyBu(I,J+2)) - &
+                                 (max(rx_avg,0.0)*segment%grad_gradient(i,2,k) + &
+                                  min(rx_avg,0.0)*segment%grad_gradient(i+1,2,k))) / &
+                                (cff_avg + ry_avg)
+          enddo ; enddo
+        endif
+        if (segment%nudged_grad) then
+          do k=1,nz ; do J=segment%HI%JsdB,segment%HI%JedB
+            ! dhdt gets set to 0 on inflow in oblique case
+            if (ry_tang_obl(I,J,k) <= 0.0) then
+              tau = segment%Velocity_nudging_timescale_in
+            else
+              tau = segment%Velocity_nudging_timescale_out
+            endif
+            gamma_2 = dt / (tau + dt)
+            segment%tangential_grad(I,J,k) = (1.0 - gamma_2) * segment%tangential_grad(I,J,k) + &
+                                gamma_2 * segment%nudged_tangential_grad(I,J,k)
+          enddo ; enddo
+        endif
+        deallocate(rx_tang_obl)
+        deallocate(ry_tang_obl)
+        deallocate(cff_tangential)
+      endif
+    endif
+  enddo
+
+  ! Actually update u_new, v_new
+  call open_boundary_apply_normal_flow(OBC, G, GV, u_new, v_new)
+
+  call pass_vector(u_new, v_new, G%Domain, clock=id_clock_pass)
+
+  if (OBC%debug) then
+    sym = G%Domain%symmetric
+    if (OBC%radiation_BCs_exist_globally) then
+      call uvchksum("radiation_OBCs: OBC%r[xy]_normal", OBC%rx_normal, OBC%ry_normal, G%HI, &
+                  haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0)
+    endif
+    if (OBC%oblique_BCs_exist_globally) then
+      call uvchksum("radiation_OBCs: OBC%r[xy]_oblique_[uv]", OBC%rx_oblique_u, OBC%ry_oblique_v, G%HI, &
+                  haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0/US%L_T_to_m_s**2)
+      call uvchksum("radiation_OBCs: OBC%r[yx]_oblique_[uv]", OBC%ry_oblique_u, OBC%rx_oblique_v, G%HI, &
+                  haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0/US%L_T_to_m_s**2)
+      call uvchksum("radiation_OBCs: OBC%cff_normal_[uv]", OBC%cff_normal_u, OBC%cff_normal_v, G%HI, &
+                  haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0/US%L_T_to_m_s**2)
+    endif
+    if ((OBC%ntr > 0) .and. allocated(OBC%tres_x) .and. allocated(OBC%tres_y)) then
+      do m=1,OBC%ntr
+        write(var_num,'(I3.3)') m
+        call uvchksum("radiation_OBCs: OBC%tres_[xy]_"//var_num, OBC%tres_x(:,:,:,m), OBC%tres_y(:,:,:,m), G%HI, &
+                      haloshift=0, symmetric=sym, scalar_pair=.true., unscale=1.0)
+      enddo
+    endif
+  endif
+
+end procedure radiation_open_bdry_conds
+module procedure open_boundary_apply_normal_flow
+  integer :: i, j, k, n
+  type(OBC_segment_type), pointer :: segment => NULL()
+  if (.not.associated(OBC)) return ! Bail out if OBC is not available
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) then
+      cycle
+    elseif (segment%radiation .or. segment%oblique .or. segment%gradient) then
+      if (segment%is_E_or_W) then
+        I=segment%HI%IsdB
+        do k=1,GV%ke ;  do j=segment%HI%jsd,segment%HI%jed
+          u(I,j,k) = segment%normal_vel(I,j,k)
+        enddo ; enddo
+      elseif (segment%is_N_or_S) then
+        J=segment%HI%JsdB
+        do k=1,GV%ke ;  do i=segment%HI%isd,segment%HI%ied
+          v(i,J,k) = segment%normal_vel(i,J,k)
+        enddo ; enddo
+      endif
+    endif
+  enddo
+
+end procedure open_boundary_apply_normal_flow
+module procedure open_boundary_zero_normal_flow
+  integer :: i, j, k, n
+  type(OBC_segment_type), pointer :: segment => NULL()
+  if (.not.associated(OBC)) return ! Bail out if OBC is not available
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) then
+      cycle
+    elseif (segment%is_E_or_W) then
+      I=segment%HI%IsdB
+      do k=1,GV%ke ;  do j=segment%HI%jsd,segment%HI%jed
+        u(I,j,k) = 0.
+      enddo ; enddo
+    elseif (segment%is_N_or_S) then
+      J=segment%HI%JsdB
+      do k=1,GV%ke ;  do i=segment%HI%isd,segment%HI%ied
+        v(i,J,k) = 0.
+      enddo ; enddo
+    endif
+  enddo
+
+end procedure open_boundary_zero_normal_flow
+module procedure gradient_at_q_points
+  integer :: i,j,k
+  if (.not. segment%on_pe) return
+
+  if (segment%is_E_or_W) then
+    if (segment%direction == OBC_DIRECTION_E) then
+      I=segment%HI%isdB
+      do k=1,GV%ke
+        do J=max(segment%HI%JsdB, G%HI%JsdB+1),min(segment%HI%JedB, G%HI%JedB-1)
+          segment%grad_normal(J,1,k) = (uvel(I-1,j+1,k)-uvel(I-1,j,k)) * G%mask2dBu(I-1,J)
+          segment%grad_normal(J,2,k) = (uvel(I,j+1,k)-uvel(I,j,k)) * G%mask2dBu(I,J)
+        enddo
+      enddo
+      if (segment%oblique_tan) then
+        do k=1,GV%ke
+          do J=max(segment%HI%jsd-1, G%HI%jsd),min(segment%HI%jed+1, G%HI%jed)
+            segment%grad_tan(j,1,k) = (vvel(i-1,J,k)-vvel(i-1,J-1,k)) * G%mask2dT(i-1,j)
+            segment%grad_tan(j,2,k) = (vvel(i,J,k)-vvel(i,J-1,k)) * G%mask2dT(i,j)
+          enddo
+        enddo
+      endif
+      if (segment%oblique_grad) then
+        do k=1,GV%ke
+          do J=max(segment%HI%jsd, G%HI%jsd+1),min(segment%HI%jed, G%HI%jed-1)
+            segment%grad_gradient(j,1,k) = (((vvel(i-1,J,k) - vvel(i-2,J,k))*G%IdxBu(I-2,J)) - &
+                 ((vvel(i-1,J-1,k) - vvel(i-2,J-1,k))*G%IdxBu(I-2,J-1))) * G%mask2dCu(I-2,j)
+            segment%grad_gradient(j,2,k) = (((vvel(i,J,k) - vvel(i-1,J,k))*G%IdxBu(I-1,J)) - &
+                 ((vvel(i,J-1,k) - vvel(i-1,J-1,k))*G%IdxBu(I-1,J-1))) * G%mask2dCu(I-1,j)
+          enddo
+        enddo
+      endif
+    else ! western segment
+      I=segment%HI%isdB
+      do k=1,GV%ke
+        do J=max(segment%HI%JsdB, G%HI%JsdB+1),min(segment%HI%JedB, G%HI%JedB-1)
+          segment%grad_normal(J,1,k) = (uvel(I+1,j+1,k)-uvel(I+1,j,k)) * G%mask2dBu(I+1,J)
+          segment%grad_normal(J,2,k) = (uvel(I,j+1,k)-uvel(I,j,k)) * G%mask2dBu(I,J)
+        enddo
+      enddo
+      if (segment%oblique_tan) then
+        do k=1,GV%ke
+          do J=max(segment%HI%jsd-1, G%HI%jsd),min(segment%HI%jed+1, G%HI%jed)
+            segment%grad_tan(j,1,k) = (vvel(i+2,J,k)-vvel(i+2,J-1,k)) * G%mask2dT(i+2,j)
+            segment%grad_tan(j,2,k) = (vvel(i+1,J,k)-vvel(i+1,J-1,k)) * G%mask2dT(i+1,j)
+          enddo
+        enddo
+      endif
+      if (segment%oblique_grad) then
+        do k=1,GV%ke
+          do J=max(segment%HI%jsd, G%HI%jsd+1),min(segment%HI%jed, G%HI%jed-1)
+            segment%grad_gradient(j,1,k) = (((vvel(i+3,J,k) - vvel(i+2,J,k))*G%IdxBu(I+2,J)) - &
+                 ((vvel(i+3,J-1,k) - vvel(i+2,J-1,k))*G%IdxBu(I+2,J-1))) * G%mask2dCu(I+2,j)
+            segment%grad_gradient(j,2,k) = (((vvel(i+2,J,k) - vvel(i+1,J,k))*G%IdxBu(I+1,J)) - &
+                 ((vvel(i+2,J-1,k) - vvel(i+1,J-1,k))*G%IdxBu(I+1,J-1))) * G%mask2dCu(I+1,j)
+          enddo
+        enddo
+      endif
+    endif
+  elseif (segment%is_N_or_S) then
+    if (segment%direction == OBC_DIRECTION_N) then
+      J=segment%HI%jsdB
+      do k=1,GV%ke
+        do I=max(segment%HI%IsdB, G%HI%IsdB+1),min(segment%HI%IedB, G%HI%IedB-1)
+          segment%grad_normal(I,1,k) = (vvel(i+1,J-1,k)-vvel(i,J-1,k)) * G%mask2dBu(I,J-1)
+          segment%grad_normal(I,2,k) = (vvel(i+1,J,k)-vvel(i,J,k)) * G%mask2dBu(I,J)
+        enddo
+      enddo
+      if (segment%oblique_tan) then
+        do k=1,GV%ke
+          do I=max(segment%HI%isd-1, G%HI%isd),min(segment%HI%ied+1, G%HI%ied)
+            segment%grad_tan(i,1,k) = (uvel(I,j-1,k)-uvel(I-1,j-1,k)) * G%mask2dT(i,j-1)
+            segment%grad_tan(i,2,k) = (uvel(I,j,k)-uvel(I-1,j,k)) * G%mask2dT(i,j)
+          enddo
+        enddo
+      endif
+      if (segment%oblique_grad) then
+        do k=1,GV%ke
+          do I=max(segment%HI%isd, G%HI%isd+1),min(segment%HI%ied, G%HI%ied-1)
+            segment%grad_gradient(i,1,k) = (((uvel(I,j-1,k) - uvel(I,j-2,k))*G%IdyBu(I,J-2)) - &
+                 ((uvel(I-1,j-1,k) - uvel(I-1,j-2,k))*G%IdyBu(I-1,J-2))) * G%mask2dCv(i,J-2)
+            segment%grad_gradient(i,2,k) = (((uvel(I,j,k) - uvel(I,j-1,k))*G%IdyBu(I,J-1)) - &
+                 ((uvel(I-1,j,k) - uvel(I-1,j-1,k))*G%IdyBu(I-1,J-1))) * G%mask2dCv(i,J-1)
+          enddo
+        enddo
+      endif
+    else ! south segment
+      J=segment%HI%jsdB
+      do k=1,GV%ke
+        do I=max(segment%HI%IsdB, G%HI%IsdB+1),min(segment%HI%IedB, G%HI%IedB-1)
+          segment%grad_normal(I,1,k) = (vvel(i+1,J+1,k)-vvel(i,J+1,k)) * G%mask2dBu(I,J+1)
+          segment%grad_normal(I,2,k) = (vvel(i+1,J,k)-vvel(i,J,k)) * G%mask2dBu(I,J)
+        enddo
+      enddo
+      if (segment%oblique_tan) then
+        do k=1,GV%ke
+          do I=max(segment%HI%isd-1, G%HI%isd),min(segment%HI%ied+1, G%HI%ied)
+            segment%grad_tan(i,1,k) = (uvel(I,j+2,k)-uvel(I-1,j+2,k)) * G%mask2dT(i,j+2)
+            segment%grad_tan(i,2,k) = (uvel(I,j+1,k)-uvel(I-1,j+1,k)) * G%mask2dT(i,j+1)
+          enddo
+        enddo
+      endif
+      if (segment%oblique_grad) then
+        do k=1,GV%ke
+          do I=max(segment%HI%isd, G%HI%isd+1),min(segment%HI%ied, G%HI%ied-1)
+            segment%grad_gradient(i,1,k) = (((uvel(I,j+3,k) - uvel(I,j+2,k))*G%IdyBu(I,J+2)) - &
+                 ((uvel(I-1,j+3,k) - uvel(I-1,j+2,k))*G%IdyBu(I-1,J+2))) * G%mask2dCv(i,J+2)
+            segment%grad_gradient(i,2,k) = (((uvel(I,j+2,k) - uvel(I,j+1,k))*G%IdyBu(I,J+1)) - &
+                 ((uvel(I-1,j+2,k) - uvel(I-1,j+1,k))*G%IdyBu(I-1,J+1))) * G%mask2dCv(i,J+1)
+          enddo
+        enddo
+      endif
+    endif
+  endif
+
+end procedure gradient_at_q_points
+module procedure lookup_seg_field
+  integer :: n
+  lookup_seg_field = -1
+  do n=1,OBC_seg%num_fields
+    if (trim(field) == OBC_seg%field(n)%name) then
+      lookup_seg_field = n
+      return
+    endif
+  enddo
+
+end procedure lookup_seg_field
+module procedure get_tracer_index
+  integer :: it
+  get_tracer_index = -1
+  it = 1
+  do while(allocated(OBC_seg%tr_Reg%Tr(it)%t))
+    if (trim(OBC_seg%tr_Reg%Tr(it)%name) == trim(tr_name)) then
+      get_tracer_index = it
+      exit
+    endif
+    it = it + 1
+  enddo
+end procedure get_tracer_index
+module procedure allocate_OBC_segment_data
+  integer :: isd, ied, jsd, jed
+  integer :: IsdB, IedB, JsdB, JedB
+  integer :: IscB, IecB, JscB, JecB
+  isd = segment%HI%isd ; ied = segment%HI%ied
+  jsd = segment%HI%jsd ; jed = segment%HI%jed
+  IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+  JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+  IscB = segment%HI%IscB ; IecB = segment%HI%IecB
+  JscB = segment%HI%JscB ; JecB = segment%HI%JecB
+
+  if (.not. segment%on_pe) return
+
+  if (segment%is_E_or_W) then
+    ! If these are just Flather, change update_OBC_segment_data accordingly
+    allocate(segment%Htot(IsdB:IedB,jsd:jed), source=0.0)
+    ! Allocate dZtot with extra values at the end to avoid segmentation faults in cases where
+    ! it is interpolated to OBC vorticity points.
+    allocate(segment%dZtot(IsdB:IedB,jsd-1:jed+1), source=0.0)
+    allocate(segment%SSH(IsdB:IedB,jsd:jed), source=0.0)
+    allocate(segment%tidal_elev(IsdB:IedB,jsd:jed), source=0.0)
+    if (segment%radiation) &
+      allocate(segment%rx_norm_rad(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+    allocate(segment%normal_vel(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+    allocate(segment%normal_vel_bt(IsdB:IedB,jsd:jed), source=0.0)
+    allocate(segment%normal_trans(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+    allocate(segment%normal_trans_bt(IsdB:IedB,jsd:jed), source=0.0)
+    allocate(segment%tidal_vn(IsdB:IedB,jsd:jed), source=0.0)
+    if (segment%nudged) &
+      allocate(segment%nudged_normal_vel(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+    if (segment%radiation_tan .or. segment%nudged_tan .or. &
+        segment%specified_tan .or. segment%oblique_tan .or. &
+        (OBC%vorticity_config == OBC_VORTICITY_COMPUTED) .or. &
+        (OBC%strain_config == OBC_STRAIN_COMPUTED)) then
+      allocate(segment%tangential_vel(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+      allocate(segment%tidal_vt(IsdB:IedB,JsdB:JedB), source=0.0)
+    endif
+    if (segment%nudged_tan) &
+      allocate(segment%nudged_tangential_vel(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%nudged_grad) &
+      allocate(segment%nudged_tangential_grad(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%radiation_grad .or. segment%oblique_grad .or. segment%specified_grad .or. &
+        (OBC%vorticity_config == OBC_VORTICITY_SPECIFIED) .or. &
+        (OBC%strain_config == OBC_STRAIN_SPECIFIED)) &
+      allocate(segment%tangential_grad(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%oblique) then
+      allocate(segment%grad_normal(JsdB:JedB,2,OBC%ke), source=0.0)
+      allocate(segment%rx_norm_obl(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+      allocate(segment%ry_norm_obl(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+      allocate(segment%cff_normal(IsdB:IedB,jsd:jed,OBC%ke), source=0.0)
+    endif
+    if (segment%oblique_tan) &
+      allocate(segment%grad_tan(jsd-1:jed+1,2,OBC%ke), source=0.0)
+    if (segment%oblique_grad) &
+      allocate(segment%grad_gradient(jsd:jed,2,OBC%ke), source=0.0)
+  endif
+
+  if (segment%is_N_or_S) then
+    ! If these are just Flather, change update_OBC_segment_data accordingly
+    allocate(segment%Htot(isd:ied,JsdB:JedB), source=0.0)
+    ! Allocate dZtot with extra values at the end to avoid segmentation faults in cases where
+    ! it is interpolated to OBC vorticity points.
+    allocate(segment%dZtot(isd-1:ied+1,JsdB:JedB), source=0.0)
+    allocate(segment%SSH(isd:ied,JsdB:JedB), source=0.0)
+    allocate(segment%tidal_elev(isd:ied,JsdB:JedB), source=0.0)
+    if (segment%radiation) &
+      allocate(segment%ry_norm_rad(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+    allocate(segment%normal_vel(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+    allocate(segment%normal_vel_bt(isd:ied,JsdB:JedB), source=0.0)
+    allocate(segment%normal_trans(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+    allocate(segment%normal_trans_bt(isd:ied,JsdB:JedB), source=0.0)
+    allocate(segment%tidal_vn(isd:ied,JsdB:JedB), source=0.0)
+    if (segment%nudged) &
+      allocate(segment%nudged_normal_vel(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%radiation_tan .or. segment%nudged_tan .or. &
+        segment%specified_tan .or. segment%oblique_tan .or. &
+        (OBC%vorticity_config == OBC_VORTICITY_COMPUTED) .or. &
+        (OBC%strain_config == OBC_STRAIN_COMPUTED)) then
+      allocate(segment%tangential_vel(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+      allocate(segment%tidal_vt(IsdB:IedB,JsdB:JedB), source=0.0)
+    endif
+    if (segment%nudged_tan) &
+      allocate(segment%nudged_tangential_vel(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%nudged_grad) &
+      allocate(segment%nudged_tangential_grad(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%radiation_grad .or. segment%oblique_grad .or. segment%specified_grad .or. &
+        (OBC%vorticity_config == OBC_VORTICITY_SPECIFIED) .or. &
+        (OBC%strain_config == OBC_STRAIN_SPECIFIED)) &
+      allocate(segment%tangential_grad(IsdB:IedB,JsdB:JedB,OBC%ke), source=0.0)
+    if (segment%oblique) then
+      allocate(segment%grad_normal(IsdB:IedB,2,OBC%ke), source=0.0)
+      allocate(segment%rx_norm_obl(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+      allocate(segment%ry_norm_obl(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+      allocate(segment%cff_normal(isd:ied,JsdB:JedB,OBC%ke), source=0.0)
+    endif
+    if (segment%oblique_tan) &
+      allocate(segment%grad_tan(isd-1:ied+1,2,OBC%ke), source=0.0)
+    if (segment%oblique_grad) &
+      allocate(segment%grad_gradient(isd:ied,2,OBC%ke), source=0.0)
+  endif
+
+end procedure allocate_OBC_segment_data
+module procedure deallocate_OBC_segment_data
+  if (.not. segment%on_pe) return
+
+  if (allocated(segment%Htot)) deallocate(segment%Htot)
+  if (allocated(segment%dZtot)) deallocate(segment%dZtot)
+  if (allocated(segment%SSH)) deallocate(segment%SSH)
+  if (allocated(segment%tidal_elev)) deallocate(segment%tidal_elev)
+  if (allocated(segment%rx_norm_rad)) deallocate(segment%rx_norm_rad)
+  if (allocated(segment%ry_norm_rad)) deallocate(segment%ry_norm_rad)
+  if (allocated(segment%rx_norm_obl)) deallocate(segment%rx_norm_obl)
+  if (allocated(segment%ry_norm_obl)) deallocate(segment%ry_norm_obl)
+  if (allocated(segment%cff_normal)) deallocate(segment%cff_normal)
+  if (allocated(segment%grad_normal)) deallocate(segment%grad_normal)
+  if (allocated(segment%grad_tan)) deallocate(segment%grad_tan)
+  if (allocated(segment%grad_gradient)) deallocate(segment%grad_gradient)
+  if (allocated(segment%normal_vel)) deallocate(segment%normal_vel)
+  if (allocated(segment%normal_vel_bt)) deallocate(segment%normal_vel_bt)
+  if (allocated(segment%normal_trans)) deallocate(segment%normal_trans)
+  if (allocated(segment%normal_trans_bt)) deallocate(segment%normal_trans_Bt)
+  if (allocated(segment%tidal_vn)) deallocate(segment%tidal_vn)
+  if (allocated(segment%tidal_vt)) deallocate(segment%tidal_vt)
+  if (allocated(segment%nudged_normal_vel)) deallocate(segment%nudged_normal_vel)
+  if (allocated(segment%tangential_vel)) deallocate(segment%tangential_vel)
+  if (allocated(segment%nudged_tangential_vel)) deallocate(segment%nudged_tangential_vel)
+  if (allocated(segment%nudged_tangential_grad)) deallocate(segment%nudged_tangential_grad)
+  if (allocated(segment%tangential_grad)) deallocate(segment%tangential_grad)
+
+  if (associated(segment%tr_Reg)) call segment_tracer_registry_end(segment%tr_Reg)
+  if (associated(segment%h_Reg)) call segment_thickness_registry_end(segment%h_Reg)
+
+end procedure deallocate_OBC_segment_data
+module procedure open_boundary_test_extern_uv
+  integer :: i, j, k, n
+  if (.not. associated(OBC)) return
+
+  do n=1,OBC%number_of_segments
+    do k = 1, GV%ke
+      if (OBC%segment(n)%is_N_or_S) then
+        J = OBC%segment(n)%HI%JsdB
+        if (OBC%segment(n)%direction == OBC_DIRECTION_N) then
+          do I = OBC%segment(n)%HI%IsdB, OBC%segment(n)%HI%IedB
+            u(I,j+1,k) = OBC%silly_u
+          enddo
+        else
+          do I = OBC%segment(n)%HI%IsdB, OBC%segment(n)%HI%IedB
+            u(I,j,k) = OBC%silly_u
+          enddo
+        endif
+      elseif (OBC%segment(n)%is_E_or_W) then
+        I = OBC%segment(n)%HI%IsdB
+        if (OBC%segment(n)%direction == OBC_DIRECTION_E) then
+          do J = OBC%segment(n)%HI%JsdB, OBC%segment(n)%HI%JedB
+            v(i+1,J,k) = OBC%silly_u
+          enddo
+        else
+          do J = OBC%segment(n)%HI%JsdB, OBC%segment(n)%HI%JedB
+            v(i,J,k) = OBC%silly_u
+          enddo
+        endif
+      endif
+    enddo
+  enddo
+
+end procedure open_boundary_test_extern_uv
+module procedure open_boundary_test_extern_h
+  real :: silly_h  ! A silly thickness for testing [H ~> m or kg m-2]
+  integer :: i, j, k, n
+  if (.not. associated(OBC)) return
+
+  silly_h = GV%Z_to_H * OBC%silly_h  ! This rescaling is here because GV was initialized after OBC.
+
+  do n=1,OBC%number_of_segments
+    do k = 1, GV%ke
+      if (OBC%segment(n)%is_N_or_S) then
+        J = OBC%segment(n)%HI%JsdB
+        if (OBC%segment(n)%direction == OBC_DIRECTION_N) then
+          do i = OBC%segment(n)%HI%isd, OBC%segment(n)%HI%ied
+            h(i,j+1,k) = silly_h
+          enddo
+        else
+          do i = OBC%segment(n)%HI%isd, OBC%segment(n)%HI%ied
+            h(i,j,k) = silly_h
+          enddo
+        endif
+      elseif (OBC%segment(n)%is_E_or_W) then
+        I = OBC%segment(n)%HI%IsdB
+        if (OBC%segment(n)%direction == OBC_DIRECTION_E) then
+          do j = OBC%segment(n)%HI%jsd, OBC%segment(n)%HI%jed
+            h(i+1,j,k) = silly_h
+          enddo
+        else
+          do j = OBC%segment(n)%HI%jsd, OBC%segment(n)%HI%jed
+            h(i,j,k) = silly_h
+          enddo
+        endif
+      endif
+    enddo
+  enddo
+
+end procedure open_boundary_test_extern_h
+module procedure read_OBC_segment_data
+  integer :: i, j, k, n, m
+  integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  type(OBC_segment_type), pointer :: segment => NULL()
+  real, dimension(:,:,:), pointer :: tmp_buffer_in => NULL()  ! Unrotated input [various units]
+  integer :: ni_seg, nj_seg  ! number of src gridpoints along the segments
+  integer :: ni_buf, nj_buf  ! Number of filled values in tmp_buffer
+  real    :: dz(SZI_(G),SZJ_(G),SZK_(GV)) ! Distance between the interfaces around a layer [Z ~> m]
+  real, dimension(:,:,:), allocatable, target :: tmp_buffer ! A buffer for input data [various units]
+  real :: dz_stack(SZK_(GV)) ! Distance between the interfaces at corner points [Z ~> m]
+  integer :: i_seg_offset, j_seg_offset, bug_offset
+  real :: net_dz_src  ! Total vertical extent of the incoming flow in the source field [Z ~> m]
+  real :: net_dz_int  ! Total vertical extent of the incoming flow in the model [Z ~> m]
+  real :: scl_fac     ! A scaling factor to compensate for differences in total thicknesses [nondim]
+  integer :: turns    ! Number of index quarter turns
+  logical :: flip_buffer ! If true, the input buffer needs to be transposed
+  if (.not. associated(OBC)) return
+  if (OBC%user_BCs_set_globally) return
+
+  turns = modulo(G%HI%turns, 4)
+  dz(:,:,:) = 0.0
+  call thickness_to_dz(h, tv, dz, G, GV, US)
+  call pass_var(dz, G%Domain)
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+
+    if (.not. segment%on_pe) cycle ! continue to next segment if not in data domain
+
+    isd = segment%HI%isd ; ied = segment%HI%ied ; IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    jsd = segment%HI%jsd ; jed = segment%HI%jed ; JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    ni_seg = segment%ie_obc - segment%is_obc + 1 ! Global number of q points
+    nj_seg = segment%je_obc - segment%js_obc + 1 ! Global number of q points
+    i_seg_offset = G%idg_offset - segment%HI%IsgB
+    j_seg_offset = G%jdg_offset - segment%HI%JsgB
+
+    ! Calculate auxiliary fields at staggered locations
+    segment%dZtot(:,:) = 0.0
+    if (segment%is_E_or_W) then
+      I = IsdB
+      ! dZtot may extend one point past the end of the segment on the current PE for use at vorticity points
+      do k = 1, GV%ke ; do j = max(jsd-1, G%jsd), min(jed+1, G%jed)
+        segment%dZtot(I,j) = segment%dZtot(I,j) + dz(isd,j,k)
+      enddo ; enddo
+    else ! (segment%direction == OBC_DIRECTION_N .or. segment%direction == OBC_DIRECTION_S)
+      J = JsdB
+      ! dZtot may extend one point past the end of the segment on the current PE for use at vorticity points
+      do k = 1, GV%ke ; do i = max(isd-1, G%isd), min(ied+1, G%ied)
+        segment%dZtot(i,J) = segment%dZtot(i,J) + dz(i,jsd,k)
+      enddo ; enddo
+    endif
+
+    ! Read data from files to buffer_src
+    do m=1,segment%num_fields
+      if (segment%field(m)%required .and. (.not. allocated(segment%field(m)%buffer_dst))) &
+        call MOM_error(FATAL, 'buffer_dst not allocated')
+
+      if ( (.not. segment%field(m)%use_IO) .or. & ! .and. (.not. segment%field(m)%required)
+           (segment%field(m)%bgc_tracer .and. (.not. OBC%update_OBC_seg_data)) ) &
+        !This field may not require a high frequency OBC segment update and might be allowed
+        !a less frequent update as set by the parameter update_OBC_period_max in MOM.F90.
+        !Cycle if it is not the time to update OBC segment data for this field.
+        cycle
+
+      ! read source data interpolated to the current model time
+      ! NOTE: buffer is sized for vertex points, but may be used for faces
+      if (segment%is_E_or_W) then
+        if (OBC%brushcutter_mode) then
+          allocate(tmp_buffer(1,nj_seg*2-1,segment%field(m)%nk_src))  ! segment data is currently on supergrid
+        else
+          allocate(tmp_buffer(1,nj_seg,segment%field(m)%nk_src))  ! segment data is currently on native grid
+        endif
+      else
+        if (OBC%brushcutter_mode) then
+          allocate(tmp_buffer(ni_seg*2-1,1,segment%field(m)%nk_src))  ! segment data is currently on supergrid
+        else
+          allocate(tmp_buffer(ni_seg,1,segment%field(m)%nk_src))  ! segment data is currently on native grid
+        endif
+      endif
+
+      ! TODO: Since we conditionally rotate a subset of tmp_buffer_in after
+      !   reading the value, it is currently not possible to use the rotated
+      !   implementation of time_interp_extern.
+      !   For now, we must explicitly allocate and rotate this array.
+      if (turns /= 0) then
+        if (modulo(turns, 2) /= 0) then
+          allocate(tmp_buffer_in(size(tmp_buffer, 2), size(tmp_buffer, 1), size(tmp_buffer, 3)))
+        else
+          allocate(tmp_buffer_in(size(tmp_buffer, 1), size(tmp_buffer, 2), size(tmp_buffer, 3)))
+        endif
+      else
+        tmp_buffer_in => tmp_buffer
+      endif
+
+      ! This is where the data values are actually read in.
+      call time_interp_external(segment%field(m)%handle, Time, tmp_buffer_in, scale=segment%field(m)%scale)
+
+      ! NOTE: Rotation of face-points require that we skip the final value when not in brushcutter mode.
+      if (turns /= 0) then
+        flip_buffer = ((turns==1) .or. (turns==3))
+        if (OBC%brushcutter_mode .or. (.not.flip_buffer)) then
+          call rotate_array(tmp_buffer_in, turns, tmp_buffer)
+        elseif (flip_buffer .and. segment%is_E_or_W .and. segment%field(m)%on_face) then
+          nj_buf = size(tmp_buffer, 2) - 1
+          call rotate_array(tmp_buffer_in(:nj_buf,:,:), turns, tmp_buffer(:,:nj_buf,:))
+        elseif (flip_buffer .and. segment%is_N_or_S .and. segment%field(m)%on_face) then
+          ni_buf = size(tmp_buffer, 1) - 1
+          call rotate_array(tmp_buffer_in(:,:ni_buf,:), turns, tmp_buffer(:ni_buf,:,:))
+        else
+          call rotate_array(tmp_buffer_in, turns, tmp_buffer)
+        endif
+
+        if (((segment%field(m)%name == 'U') .and. ((turns==1).or.(turns==2))) .or. &
+            ((segment%field(m)%name == 'V') .and. ((turns==2).or.(turns==3))) .or. &
+            ((segment%field(m)%name == 'Vamp') .and. ((turns==2).or.(turns==3))) .or. &
+            ((segment%field(m)%name == 'Uamp') .and. ((turns==1).or.(turns==2))) .or. &
+            ((segment%field(m)%name == 'DVDX') .and. ((turns==1).or.(turns==3))) .or. &
+            ((segment%field(m)%name == 'DUDY') .and. ((turns==1).or.(turns==3))) ) then
+          tmp_buffer(:,:,:) = -tmp_buffer(:,:,:)
+        endif
+      endif
+
+      if (OBC%brushcutter_mode) then
+        ! In brushcutter mode, the input data includes vales at both the vorticity point nodes and
+        ! the velocity point faces of the OBC segments.  The vorticity node values are at the odd
+        ! positions in tmp_buffer, while the faces are at the even points.  The bug that is being
+        ! corrected here is the use of the odd indexed points for both the corners and the faces.
+        bug_offset = 0 ; if (OBC%hor_index_bug) bug_offset = -1
+        if (segment%is_E_or_W) then
+          if (.not.segment%field(m)%on_face) then
+            segment%field(m)%buffer_src(IsdB,:,:) = &
+                tmp_buffer(1, 2*(JsdB+j_seg_offset+1)-1:2*(JedB+j_seg_offset)+1:2, :)
+          else
+            segment%field(m)%buffer_src(IsdB,:,:) = &
+                tmp_buffer(1, 2*(JsdB+j_seg_offset+1)+bug_offset:2*(JedB+j_seg_offset):2, :)
+          endif
+        else
+          if (.not.segment%field(m)%on_face) then
+            segment%field(m)%buffer_src(:,JsdB,:) = &
+                tmp_buffer(2*(IsdB+i_seg_offset+1)-1:2*(IedB+i_seg_offset)+1:2, 1, :)
+          else
+            segment%field(m)%buffer_src(:,JsdB,:) = &
+                tmp_buffer(2*(IsdB+i_seg_offset+1)+bug_offset:2*(IedB+i_seg_offset):2, 1, :)
+          endif
+        endif
+      else  ! Not brushcutter_mode.
+        if (segment%is_E_or_W) then
+          if (.not.segment%field(m)%on_face) then
+            segment%field(m)%buffer_src(IsdB,:,:) = &
+                  tmp_buffer(1,JsdB+j_seg_offset+1:JedB+j_seg_offset+1,:)
+          else
+            segment%field(m)%buffer_src(IsdB,:,:) = &
+                  tmp_buffer(1,JsdB+j_seg_offset+1:JedB+j_seg_offset,:)
+          endif
+        else
+          if (.not.segment%field(m)%on_face) then
+            segment%field(m)%buffer_src(:,JsdB,:) = &
+                  tmp_buffer(IsdB+i_seg_offset+1:IedB+i_seg_offset+1,1,:)
+          else
+            segment%field(m)%buffer_src(:,JsdB,:) = &
+                  tmp_buffer(IsdB+i_seg_offset+1:IedB+i_seg_offset,1,:)
+          endif
+        endif
+      endif
+
+      ! no dz for tidal variables
+      if (segment%field(m)%nk_src <= 1) then  ! This is 2-d data with no remapping.
+        segment%field(m)%buffer_dst(:,:,1) = segment%field(m)%buffer_src(:,:,1)
+      elseif (field_is_tidal(segment%field(m)%name)) then
+        ! The 3rd axis for tidal variables is the tidal constituent, so there is no remapping.
+        segment%field(m)%buffer_dst(:,:,:) = segment%field(m)%buffer_src(:,:,:)
+      else
+        ! Read in 3-d data that may need to be remapped onto the new grid
+        ! This is also where the 2-d tidal data values (apart from phase and amp) are actually read in.
+        call time_interp_external(segment%field(m)%dz_handle, Time, tmp_buffer_in, scale=US%m_to_Z)
+
+        if (turns /= 0) then
+          flip_buffer = ((turns==1) .or. (turns==3))
+          if (flip_buffer .and. segment%is_E_or_W .and. segment%field(m)%on_face) then
+            nj_buf = size(tmp_buffer, 2) - 1
+            call rotate_array(tmp_buffer_in(:nj_buf,:,:), turns, tmp_buffer(:,:nj_buf,:))
+          elseif (flip_buffer .and. segment%is_N_or_S .and. segment%field(m)%on_face) then
+            ni_buf = size(tmp_buffer, 1) - 1
+            call rotate_array(tmp_buffer_in(:,:ni_buf,:), turns, tmp_buffer(:ni_buf,:,:))
+          else
+            call rotate_array(tmp_buffer_in, turns, tmp_buffer)
+          endif
+        endif ! End of rotation
+
+        if (OBC%brushcutter_mode) then
+          bug_offset = 0 ; if (OBC%hor_index_bug) bug_offset = -1
+          if (segment%is_E_or_W) then
+            if (.not.segment%field(m)%on_face) then
+              segment%field(m)%dz_src(IsdB,:,:) = &
+                  tmp_buffer(1, 2*(JsdB+j_seg_offset+1)-1:2*(JedB+j_seg_offset)+1:2, :)
+            else
+              segment%field(m)%dz_src(IsdB,:,:) = &
+                  tmp_buffer(1, 2*(JsdB+j_seg_offset+1)+bug_offset:2*(JedB+j_seg_offset):2, :)
+            endif
+          else
+            if (.not.segment%field(m)%on_face) then
+              segment%field(m)%dz_src(:,JsdB,:) = &
+                  tmp_buffer(2*(IsdB+i_seg_offset+1)-1:2*(IedB+i_seg_offset)+1:2, 1, :)
+            else
+              segment%field(m)%dz_src(:,JsdB,:) = &
+                  tmp_buffer(2*(IsdB+i_seg_offset+1)+bug_offset:2*(IedB+i_seg_offset):2, 1, :)
+            endif
+          endif
+        else  ! Not brushcutter_mode.
+          if (segment%is_E_or_W) then
+            if (.not.segment%field(m)%on_face) then
+              segment%field(m)%dz_src(IsdB,:,:) = &
+                  tmp_buffer(1,JsdB+j_seg_offset+1:JedB+j_seg_offset+1,:)
+            else
+              segment%field(m)%dz_src(IsdB,:,:) = &
+                  tmp_buffer(1,JsdB+j_seg_offset+1:JedB+j_seg_offset,:)
+            endif
+          else
+            if (.not.segment%field(m)%on_face) then
+              segment%field(m)%dz_src(:,JsdB,:) = &
+                  tmp_buffer(IsdB+i_seg_offset+1:IedB+i_seg_offset+1,1,:)
+            else
+              segment%field(m)%dz_src(:,JsdB,:) = &
+                  tmp_buffer(IsdB+i_seg_offset+1:IedB+i_seg_offset,1,:)
+            endif
+          endif
+        endif
+
+        if ((.not.segment%field(m)%on_face) .and. (.not.OBC%hor_index_bug)) then
+          ! This point is at the OBC vorticity point nodes, rather than the OBC velocity point faces.
+          call adjustSegmentEtaToFitBathymetry(G, GV, US, segment, m, at_node=.true.)
+        else
+          call adjustSegmentEtaToFitBathymetry(G, GV, US, segment, m, at_node=.false.)
+        endif
+
+        if (segment%is_E_or_W) then
+          I = IsdB
+          if (.not.segment%field(m)%on_face) then
+            ! Do q points for the whole segment
+            do J = max(JsdB, G%jsd), min(JedB, G%jed-1)
+              ! Using the h remapping approach
+              ! Pretty sure we need to check for source/target grid consistency here
+              !### For a concave corner between OBC segments, there are 3 thicknesses we might
+              ! consider using.
+              segment%field(m)%buffer_dst(I,J,:) = 0.0  ! initialize remap destination buffer
+              if ((G%mask2dCu(I,j) > 0.0) .or. (G%mask2dCu(I,j+1) > 0.0)) then
+                dz_stack(:) = (1.0 / (G%mask2dCu(I,j) + G%mask2dCu(I,j+1))) * &
+                  (G%mask2dCu(I,j) * dz(isd,j,:) + G%mask2dCu(I,j+1) * dz(isd,j+1,:))
+                call remapping_core_h(OBC%remap_z_CS, &
+                      segment%field(m)%nk_src, segment%field(m)%dz_src(I,J,:), &
+                      segment%field(m)%buffer_src(I,J,:), &
+                      GV%ke, dz_stack, segment%field(m)%buffer_dst(I,J,:))
+              endif
+            enddo
+          else
+            do j = JsdB+1, JedB
+              ! Using the h remapping approach
+              ! Pretty sure we need to check for source/target grid consistency here
+              segment%field(m)%buffer_dst(I,j,:) = 0.0  ! initialize remap destination buffer
+              if (G%mask2dCu(I,j)>0.) then
+                net_dz_src = sum( segment%field(m)%dz_src(I,j,:) )
+                net_dz_int = sum( dz(isd,j,:) )
+                scl_fac = net_dz_int / net_dz_src
+                call remapping_core_h(OBC%remap_z_CS, &
+                      segment%field(m)%nk_src,  scl_fac*segment%field(m)%dz_src(I,j,:), &
+                      segment%field(m)%buffer_src(I,j,:), &
+                      GV%ke, dz(isd,j,:), segment%field(m)%buffer_dst(I,j,:))
+              endif
+            enddo
+          endif
+        else
+          J = JsdB
+          if (.not.segment%field(m)%on_face) then
+            ! Do q points for the whole segment
+            do I = max(IsdB, G%isd), min(IedB, G%ied-1)
+              segment%field(m)%buffer_dst(I,J,:) = 0.0  ! initialize remap destination buffer
+              if ((G%mask2dCv(i,J) > 0.0) .or. (G%mask2dCv(i+1,J) > 0.0)) then
+                ! Using the h remapping approach
+                ! Pretty sure we need to check for source/target grid consistency here
+                dz_stack(:) = (1.0 / (G%mask2dCv(i,J) + G%mask2dCv(i+1,J))) * &
+                  (G%mask2dCv(i,J) * dz(i,jsd,:) + G%mask2dCv(i+1,J) * dz(i+1,jsd,:))
+                call remapping_core_h(OBC%remap_z_CS, &
+                      segment%field(m)%nk_src, segment%field(m)%dz_src(I,J,:), &
+                      segment%field(m)%buffer_src(I,J,:), &
+                      GV%ke, dz_stack, segment%field(m)%buffer_dst(I,J,:))
+              endif
+            enddo
+          else
+            do i = IsdB+1, IedB
+            ! Using the h remapping approach
+            ! Pretty sure we need to check for source/target grid consistency here
+              segment%field(m)%buffer_dst(i,J,:) = 0.0  ! initialize remap destination buffer
+              if (G%mask2dCv(i,J)>0.) then
+                net_dz_src = sum( segment%field(m)%dz_src(i,J,:) )
+                net_dz_int = sum( dz(i,jsd,:) )
+                scl_fac = net_dz_int / net_dz_src
+                call remapping_core_h(OBC%remap_z_CS, &
+                      segment%field(m)%nk_src, scl_fac* segment%field(m)%dz_src(i,J,:), &
+                      segment%field(m)%buffer_src(i,J,:), &
+                      GV%ke, dz(i,jsd,:), segment%field(m)%buffer_dst(i,J,:))
+              endif
+            enddo
+          endif
+        endif
+      endif
+      deallocate(tmp_buffer)
+      if (turns /= 0) deallocate(tmp_buffer_in)
+    enddo ! end field loop
+  enddo ! endd segment loop
+end procedure read_OBC_segment_data
+module procedure update_OBC_segment_data
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: c, i, j, k, n, m, nz, nt
+  integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  integer :: is_seg, ie_seg, js_seg, je_seg ! Orientation-agnostic loop ranges
+  integer :: i_offset_in, j_offset_in ! Indexing offset for interior cells
+  integer :: F_G, F_VN, F_VNAMP, F_VNPHASE, F_VT, F_VTAMP, F_VTPHASE ! Field indices
+  real :: ramp_value  ! If OBC%ramp is True, where we are on the ramp from 0 to 1, or 1 otherwise [nondim].
+  real :: time_delta  ! Time since tidal reference date [T ~> s]
+  real :: tidal_amp, tidal_phase ! Tidal amplitude [Z ~> m] and phase [rad]
+  if (.not. associated(OBC)) return
+  if (OBC%user_BCs_set_globally) return
+
+  nz = GV%ke
+
+  if (OBC%add_tide_constituents) &
+    time_delta = time_minus_signed(Time, OBC%time_ref, scale=US%s_to_T)
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+
+    if (.not. segment%on_pe) cycle ! continue to next segment if not in data domain
+
+    ! Segment indices are on q points:
+    !       |     x     |     x     |     x     |     x     |  jsd/jed (if southern boundary)
+    !       |-----------|-----------|-----------|-----------|  JsdB/JedB
+    !     IsdB   isd                                 ied   IedB
+    !       |     x     |     x     |     x     |     x     |  jsd/jed (if northern boundary)
+
+    isd = segment%HI%isd ; ied = segment%HI%ied ; IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    jsd = segment%HI%jsd ; jed = segment%HI%jed ; JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+    i_offset_in = ied - IedB ! = 0 if East, South, North; = 1 if West
+    j_offset_in = jed - JedB ! = 0 if North, West, East ; = 1 if South
+
+    if (segment%is_E_or_W) then
+      is_seg = IsdB ; ie_seg = is_seg
+      js_seg = jsd ; je_seg = jed
+      F_VN = F_U ; F_VNAMP = F_UAMP ; F_VNPHASE = F_UPHASE
+      F_VT = F_V ; F_VTAMP = F_VAMP ; F_VTPHASE = F_VPHASE ; F_G = F_VX
+    else
+      is_seg = isd ; ie_seg = ied
+      js_seg = JsdB ; je_seg = js_seg
+      F_VN = F_V ; F_VNAMP = F_VAMP ; F_VNPHASE = F_VPHASE
+      F_VT = F_U ; F_VTAMP = F_UAMP ; F_VTPHASE = F_UPHASE ; F_G = F_UY
+    endif
+
+    ! Update normal velocity, transport. Split by orientation for now because of G%dyCu and G%dxCv.
+    if (allocated(segment%field(F_VN)%buffer_dst)) then
+      ! Update tidal normal velocity
+      segment%tidal_vn(:,:) = 0.0
+      if (OBC%add_tide_constituents) then
+        do c=1,OBC%n_tide_constituents ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          tidal_amp = OBC%tide_fn(c) * segment%field(F_VNAMP)%buffer_dst(i,j,c)
+          tidal_phase = (time_delta * OBC%tide_frequencies(c) - segment%field(F_VNPHASE)%buffer_dst(i,j,c)) &
+            + (OBC%tide_eq_phases(c) + OBC%tide_un(c))
+          segment%tidal_vn(i,j) = segment%tidal_vn(i,j) + tidal_amp * cos(tidal_phase)
+        enddo ; enddo ; enddo
+      endif
+
+      segment%Htot(:,:) = 0.0
+      segment%normal_trans_bt(:,:) = 0.0
+      if (segment%is_E_or_W) then
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%Htot(i,j) = segment%Htot(i,j) + h(i+i_offset_in,j+j_offset_in,k)
+          segment%normal_vel(i,j,k) = segment%field(F_VN)%buffer_dst(i,j,k) + segment%tidal_vn(i,j)
+          segment%normal_trans(i,j,k) = &
+              segment%normal_vel(i,j,k) * h(i+i_offset_in,j+j_offset_in,k) * G%dyCu(i,j)
+          segment%normal_trans_bt(i,j) = segment%normal_trans_bt(i,j) + segment%normal_trans(i,j,k)
+        enddo ; enddo ; enddo
+        do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%normal_vel_bt(i,j) = segment%normal_trans_bt(i,j) &
+              / (max(segment%Htot(i,j), 1.e-12 * GV%m_to_H) * G%dyCu(i,j))
+        enddo ; enddo
+      else
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%Htot(i,j) = segment%Htot(i,j) + h(i+i_offset_in,j+j_offset_in,k)
+          segment%normal_vel(i,j,k) = segment%field(F_VN)%buffer_dst(i,j,k) + segment%tidal_vn(i,j)
+          segment%normal_trans(i,j,k) = &
+              segment%normal_vel(i,j,k) * h(i+i_offset_in,j+j_offset_in,k) * G%dxCv(i,j)
+          segment%normal_trans_bt(i,j) = segment%normal_trans_bt(i,j) + segment%normal_trans(i,j,k)
+        enddo ; enddo ; enddo
+        do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%normal_vel_bt(i,j) = segment%normal_trans_bt(i,j) &
+              / (max(segment%Htot(i,j), 1.e-12 * GV%m_to_H) * G%dxCv(i,j))
+        enddo ; enddo
+      endif
+
+      if (allocated(segment%nudged_normal_vel)) then
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%nudged_normal_vel(i,j,k) = segment%normal_vel(i,j,k)
+        enddo ; enddo ; enddo
+      endif
+    endif
+
+    ! Update tangential velocity
+    if (allocated(segment%tangential_vel) .and. allocated(segment%field(F_VT)%buffer_dst)) then
+      ! Update tidal tangential velocity
+      segment%tidal_vt(:,:) = 0.0
+      if (OBC%add_tide_constituents) then
+        do c=1,OBC%n_tide_constituents ; do J=JsdB,JedB ; do I=IsdB,IedB
+          tidal_amp = OBC%tide_fn(c) * segment%field(F_VTAMP)%buffer_dst(I,J,c)
+          tidal_phase = (time_delta * OBC%tide_frequencies(c) - segment%field(F_VTPHASE)%buffer_dst(I,J,c)) &
+            + (OBC%tide_eq_phases(c) + OBC%tide_un(c))
+          segment%tidal_vt(I,J) = segment%tidal_vt(I,J) + tidal_amp * cos(tidal_phase)
+        enddo ; enddo ; enddo
+      endif
+
+      do k=1,nz ; do J=JsdB,JedB ; do I=IsdB,IedB
+        segment%tangential_vel(I,J,k) = segment%field(F_VT)%buffer_dst(I,J,k) + segment%tidal_vt(I,J)
+      enddo ; enddo ; enddo
+
+      if (allocated(segment%nudged_tangential_vel)) then
+        do k=1,nz ; do J=JsdB,JedB ; do I=IsdB,IedB
+          segment%nudged_tangential_vel(I,J,k) = segment%tangential_vel(I,J,k)
+        enddo ; enddo ; enddo
+      endif
+    endif
+
+    ! Update tangential gradient dvdx and dudy
+    if (allocated(segment%tangential_grad) .and. allocated(segment%field(F_G)%buffer_dst)) then
+      do k=1,nz ; do J=JsdB,JedB ; do I=IsdB,IedB
+        segment%tangential_grad(I,J,k) = segment%field(F_G)%buffer_dst(I,J,k)
+      enddo ; enddo ; enddo
+
+      if (allocated(segment%nudged_tangential_grad)) then
+        do k=1,nz ; do J=JsdB,JedB ; do I=IsdB,IedB
+          segment%nudged_tangential_grad(I,J,k) = segment%tangential_grad(I,J,k)
+        enddo ; enddo ; enddo
+      endif
+    endif
+
+    ! Update SSH
+    if (allocated(segment%field(F_Z)%buffer_dst)) then
+      ! Update tidal SSH
+      segment%tidal_elev(:,:) = 0.0
+      if (OBC%add_tide_constituents) then
+        do c=1,OBC%n_tide_constituents ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          tidal_amp = OBC%tide_fn(c) * segment%field(F_ZAMP)%buffer_dst(i,j,c)
+          tidal_phase = (time_delta * OBC%tide_frequencies(c) - segment%field(F_ZPHASE)%buffer_dst(i,j,c)) &
+            + (OBC%tide_eq_phases(c) + OBC%tide_un(c))
+          segment%tidal_elev(i,j) = segment%tidal_elev(i,j) + tidal_amp * cos(tidal_phase)
+        enddo ; enddo ; enddo
+      endif
+
+      ramp_value = 1.0 ; if (OBC%ramp) ramp_value = OBC%ramp_value
+      do j=js_seg,je_seg ; do i=is_seg,ie_seg
+        segment%SSH(i,j) = ramp_value * (segment%field(F_Z)%buffer_dst(i,j,1) + segment%tidal_elev(i,j))
+      enddo ; enddo
+    endif
+
+    ! Update thickness registry
+    if (OBC%thickness_x_reservoirs_used .or. OBC%thickness_y_reservoirs_used) then
+      do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+        segment%h_Reg%h(i,j,k) = h(i+i_offset_in,j+j_offset_in,k)
+      enddo ; enddo ; enddo
+    endif
+
+    ! Update tracer registry
+    do m=NUM_PHYS_FIELDS-1, segment%num_fields ! F_T = NUM_PHYS_FIELDS-1 and F_S = NUM_PHYS_FIELDS
+      if ((.not. allocated(segment%field(m)%buffer_dst)) .or. &
+          (segment%field(m)%bgc_tracer .and. (.not. OBC%update_OBC_seg_data))) cycle
+      nt = segment%field(m)%tr_index
+      ! Note the following unnecessary IF-branch is kept from the old code (as recent as Jan 2026).
+      ! In the old code segment%field(m)%buffer_dst is always allocated at this point, and therefore
+      ! the "else" section is unreachable. This will be fixed when OBC_inflow_conc is reworked.
+      if (allocated(segment%field(m)%buffer_dst)) then
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%tr_Reg%Tr(nt)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
+        enddo ; enddo ; enddo
+      else
+        segment%tr_Reg%Tr(nt)%OBC_inflow_conc = segment%field(m)%value
+      endif
+    enddo ! end tracer field loop
+  enddo ! end segment loop
+end procedure update_OBC_segment_data
+module procedure initialize_OBC_segment_reservoirs
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  integer :: is_seg, ie_seg, js_seg, je_seg, nz
+  integer :: n, m, nt, i, j, k
+  character(len=256) :: msg ! Error message
+  if (.not. associated(OBC)) return
+
+  nz = GV%ke
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+
+    if (.not. segment%on_pe) cycle
+
+    isd = segment%HI%isd ; ied = segment%HI%ied ; IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    jsd = segment%HI%jsd ; jed = segment%HI%jed ; JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    if (segment%is_E_or_W) then
+      is_seg = IsdB ; ie_seg = IedB ! = is_seg
+      js_seg = jsd ; je_seg = jed
+    else
+      is_seg = isd ; ie_seg = ied
+      js_seg = JsdB ; je_seg = JedB ! = js_seg
+    endif
+
+    ! Thickness
+    ! If the thickness reservoir has not yet been initialized, then set to external value.
+    if (OBC%thickness_x_reservoirs_used .or. OBC%thickness_y_reservoirs_used) then
+      if (.not. segment%h_Reg%is_initialized) then ! h_Reg may be initialized by fill_thickness_segments
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%h_Reg%h_res(i,j,k) = segment%h_Reg%h(i,j,k)
+        enddo ; enddo ; enddo
+        segment%h_Reg%is_initialized = .true.
+      endif
+    endif
+
+    ! Tracers
+    ! If the tracer reservoir has not yet been initialized, then set to external value.
+    do m=NUM_PHYS_FIELDS-1, segment%num_fields ! F_T = NUM_PHYS_FIELDS-1 and F_S = NUM_PHYS_FIELDS
+      if ((.not. allocated(segment%field(m)%buffer_dst)) .or. &
+          (segment%field(m)%bgc_tracer .and. (.not. OBC%update_OBC_seg_data))) cycle
+      nt = segment%field(m)%tr_index
+      if (.not. segment%tr_Reg%Tr(nt)%is_initialized) then ! T/S may be initialized by fill_temp_salt_segments
+        do k=1,nz ; do j=js_seg,je_seg ; do i=is_seg,ie_seg
+          segment%tr_Reg%Tr(nt)%tres(i,j,k) = segment%tr_Reg%Tr(nt)%t(i,j,k)
+        enddo ; enddo ; enddo
+        segment%tr_Reg%Tr(nt)%is_initialized = .true.
+      endif
+    enddo ! end tracer field loop
+  enddo ! end segment loop
+end procedure initialize_OBC_segment_reservoirs
+module procedure update_OBC_ramp
+  real :: deltaTime ! The time since start of ramping [T ~> s]
+  real :: wghtA     ! A temporary variable used to set OBC%ramp_value [nondim]
+  character(len=12) :: msg
+  if (.not. OBC%ramp) return ! This indicates the ramping is turned off
+
+  ! We use the optional argument to indicate this Time should be recorded as the
+  ! beginning of the ramp-up period.
+  if (present(activate)) then
+    if (activate) then
+      OBC%ramp_start_time = Time ! Record the current time
+      OBC%ramping_is_activated = .true.
+      OBC%trunc_ramp_time = OBC%ramp_timescale ! times 3.0 for tanh
+    endif
+  endif
+  if (.not.OBC%ramping_is_activated) return
+  deltaTime = max(0., time_minus_signed(Time, OBC%ramp_start_time, scale=US%s_to_T))
+  if (deltaTime >= OBC%trunc_ramp_time) then
+    OBC%ramp_value = 1.0
+    OBC%ramp = .false. ! This turns off ramping after this call
+  else
+    wghtA = min( 1., deltaTime / OBC%ramp_timescale ) ! Linear profile in time
+    !wghtA = wghtA*wghtA ! Convert linear profile to parabolic profile in time
+    !wghtA = wghtA*wghtA*(3. - 2.*wghtA) ! Convert linear profile to cosine profile
+    !wghtA = 1. - ( (1. - wghtA)**2 ) ! Convert linear profile to inverted parabolic profile
+    !wghtA = tanh(wghtA)              ! Convert linear profile to tanh
+    OBC%ramp_value = wghtA
+  endif
+  write(msg(1:12),'(es12.3)') OBC%ramp_value
+  call MOM_error(NOTE, "MOM_open_boundary: update_OBC_ramp set OBC ramp to "//trim(msg))
+end procedure update_OBC_ramp
+module procedure register_OBC
+  integer :: nobc
+  character(len=256) :: mesg    ! Message for error messages.
+  if (.not. associated(Reg)) call OBC_registry_init(param_file, Reg)
+
+  if (Reg%nobc>=MAX_FIELDS_) then
+    write(mesg, '("Increase MAX_FIELDS_ in MOM_memory.h to at least ",I0," to allow for &
+        &all the open boundaries being registered via register_OBC.")') Reg%nobc+1
+    call MOM_error(FATAL,"MOM register_OBC: "//mesg)
+  endif
+  Reg%nobc = Reg%nobc + 1
+  nobc     = Reg%nobc
+
+  Reg%OB(nobc)%name = name
+
+  if (Reg%locked) call MOM_error(FATAL, &
+      "MOM register_OBC was called for OBC "//trim(Reg%OB(nobc)%name)//&
+      " with a locked OBC registry.")
+
+end procedure register_OBC
+module procedure OBC_registry_init
+  integer, save :: init_calls = 0
+# include "version_variable.h"
+  character(len=256) :: mesg    ! Message for error messages.
+  if (.not.associated(Reg)) then ; allocate(Reg)
+  else ; return ; endif
+
+  ! Read all relevant parameters and write them to the model log.
+! call log_version(param_file, mdl, version, "")
+
+  init_calls = init_calls + 1
+  if (init_calls > 1) then
+    write(mesg,'("OBC_registry_init called ",I0," times with different registry pointers.")') init_calls
+    if (is_root_pe()) call MOM_error(WARNING,"MOM_open_boundary: "//trim(mesg))
+  endif
+
+end procedure OBC_registry_init
+module procedure register_file_OBC
+  character(len=32)  :: casename = "OBC file"        !< This case's name.
+  if (associated(CS)) then
+    call MOM_error(WARNING, "register_file_OBC called with an "// &
+                            "associated control structure.")
+    return
+  endif
+  allocate(CS)
+
+  ! Register the file for boundary updates.
+  call register_OBC(casename, param_file, OBC_Reg)
+  register_file_OBC = .true.
+
+end procedure register_file_OBC
+module procedure file_OBC_end
+  if (associated(CS)) then
+    deallocate(CS)
+  endif
+end procedure file_OBC_end
+module procedure segment_tracer_registry_init
+  integer, save :: init_calls = 0
+# include "version_variable.h"
+  character(len=40)  :: mdl = "segment_tracer_registry_init" ! This routine's name.
+  if (.not.associated(segment%tr_Reg)) then
+    allocate(segment%tr_Reg)
+  else
+    return
+  endif
+
+  init_calls = init_calls + 1
+
+  ! Read all relevant parameters and write them to the model log.
+  if (init_calls == 1) call log_version(param_file, mdl, version, "")
+
+end procedure segment_tracer_registry_init
+module procedure segment_thickness_reservoir_init
+  real :: rescale ! A multiplicatively corrected scaling factor, in units like [S ppt-1 ~> 1] for
+  integer :: nseg, m, isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  integer, save :: init_calls = 0
+# include "version_variable.h"
+  character(len=40)  :: mdl = "segment_thickness_reservoir_init" ! This routine's name.
+  if (.not. associated(OBC)) return
+
+  do nseg=1, OBC%number_of_segments
+    segment=>OBC%segment(nseg)
+    if (.not. segment%on_pe) cycle
+
+    if (associated(segment%h_Reg)) &
+         call MOM_error(FATAL,"segment_thickness_reservoir_init: thickness array was previously allocated")
+    allocate(segment%h_Reg)
+
+    isd = segment%HI%isd ; ied = segment%HI%ied
+    jsd = segment%HI%jsd ; jed = segment%HI%jed
+    IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    segment%h_Reg%scale = US%Z_to_m
+    do m=1,segment%num_fields
+      if (uppercase(segment%field(m)%name) == uppercase(segment%h_Reg%name)) then
+        if (.not. segment%field(m)%use_IO) then
+          rescale = 1.0
+          if ((segment%field(m)%scale /= 0.0) .and. (segment%field(m)%scale /= 1.0)) &
+            rescale = 1.0 / segment%field(m)%scale
+          segment%field(m)%value = rescale * segment%field(m)%value
+        endif
+      endif
+    enddo
+
+    if (segment%is_E_or_W) then
+      allocate(segment%h_Reg%h(IsdB:IedB,jsd:jed,1:GV%ke), source=0.0)
+      allocate(segment%h_Reg%h_res(IsdB:IedB,jsd:jed,1:GV%ke), source=0.0)
+    elseif (segment%is_N_or_S) then
+      allocate(segment%h_Reg%h(isd:ied,JsdB:JedB,1:GV%ke), source=0.0)
+      allocate(segment%h_Reg%h_res(isd:ied,JsdB:JedB,1:GV%ke), source=0.0)
+    endif
+    segment%h_Reg%is_initialized = .false.
+
+    init_calls = init_calls + 1
+
+    ! Read all relevant parameters and write them to the model log.
+    if (init_calls == 1) call log_version(param_file, mdl, version, "")
+  enddo
+
+end procedure segment_thickness_reservoir_init
+module procedure register_segment_tracer
+  real :: rescale ! A multiplicatively corrected scaling factor, in units like [S ppt-1 ~> 1] for
+  integer :: ntseg, m, isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  character(len=256) :: mesg    ! Message for error messages.
+  call segment_tracer_registry_init(param_file, segment)
+
+  if (segment%tr_Reg%ntseg>=MAX_FIELDS_) then
+    write(mesg,'("Increase MAX_FIELDS_ in MOM_memory.h to at least ",I0," to allow for &
+        &all the tracers being registered via register_segment_tracer.")') segment%tr_Reg%ntseg+1
+    call MOM_error(FATAL,"MOM register_segment_tracer: "//mesg)
+  endif
+  segment%tr_Reg%ntseg = segment%tr_Reg%ntseg + 1
+  ntseg     = segment%tr_Reg%ntseg
+
+  isd = segment%HI%isd ; ied = segment%HI%ied
+  jsd = segment%HI%jsd ; jed = segment%HI%jed
+  IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+  JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+  segment%tr_Reg%Tr(ntseg)%Tr => tr_ptr
+  segment%tr_Reg%Tr(ntseg)%name = tr_ptr%name
+  segment%tr_Reg%Tr(ntseg)%ntr_index = ntr_index
+
+  segment%tr_Reg%Tr(ntseg)%scale = 1.0
+  if (present(scale)) then
+    segment%tr_Reg%Tr(ntseg)%scale = scale
+    do m=1,segment%num_fields
+      ! Store the scaling factor for fields with exactly matching names, and possibly
+      ! rescale the previously stored input values.  Note that calls to register_segment_tracer
+      ! can come before or after calls to initialize_segment_data.
+      if (uppercase(segment%field(m)%name) == uppercase(segment%tr_Reg%Tr(ntseg)%name)) then
+        if (.not. segment%field(m)%use_IO) then
+          rescale = scale
+          if ((segment%field(m)%scale /= 0.0) .and. (segment%field(m)%scale /= 1.0)) &
+            rescale = scale / segment%field(m)%scale
+          segment%field(m)%value = rescale * segment%field(m)%value
+        endif
+        segment%field(m)%scale = scale
+      endif
+    enddo
+  endif
+
+  if (segment%tr_Reg%locked) call MOM_error(FATAL, &
+      "MOM register_segment_tracer was called for variable "//trim(segment%tr_Reg%Tr(ntseg)%name)//&
+      " with a locked tracer registry.")
+
+  if (present(resrv_lfac_in)) segment%tr_Reg%Tr(ntseg)%resrv_lfac_in = resrv_lfac_in
+  if (present(resrv_lfac_out)) segment%tr_Reg%Tr(ntseg)%resrv_lfac_out = resrv_lfac_out
+
+  if (present(OBC_scalar)) segment%tr_Reg%Tr(ntseg)%OBC_inflow_conc = OBC_scalar ! initialize tracer value later
+  if (present(OBC_array)) then
+    if (segment%is_E_or_W) then
+      allocate(segment%tr_Reg%Tr(ntseg)%t(IsdB:IedB,jsd:jed,1:GV%ke), source=0.0)
+      allocate(segment%tr_Reg%Tr(ntseg)%tres(IsdB:IedB,jsd:jed,1:GV%ke), source=0.0)
+      segment%tr_Reg%Tr(ntseg)%is_initialized = .false.
+    elseif (segment%is_N_or_S) then
+      allocate(segment%tr_Reg%Tr(ntseg)%t(isd:ied,JsdB:JedB,1:GV%ke), source=0.0)
+      allocate(segment%tr_Reg%Tr(ntseg)%tres(isd:ied,JsdB:JedB,1:GV%ke), source=0.0)
+      segment%tr_Reg%Tr(ntseg)%is_initialized = .false.
+    endif
+  endif
+
+end procedure register_segment_tracer
+module procedure segment_tracer_registry_end
+  integer n
+  if (associated(Reg)) then
+    do n = 1, Reg%ntseg
+      if (allocated(Reg%Tr(n)%t)) deallocate(Reg%Tr(n)%t)
+    enddo
+    deallocate(Reg)
+  endif
+end procedure segment_tracer_registry_end
+module procedure segment_thickness_registry_end
+  if (associated(Reg)) then
+    if (allocated(Reg%h)) deallocate(Reg%h)
+    if (allocated(Reg%h_res)) deallocate(Reg%h_res)
+    deallocate(Reg)
+  endif
+end procedure segment_thickness_registry_end
+module procedure register_temp_salt_segments
+  integer :: n, ntr_id
+  character(len=32) :: name
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  type(tracer_type), pointer :: tr_ptr => NULL()
+  if (.not. associated(OBC)) return
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+
+    if (associated(segment%tr_Reg)) &
+         call MOM_error(FATAL,"register_temp_salt_segments: tracer array was previously allocated")
+
+    name = 'temp'
+    call tracer_name_lookup(tr_Reg, ntr_id, tr_ptr, name)
+    call register_segment_tracer(tr_ptr, ntr_id, param_file, GV, segment, &
+                                 OBC_array=segment%temp_segment_data_exists, scale=US%degC_to_C)
+    name = 'salt'
+    call tracer_name_lookup(tr_Reg, ntr_id, tr_ptr, name)
+    call register_segment_tracer(tr_ptr, ntr_id, param_file, GV, segment, &
+                                 OBC_array=segment%salt_segment_data_exists, scale=US%ppt_to_S)
+  enddo
+
+end procedure register_temp_salt_segments
+module procedure set_obgc_segments_props
+  type(external_tracers_segments_props),pointer :: node_ptr => NULL() !pointer to type that keeps
+  allocate(node_ptr)
+  node_ptr%tracer_name = trim(tr_name)
+  node_ptr%tracer_src_file = trim(obc_src_file_name)
+  node_ptr%tracer_src_field = trim(obc_src_field_name)
+  node_ptr%lfac_in  = lfac_in
+  node_ptr%lfac_out = lfac_out
+  ! Reversed Linked List implementation! Make this new node to be the head of the list.
+  node_ptr%next => OBC%obgc_segments_props
+  OBC%obgc_segments_props => node_ptr
+  OBC%num_obgc_tracers = OBC%num_obgc_tracers+1
+end procedure set_obgc_segments_props
+module procedure get_obgc_segments_props
+  tr_name = trim(node%tracer_name)
+  obc_src_file_name = trim(node%tracer_src_file)
+  obc_src_field_name = trim(node%tracer_src_field)
+  lfac_in = node%lfac_in
+  lfac_out = node%lfac_out
+  node => node%next
+end procedure get_obgc_segments_props
+module procedure register_obgc_segments
+  integer :: ntr_id
+  integer :: n, m
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  type(tracer_type),      pointer :: tr_ptr => NULL()
+  real                            :: resrv_lfac_in  ! Per-tracer multiplier for the inward reservoir
+  real                            :: resrv_lfac_out ! Per-tracer multiplier for the outward reservoir
+  if (.not. associated(OBC)) return
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    call tracer_name_lookup(tr_Reg, ntr_id, tr_ptr, tr_name)
+    resrv_lfac_in  = 1.0
+    resrv_lfac_out = 1.0
+    do m=1,segment%num_fields
+      if (lowercase(segment%field(m)%name) == lowercase(tr_name)) then
+        resrv_lfac_in  = segment%field(m)%resrv_lfac_in
+        resrv_lfac_out = segment%field(m)%resrv_lfac_out
+      endif
+    enddo
+    call register_segment_tracer(tr_ptr, ntr_id, param_file, GV, segment, OBC_array=.True., &
+                                 resrv_lfac_in=resrv_lfac_in, resrv_lfac_out=resrv_lfac_out)
+  enddo
+end procedure register_obgc_segments
+module procedure fill_obgc_segments
+  integer :: isd, ied, IsdB, IedB, jsd, jed, JsdB, JedB, n, nz, nt
+  integer :: i, j, k
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  real :: I_scale  ! A factor that unscales the internal units of a tracer, like [ppt S-1 ~> 1] for salinity
+  if (.not. associated(OBC)) return
+  call pass_var(tr_ptr, G%Domain)
+  nz = G%ke
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+    nt = get_tracer_index(segment, tr_name)
+    if (nt < 0) then
+      call MOM_error(FATAL,"fill_obgc_segments: Did not find tracer "// tr_name)
+    endif
+    isd = segment%HI%isd ; ied = segment%HI%ied
+    jsd = segment%HI%jsd ; jed = segment%HI%jed
+    IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    ! Fill segments with Tracer values
+    if (segment%direction == OBC_DIRECTION_W) then
+      I = segment%HI%IsdB
+      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+        segment%tr_Reg%Tr(nt)%t(I,j,k) = tr_ptr(i+1,j,k)
+      enddo ; enddo
+    elseif (segment%direction == OBC_DIRECTION_E) then
+      I = segment%HI%IsdB
+      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+        segment%tr_Reg%Tr(nt)%t(I,j,k) = tr_ptr(i,j,k)
+      enddo ; enddo
+    elseif (segment%direction == OBC_DIRECTION_S) then
+      J = segment%HI%JsdB
+      do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+        segment%tr_Reg%Tr(nt)%t(i,J,k) = tr_ptr(i,j+1,k)
+      enddo ; enddo
+    elseif (segment%direction == OBC_DIRECTION_N) then
+      J = segment%HI%JsdB
+      do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+        segment%tr_Reg%Tr(nt)%t(i,J,k) = tr_ptr(i,j,k)
+      enddo ; enddo
+    endif
+
+    if (.not.segment%tr_Reg%Tr(nt)%is_initialized) &
+      segment%tr_Reg%Tr(nt)%tres(:,:,:) = segment%tr_Reg%Tr(nt)%t(:,:,:)
+
+    if (OBC%reservoir_init_bug) then
+      ! OBC%tres_x and OBC%tres_y should not be set here, but in a subsequent call to setup_OBC_tracer_reservoirs.
+      ! Note that fill_obgc_segments is not called for runs that start from a restart file.
+      I_scale = 1.0
+      if (segment%tr_Reg%Tr(nt)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(nt)%scale
+      if (segment%is_E_or_W) then
+        if (allocated(OBC%tres_x)) then
+          I = segment%HI%IsdB
+          do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+            OBC%tres_x(I,j,k,nt) = I_scale * segment%tr_Reg%Tr(nt)%tres(I,j,k)
+          enddo ; enddo
+        endif
+      else  ! segment%is_N_or_S
+        if (allocated(OBC%tres_y)) then
+          J = segment%HI%JsdB
+          do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+            OBC%tres_y(i,J,k,nt) = I_scale * segment%tr_Reg%Tr(nt)%tres(i,J,k)
+          enddo ; enddo
+        endif
+      endif
+    endif
+
+  enddo ! End of loop over segments.
+
+end procedure fill_obgc_segments
+module procedure fill_temp_salt_segments
+  integer :: isd, ied, IsdB, IedB, jsd, jed, JsdB, JedB, n, nz
+  integer :: i, j, k
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  if (.not. associated(OBC)) return
+  if (.not. associated(tv%T) .and. associated(tv%S)) return
+  ! Both temperature and salinity fields
+
+  nz = GV%ke
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+
+    isd = segment%HI%isd ; ied = segment%HI%ied
+    jsd = segment%HI%jsd ; jed = segment%HI%jed
+    IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    ! Fill with T and S values
+    if (segment%is_E_or_W) then
+      I=segment%HI%IsdB
+      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+        if (segment%direction == OBC_DIRECTION_W) then
+          segment%tr_Reg%Tr(1)%t(I,j,k) = tv%T(i+1,j,k)
+          segment%tr_Reg%Tr(2)%t(I,j,k) = tv%S(i+1,j,k)
+        else
+          segment%tr_Reg%Tr(1)%t(I,j,k) = tv%T(i,j,k)
+          segment%tr_Reg%Tr(2)%t(I,j,k) = tv%S(i,j,k)
+        endif
+      enddo ; enddo
+    else
+      J=segment%HI%JsdB
+      do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+        if (segment%direction == OBC_DIRECTION_S) then
+          segment%tr_Reg%Tr(1)%t(i,J,k) = tv%T(i,j+1,k)
+          segment%tr_Reg%Tr(2)%t(i,J,k) = tv%S(i,j+1,k)
+        else
+          segment%tr_Reg%Tr(1)%t(i,J,k) = tv%T(i,j,k)
+          segment%tr_Reg%Tr(2)%t(i,J,k) = tv%S(i,j,k)
+        endif
+      enddo ; enddo
+    endif
+    if (.not.segment%tr_Reg%Tr(1)%is_initialized) &
+      segment%tr_Reg%Tr(1)%tres(:,:,:) = segment%tr_Reg%Tr(1)%t(:,:,:)
+    if (.not.segment%tr_Reg%Tr(2)%is_initialized) &
+      segment%tr_Reg%Tr(2)%tres(:,:,:) = segment%tr_Reg%Tr(2)%t(:,:,:)
+  enddo
+
+end procedure fill_temp_salt_segments
+module procedure fill_thickness_segments
+  integer :: isd, ied, IsdB, IedB, jsd, jed, JsdB, JedB, n, nz
+  integer :: i, j, k
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  if (.not. associated(OBC)) return
+  ! Both temperature and salinity fields
+
+  nz = GV%ke
+
+  do n=1, OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. segment%on_pe) cycle
+
+    isd = segment%HI%isd ; ied = segment%HI%ied
+    jsd = segment%HI%jsd ; jed = segment%HI%jed
+    IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+    JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+
+    ! Fill with thickness
+    if (segment%is_E_or_W) then
+      I=segment%HI%IsdB
+      do k=1,nz ; do j=segment%HI%jsd,segment%HI%jed
+        if (segment%direction == OBC_DIRECTION_W) then
+          segment%h_Reg%h(I,j,k) = h(i+1,j,k)
+        else
+          segment%h_Reg%h(I,j,k) = h(i,j,k)
+        endif
+      enddo ; enddo
+    else
+      J=segment%HI%JsdB
+      do k=1,nz ; do i=segment%HI%isd,segment%HI%ied
+        if (segment%direction == OBC_DIRECTION_S) then
+          segment%h_Reg%h(i,J,k) = h(i,j+1,k)
+        else
+          segment%h_Reg%h(i,J,k) = h(i,j,k)
+        endif
+      enddo ; enddo
+    endif
+    if (.not.segment%h_Reg%is_initialized) then
+      segment%h_Reg%h_res(:,:,:) = segment%h_Reg%h(:,:,:)
+      segment%h_Reg%is_initialized = .true.
+    endif
+  enddo
+
+end procedure fill_thickness_segments
+module procedure mask_outside_OBCs
+  integer :: i, j
+  logical :: fatal_error = .False.
+  real    :: min_depth  ! The minimum depth for ocean points [Z ~> m]
+  real    :: mask_depth ! The masking depth for ocean points [Z ~> m]
+  real    :: Dmask      ! The depth for masking in the same units as G%bathyT [Z ~> m].
+  integer, parameter :: cin = 3, cout = 4, cland = -1, cedge = -2
+  character(len=256) :: mesg    ! Message for error messages.
+  real, allocatable, dimension(:,:) :: color, color2  ! For sorting inside from outside,
+  if (.not. associated(OBC)) return
+
+  call get_param(param_file, mdl, "MINIMUM_DEPTH", min_depth, &
+                 units="m", default=0.0, scale=US%m_to_Z, do_not_log=.true.)
+  call get_param(param_file, mdl, "MASKING_DEPTH", mask_depth, &
+                 units="m", default=-9999.0, scale=US%m_to_Z, do_not_log=.true.)
+
+  Dmask = mask_depth
+  if (mask_depth == -9999.0*US%m_to_Z) Dmask = min_depth
+
+  ! The reference depth on a dyn_horgrid is 0, otherwise would need:  min_depth = min_depth - G%Z_ref
+
+  allocate(color(G%isd:G%ied, G%jsd:G%jed), source=0.0)
+  allocate(color2(G%isd:G%ied, G%jsd:G%jed), source=0.0)
+
+  ! Paint a frame around the outside.
+  do j=G%jsd,G%jed
+    color(G%isd,j) = cedge
+    color(G%ied,j) = cedge
+    color2(G%isd,j) = cedge
+    color2(G%ied,j) = cedge
+  enddo
+  do i=G%isd,G%ied
+    color(i,G%jsd) = cedge
+    color(i,G%jed) = cedge
+    color2(i,G%jsd) = cedge
+    color2(i,G%jed) = cedge
+  enddo
+
+  ! Set color to cland in the land. Note that this is before the land
+  ! mask has been initialized, set mask values based on depth.
+  do j=G%jsd,G%jed
+    do i=G%isd,G%ied
+      if (G%bathyT(i,j) <= min_depth) color(i,j) = cland
+      if (G%bathyT(i,j) <= min_depth) color2(i,j) = cland
+    enddo
+  enddo
+
+  do j=G%jsd,G%jed ; do i=G%IsdB+1,G%IedB-1
+    if (OBC%segnum_u(I,j) < 0) then      !  OBC_DIRECTION_W
+      if (color(i,j) == 0.0) color(i,j) = cout
+      if (color(i+1,j) == 0.0) color(i+1,j) = cin
+    elseif (OBC%segnum_u(I,j) > 0) then  !  OBC_DIRECTION_E
+      if (color(i,j) == 0.0) color(i,j) = cin
+      if (color(i+1,j) == 0.0) color(i+1,j) = cout
+    endif
+  enddo ; enddo
+  do J=G%JsdB+1,G%JedB-1 ; do i=G%isd,G%ied
+    if (OBC%segnum_v(i,J) < 0) then      ! OBC_DIRECTION_S
+      if (color(i,j) == 0.0) color(i,j) = cout
+      if (color(i,j+1) == 0.0) color(i,j+1) = cin
+    elseif (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
+      if (color(i,j) == 0.0) color(i,j) = cin
+      if (color(i,j+1) == 0.0) color(i,j+1) = cout
+    endif
+  enddo ; enddo
+
+  do J=G%JsdB+1,G%JedB-1 ; do i=G%isd,G%ied
+    if (OBC%segnum_v(i,J) < 0) then      ! OBC_DIRECTION_S
+      if (color2(i,j) == 0.0) color2(i,j) = cout
+      if (color2(i,j+1) == 0.0) color2(i,j+1) = cin
+    elseif (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
+      if (color2(i,j) == 0.0) color2(i,j) = cin
+      if (color2(i,j+1) == 0.0) color2(i,j+1) = cout
+    endif
+  enddo ; enddo
+  do j=G%jsd,G%jed ; do i=G%IsdB+1,G%IedB-1
+    if (OBC%segnum_u(I,j) < 0) then      !  OBC_DIRECTION_W
+      if (color2(i,j) == 0.0) color2(i,j) = cout
+      if (color2(i+1,j) == 0.0) color2(i+1,j) = cin
+    elseif (OBC%segnum_u(I,j) > 0) then  !  OBC_DIRECTION_E
+      if (color2(i,j) == 0.0) color2(i,j) = cin
+      if (color2(i+1,j) == 0.0) color2(i+1,j) = cout
+    endif
+  enddo ; enddo
+
+  ! Do the flood fill until there are no more uncolored cells.
+  call flood_fill(G, color, cin, cout, cland)
+  call flood_fill2(G, color2, cin, cout, cland)
+
+  ! Use the color to set outside to min_depth on this process.
+  do j=G%jsd,G%jed ; do i=G%isd,G%ied
+    if (color(i,j) /= color2(i,j)) then
+      fatal_error = .True.
+      write(mesg,'("MOM_open_boundary: problem with OBC segments specification at ",I0,",",I0," during\n", &
+          &"the masking of the outside grid points.")') i, j
+      call MOM_error(WARNING,"MOM mask_outside_OBCs: "//mesg, all_print=.true.)
+    endif
+    if (color(i,j) == cout) G%bathyT(i,j) = Dmask
+  enddo ; enddo
+  if (fatal_error) call MOM_error(FATAL, &
+      "MOM_open_boundary: inconsistent OBC segments.")
+
+  deallocate(color)
+  deallocate(color2)
+end procedure mask_outside_OBCs
+module procedure flood_fill
+  integer :: i, j, ncount
+  ncount = 1
+  do while (ncount > 0)
+    ncount = 0
+    do j=G%jsd+1,G%jed-1
+      do i=G%isd+1,G%ied-1
+        if (color(i,j) == 0.0 .and. color(i-1,j) > 0.0) then
+          color(i,j) = color(i-1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i+1,j) > 0.0) then
+          color(i,j) = color(i+1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j-1) > 0.0) then
+          color(i,j) = color(i,j-1)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j+1) > 0.0) then
+          color(i,j) = color(i,j+1)
+          ncount = ncount + 1
+        endif
+      enddo
+    enddo
+    do j=G%jed-1,G%jsd+1,-1
+      do i=G%ied-1,G%isd+1,-1
+        if (color(i,j) == 0.0 .and. color(i-1,j) > 0.0) then
+          color(i,j) = color(i-1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i+1,j) > 0.0) then
+          color(i,j) = color(i+1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j-1) > 0.0) then
+          color(i,j) = color(i,j-1)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j+1) > 0.0) then
+          color(i,j) = color(i,j+1)
+          ncount = ncount + 1
+        endif
+      enddo
+    enddo
+    call pass_var(color, G%Domain)
+    call sum_across_PEs(ncount)
+  enddo
+
+end procedure flood_fill
+module procedure flood_fill2
+  integer :: i, j, ncount
+  ncount = 1
+  do while (ncount > 0)
+    ncount = 0
+    do i=G%isd+1,G%ied-1
+      do j=G%jsd+1,G%jed-1
+        if (color(i,j) == 0.0 .and. color(i-1,j) > 0.0) then
+          color(i,j) = color(i-1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i+1,j) > 0.0) then
+          color(i,j) = color(i+1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j-1) > 0.0) then
+          color(i,j) = color(i,j-1)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j+1) > 0.0) then
+          color(i,j) = color(i,j+1)
+          ncount = ncount + 1
+        endif
+      enddo
+    enddo
+    do i=G%ied-1,G%isd+1,-1
+      do j=G%jed-1,G%jsd+1,-1
+        if (color(i,j) == 0.0 .and. color(i-1,j) > 0.0) then
+          color(i,j) = color(i-1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i+1,j) > 0.0) then
+          color(i,j) = color(i+1,j)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j-1) > 0.0) then
+          color(i,j) = color(i,j-1)
+          ncount = ncount + 1
+        endif
+        if (color(i,j) == 0.0 .and. color(i,j+1) > 0.0) then
+          color(i,j) = color(i,j+1)
+          ncount = ncount + 1
+        endif
+      enddo
+    enddo
+    call pass_var(color, G%Domain)
+    call sum_across_PEs(ncount)
+  enddo
+
+end procedure flood_fill2
+module procedure open_boundary_register_restarts
+  type(vardesc) :: vd(2)
+  integer       :: m
+  character(len=100) :: mesg, var_name
+  if (.not. associated(OBC)) &
+    call MOM_error(FATAL, "open_boundary_register_restarts: Called with "//&
+                      "uninitialized OBC control structure")
+
+  ! ### This is a temporary work around for restarts with OBC segments.
+  ! This implementation uses 3D arrays solely for restarts. We need
+  ! to be able to add 2D ( x,z or y,z ) data to restarts to avoid using
+  ! so much memory and disk space.
+  if (OBC%radiation_BCs_exist_globally) then
+    allocate(OBC%rx_normal(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke), source=0.0)
+    allocate(OBC%ry_normal(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke), source=0.0)
+
+    vd(1) = var_desc("rx_normal", "gridpoint timestep-1", "Normal Phase Speed for EW radiation OBCs", 'u', 'L')
+    vd(2) = var_desc("ry_normal", "gridpoint timestep-1", "Normal Phase Speed for NS radiation OBCs", 'v', 'L')
+    call register_restart_pair(OBC%rx_normal, OBC%ry_normal, vd(1), vd(2), .false., restart_CS, scalar_pair=.true.)
+    ! The rx_normal and ry_normal arrays used with radiation OBCs are currently in units of grid
+    ! points per timestep, but if this were to be corrected to [L T-1 ~> m s-1] or [T-1 ~> s-1] to
+    ! permit timesteps to change between calls to the OBC code, the following would be needed instead:
+    ! vd(1) = var_desc("rx_normal", "m s-1", "Normal Phase Speed for EW radiation OBCs", 'u', 'L')
+    ! vd(2) = var_desc("ry_normal", "m s-1", "Normal Phase Speed for NS radiation OBCs", 'v', 'L')
+    ! call register_restart_pair(OBC%rx_normal, OBC%ry_normal, vd(1), vd(2), .false., restart_CS, &
+    !                            conversion=US%L_T_to_m_s, scalar_pair=.true.)
+  endif
+
+  if (OBC%oblique_BCs_exist_globally) then
+    allocate(OBC%rx_oblique_u(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke), source=0.0)
+    allocate(OBC%ry_oblique_u(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke), source=0.0)
+    allocate(OBC%cff_normal_u(HI%IsdB:HI%IedB,HI%jsd:HI%jed,GV%ke), source=0.0)
+    allocate(OBC%rx_oblique_v(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke), source=0.0)
+    allocate(OBC%ry_oblique_v(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke), source=0.0)
+    allocate(OBC%cff_normal_v(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke), source=0.0)
+
+    vd(1) = var_desc("rx_oblique_u", "m2 s-2", "X-Direction Radiation Speed Squared for EW oblique OBCs", 'u', 'L')
+    vd(2) = var_desc("ry_oblique_v", "m2 s-2", "Y-Direction Radiation Speed Squared for NS oblique OBCs", 'v', 'L')
+    call register_restart_pair(OBC%rx_oblique_u, OBC%ry_oblique_v, vd(1), vd(2), .false., &
+                               restart_CS, conversion=US%L_T_to_m_s**2)
+    vd(1) = var_desc("ry_oblique_u", "m2 s-2", "Y-Direction Radiation Speed Squared for EW oblique OBCs", 'u', 'L')
+    vd(2) = var_desc("rx_oblique_v", "m2 s-2", "X-Direction Radiation Speed Squared for NS oblique OBCs", 'v', 'L')
+    call register_restart_pair(OBC%ry_oblique_u, OBC%rx_oblique_v, vd(1), vd(2), .false., &
+                               restart_CS, conversion=US%L_T_to_m_s**2)
+
+    vd(1) = var_desc("norm_oblique_u", "m2 s-2", "Denominator for normalizing EW oblique OBC radiation rates", &
+                     'u', 'L')
+    vd(2) = var_desc("norm_oblique_v", "m2 s-2", "Denominator for normalizing NS oblique OBC radiation rates", &
+                     'v', 'L')
+    call register_restart_pair(OBC%cff_normal_u, OBC%cff_normal_v, vd(1), vd(2), .false., &
+                               restart_CS, conversion=US%L_T_to_m_s**2)
+  endif
+
+  if (OBC%thickness_x_reservoirs_used) then
+    allocate(OBC%h_res_x(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke), source=0.0)
+    if (modulo(HI%turns, 2) /= 0) then
+      write(var_name,'("h_res_y")')
+      call register_restart_field(OBC%h_res_x(:,:,:), var_name, .false., restart_CS, &
+               longname="Layer thickness for NS OBCs", units="Conc", hor_grid='v')
+    else
+      write(var_name,'("h_res_x")')
+      call register_restart_field(OBC%h_res_x(:,:,:), var_name, .false., restart_CS, &
+               longname="Layer thickness for EW OBCs", units="Conc", hor_grid='u')
+    endif
+  endif
+  if (OBC%thickness_y_reservoirs_used) then
+    allocate(OBC%h_res_y(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke), source=0.0)
+    if (modulo(HI%turns, 2) /= 0) then
+      write(var_name,'("h_res_x")')
+      call register_restart_field(OBC%h_res_y(:,:,:), var_name, .false., restart_CS, &
+               longname="Layer thickness for EW OBCs", units="Conc", hor_grid='u')
+    else
+      write(var_name,'("h_res_y")')
+      call register_restart_field(OBC%h_res_y(:,:,:), var_name, .false., restart_CS, &
+               longname="Layer thickness for NS OBCs", units="Conc", hor_grid='v')
+    endif
+  endif
+
+  if (Reg%ntr == 0) return
+  if (.not. allocated(OBC%tracer_x_reservoirs_used)) then
+    OBC%ntr = Reg%ntr
+    allocate(OBC%tracer_x_reservoirs_used(Reg%ntr), source=.false.)
+    allocate(OBC%tracer_y_reservoirs_used(Reg%ntr), source=.false.)
+    call parse_for_tracer_reservoirs(OBC, param_file, use_temperature)
+  else
+    ! This would be coming from user code such as DOME.
+    if (OBC%ntr /= Reg%ntr) then
+!        call MOM_error(FATAL, "open_boundary_register_restarts: Inconsistent value for ntr")
+      write(mesg,'("Inconsistent values for ntr ", I0," and ",I0,".")') OBC%ntr, Reg%ntr
+      call MOM_error(WARNING, 'open_boundary_register_restarts: '//mesg)
+    endif
+  endif
+
+  ! Still painfully inefficient, now in four dimensions.
+  if (any(OBC%tracer_x_reservoirs_used)) then
+    allocate(OBC%tres_x(HI%isdB:HI%iedB,HI%jsd:HI%jed,GV%ke,OBC%ntr), source=0.0)
+    do m=1,OBC%ntr
+      if (OBC%tracer_x_reservoirs_used(m)) then
+        if (modulo(HI%turns, 2) /= 0) then
+          write(var_name,'("tres_y_",I3.3)') m
+          call register_restart_field(OBC%tres_x(:,:,:,m), var_name, .false., restart_CS, &
+                   longname="Tracer concentration for NS OBCs", units="Conc", hor_grid='v')
+        else
+          write(var_name,'("tres_x_",I3.3)') m
+          call register_restart_field(OBC%tres_x(:,:,:,m), var_name, .false., restart_CS, &
+                   longname="Tracer concentration for EW OBCs", units="Conc", hor_grid='u')
+        endif
+      endif
+    enddo
+  endif
+  if (any(OBC%tracer_y_reservoirs_used)) then
+    allocate(OBC%tres_y(HI%isd:HI%ied,HI%jsdB:HI%jedB,GV%ke,OBC%ntr), source=0.0)
+    do m=1,OBC%ntr
+      if (OBC%tracer_y_reservoirs_used(m)) then
+        if (modulo(HI%turns, 2) /= 0) then
+          write(var_name,'("tres_x_",I3.3)') m
+          call register_restart_field(OBC%tres_y(:,:,:,m), var_name, .false., restart_CS, &
+                   longname="Tracer concentration for EW OBCs", units="Conc", hor_grid='u')
+        else
+          write(var_name,'("tres_y_",I3.3)') m
+          call register_restart_field(OBC%tres_y(:,:,:,m), var_name, .false., restart_CS, &
+                   longname="Tracer concentration for NS OBCs", units="Conc", hor_grid='v')
+        endif
+      endif
+    enddo
+  endif
+
+end procedure open_boundary_register_restarts
+module procedure update_segment_tracer_reservoirs
+  type(OBC_segment_type), pointer :: segment => NULL()
+  integer :: dir            ! A sign factor (1/-1) to that sets velocity direction.
+  real    :: face_area      ! Interior cell face area [H L ~> m2 or kg/m].
+  real    :: flux_to_res    ! Inflow to the reservoir, flux_to_res = dir * [uv]hr, positive if the
+  real    :: resrv_lfac_out ! The reservoir inverse length scale scaling factor for the outward
+  real    :: resrv_lfac_in  ! The reservoir inverse length scale scaling factor for the inward
+  real    :: L_in, L_out    ! The distance moved in or out of a cell, normalized by the reservoir
+  real    :: b_in, b_out    ! The 0 and 1 switch for tracer reservoirs
+  real    :: a_in, a_out    ! The 0 and 1(-1) switch for reservoir source weights
+  real    :: fac1           ! The denominator of the expression for tracer updates [nondim]
+  real    :: I_scale        ! The inverse of the scaling factor for the tracers.
+  integer :: i, j, k, m, n, nz, ntr_id
+  integer :: is, ie, js, je, ii, ji
+  if (.not. associated(OBC)) return
+  if (.not. OBC%OBC_pe) return
+
+  nz = GV%ke
+
+  do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not. associated(segment%tr_Reg)) cycle
+    b_in  = 0.0 ; if (segment%Tr_InvLscale_in  == 0.0) b_in  = 1.0
+    b_out = 0.0 ; if (segment%Tr_InvLscale_out == 0.0) b_out = 1.0
+    ! dir switches the sign of the flow so that positive is into the reservoir
+    if ((segment%direction == OBC_DIRECTION_W) .or. (segment%direction == OBC_DIRECTION_S)) then
+      dir = -1
+    else
+      dir = 1
+    endif
+    if (segment%is_E_or_W) then
+      I = segment%HI%IsdB ; ii = segment%HI%isd
+      js = segment%HI%jsd ; je = segment%HI%jed
+      ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
+      do m=1,segment%tr_Reg%ntseg ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+        ntr_id = segment%tr_Reg%Tr(m)%ntr_index
+        resrv_lfac_out = segment%tr_Reg%Tr(m)%resrv_lfac_out
+        resrv_lfac_in  = segment%tr_Reg%Tr(m)%resrv_lfac_in
+        I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
+        do k=1,nz ; do j=js,je
+          ! Calculate weights. Both a and u_L are nondim. Adding them together has no meaning.
+          ! However, since they cannot be both non-zero, adding them works like a switch.
+          ! When InvLscale_out is 0 and outflow, only interior data is applied to reservoirs
+          ! When InvLscale_in is 0 and inflow, only nudged data is applied to reservoirs
+          flux_to_res = dir * uhr(I,j,k)
+          ! I_face_area would be more efficient but it changes answers.
+          face_area = (h(ii,j,k) + GV%H_subroundoff) * G%dyCu(I,j)
+          a_out = b_out * max(0.0, sign(1.0, flux_to_res))
+          a_in  = b_in  * min(0.0, sign(1.0, flux_to_res))
+          L_out = G%mask2dT(ii,j) * max(0.0, &
+                flux_to_res * segment%Tr_InvLscale_out * resrv_lfac_out / face_area)
+          L_in  = G%mask2dT(ii,j) * min(0.0, &
+                flux_to_res * segment%Tr_InvLscale_in  * resrv_lfac_in  / face_area)
+          fac1 = 1.0 + (L_out - L_in)
+          segment%tr_Reg%Tr(m)%tres(I,j,k) = (1.0 / fac1) * &
+                            ((1.0 - a_out + a_in) * segment%tr_Reg%Tr(m)%tres(I,j,k) + &
+                             ((L_out + a_out) * Reg%Tr(ntr_id)%t(ii,j,k) - &
+                              (L_in  + a_in ) * segment%tr_Reg%Tr(m)%t(I,j,k)))
+        enddo ; enddo
+        if (allocated(OBC%tres_x)) then ; do k=1,nz ; do j=js,je
+          OBC%tres_x(I,j,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(I,j,k)
+        enddo ; enddo ; endif
+      endif ; enddo
+    elseif (segment%is_N_or_S) then
+      J = segment%HI%JsdB ; ji = segment%HI%jsd
+      is = segment%HI%isd ; ie = segment%HI%ied
+      ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
+      do m=1,segment%tr_Reg%ntseg ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+        ntr_id = segment%tr_Reg%Tr(m)%ntr_index
+        resrv_lfac_out = segment%tr_Reg%Tr(m)%resrv_lfac_out
+        resrv_lfac_in  = segment%tr_Reg%Tr(m)%resrv_lfac_in
+        I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
+        do k=1,nz ; do i=is,ie
+          flux_to_res = dir * vhr(i,J,k)
+          face_area = (h(i,ji,k) + GV%H_subroundoff) * G%dxCv(i,J)
+          a_out = b_out * max(0.0, sign(1.0, flux_to_res))
+          a_in  = b_in  * min(0.0, sign(1.0, flux_to_res))
+          L_out = G%mask2dT(i,ji) * max(0.0, &
+                flux_to_res * segment%Tr_InvLscale_out * resrv_lfac_out / face_area)
+          L_in  = G%mask2dT(i,ji) * min(0.0, &
+                flux_to_res * segment%Tr_InvLscale_in  * resrv_lfac_in  / face_area)
+          fac1 = 1.0 + (L_out - L_in)
+          segment%tr_Reg%Tr(m)%tres(i,J,k) = (1.0 / fac1) * &
+                            ((1.0 - a_out + a_in) * segment%tr_Reg%Tr(m)%tres(i,J,k) + &
+                             ((L_out + a_out) * Reg%Tr(ntr_id)%t(i,ji,k) - &
+                              (L_in  + a_in ) * segment%tr_Reg%Tr(m)%t(i,J,k)))
+        enddo ; enddo
+        if (allocated(OBC%tres_y)) then ; do k=1,nz ; do i=is,ie
+          OBC%tres_y(i,J,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(i,J,k)
+        enddo ; enddo ; endif
+      endif ; enddo
+    endif
+  enddo
+end procedure update_segment_tracer_reservoirs
+module procedure update_segment_thickness_reservoirs
+  type(OBC_segment_type), pointer :: segment=>NULL()
+  real :: u_L_in, u_L_out ! The zonal distance moved in or out of a cell, normalized by the reservoir
+  real :: v_L_in, v_L_out ! The meridional distance moved in or out of a cell, normalized by the reservoir
+  real :: fac1            ! The denominator of the expression for tracer updates [nondim]
+  real :: I_scale         ! The inverse of the scaling factor for the tracers.
+  integer :: i, j, k, n, nz, fd_id
+  integer :: ishift, idir, jshift, jdir
+  real :: resrv_lfac_out  ! The reservoir inverse length scale scaling factor for the outward
+  real :: resrv_lfac_in   ! The reservoir inverse length scale scaling factor for the inward
+  real :: b_in, b_out     ! The 0 and 1 switch for tracer reservoirs
+  real :: a_in, a_out     ! The 0 and 1(-1) switch for reservoir source weights
+  nz = GV%ke
+
+  if (associated(OBC)) then ; if (OBC%OBC_pe) then ; do n=1,OBC%number_of_segments
+    segment=>OBC%segment(n)
+    if (.not. associated(segment%h_Reg)) cycle
+    b_in  = 0.0 ; if (segment%Tr_InvLscale_in  == 0.0) b_in  = 1.0
+    b_out = 0.0 ; if (segment%Tr_InvLscale_out == 0.0) b_out = 1.0
+    if (segment%is_E_or_W) then
+      I = segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+        ! ishift+I corresponds to the nearest interior tracer cell index
+        ! idir switches the sign of the flow so that positive is into the reservoir
+        if (segment%direction == OBC_DIRECTION_W) then
+          ishift = 1 ; idir = -1
+        else
+          ishift = 0 ; idir = 1
+        endif
+        ! Can keep this or take it out, either way
+        if (G%mask2dT(I+ishift,j) == 0.0) cycle
+        ! Update the reservoir thickness concentration implicitly using a Backward-Euler timestep
+        fd_id = segment%h_Reg%fd_index
+        if (fd_id == -1) then
+          resrv_lfac_out = 1.0
+          resrv_lfac_in  = 1.0
+        else
+          resrv_lfac_out = segment%field(fd_id)%resrv_lfac_out
+          resrv_lfac_in  = segment%field(fd_id)%resrv_lfac_in
+        endif
+        I_scale = 1.0 ; if (segment%h_Reg%scale /= 0.0) I_scale = 1.0 / segment%h_Reg%scale
+        if (allocated(segment%h_Reg%h_res)) then ; do k=1,nz
+          ! Calculate weights. Both a and u_L are nondim. Adding them together has no meaning.
+          ! However, since they cannot be both non-zero, adding them works like a switch.
+          ! When InvLscale_out is 0 and outflow, only interior data is applied to reservoirs
+          ! When InvLscale_in is 0 and inflow, only nudged data is applied to reservoirs
+          a_out = b_out * max(0.0, sign(1.0, idir*uhr(I,j,k)))
+          a_in  = b_in  * min(0.0, sign(1.0, idir*uhr(I,j,k)))
+          u_L_out = max(0.0, (idir*uhr(I,j,k))*segment%Th_InvLscale_out*resrv_lfac_out / &
+                    ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+          u_L_in  = min(0.0, (idir*uhr(I,j,k))*segment%Th_InvLscale_in*resrv_lfac_in  / &
+                    ((h(i+ishift,j,k) + GV%H_subroundoff)*G%dyCu(I,j)))
+          fac1 = (1.0 - (a_out - a_in)) + ((u_L_out + a_out) - (u_L_in + a_in))
+          segment%h_Reg%h_res(I,j,k) = (1.0/fac1) * &
+                            ((1.0-a_out+a_in)*segment%h_Reg%h_res(I,j,k)+ &
+                            ((u_L_out+a_out)*h(i+ishift,j,k) - &
+                             (u_L_in+a_in)*segment%h_Reg%h(I,j,k)))
+          if (allocated(OBC%h_res_x)) OBC%h_res_x(I,j,k) = I_scale * segment%h_Reg%h_res(I,j,k)
+        enddo ; endif
+      enddo
+    elseif (segment%is_N_or_S) then
+      J = segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+        ! jshift+J corresponds to the nearest interior tracer cell index
+        ! jdir switches the sign of the flow so that positive is into the reservoir
+        if (segment%direction == OBC_DIRECTION_S) then
+          jshift = 1 ; jdir = -1
+        else
+          jshift = 0 ; jdir = 1
+        endif
+        ! Can keep this or take it out, either way
+        if (G%mask2dT(i,j+jshift) == 0.0) cycle
+        ! Update the reservoir tracer concentration implicitly using a Backward-Euler timestep
+        fd_id = segment%h_Reg%fd_index
+        if (fd_id == -1) then
+          resrv_lfac_out = 1.0
+          resrv_lfac_in  = 1.0
+        else
+          resrv_lfac_out = segment%field(fd_id)%resrv_lfac_out
+          resrv_lfac_in  = segment%field(fd_id)%resrv_lfac_in
+        endif
+        I_scale = 1.0 ; if (segment%h_Reg%scale /= 0.0) I_scale = 1.0 / segment%h_Reg%scale
+        if (allocated(segment%h_Reg%h_res)) then ; do k=1,nz
+          a_out = b_out * max(0.0, sign(1.0, jdir*vhr(i,J,k)))
+          a_in  = b_in  * min(0.0, sign(1.0, jdir*vhr(i,J,k)))
+          v_L_out = max(0.0, (jdir*vhr(i,J,k))*segment%Th_InvLscale_out*resrv_lfac_out / &
+                    ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+          v_L_in  = min(0.0, (jdir*vhr(i,J,k))*segment%Th_InvLscale_in*resrv_lfac_in  / &
+                    ((h(i,j+jshift,k) + GV%H_subroundoff)*G%dxCv(i,J)))
+          fac1 = (1.0 - (a_out - a_in)) + ((v_L_out + a_out) - (v_L_in + a_in))
+          segment%h_Reg%h_res(i,J,k) = (1.0/fac1) * &
+                            ((1.0-a_out+a_in)*segment%h_Reg%h_res(i,J,k) + &
+                            ((v_L_out+a_out)*h(i,j+jshift,k) - &
+                             (v_L_in+a_in)*segment%h_Reg%h(i,J,k)))
+          if (allocated(OBC%h_res_y)) OBC%h_res_y(i,J,k) = I_scale * segment%h_Reg%h_res(i,J,k)
+        enddo ; endif
+      enddo
+    endif
+  enddo ; endif ; endif
+
+end procedure update_segment_thickness_reservoirs
+module procedure remap_OBC_fields
+  type(OBC_segment_type), pointer :: segment => NULL() ! A pointer to the various segments, used just for shorthand.
+  real :: tr_column(GV%ke)  ! A column of updated tracer concentrations in internally scaled units.
+  real :: r_norm_col(GV%ke) ! A column of updated radiation rates, in grid points per timestep [nondim]
+  real :: rxy_col(GV%ke) ! A column of updated radiation rates for oblique OBCs [L2 T-2 ~> m2 s-2]
+  real :: h1(GV%ke)     ! A column of source grid layer thicknesses [H ~> m or kg m-2]
+  real :: h2(GV%ke)     ! A column of target grid layer thicknesses [H ~> m or kg m-2]
+  real :: I_scale       ! The inverse of the scaling factor for the tracers.
+  logical :: PCM(GV%ke) ! If true, do PCM remapping from a cell.
+  integer :: i, j, k, m, n, ntr, nz
+  if (.not.associated(OBC)) return
+
+  nz = GV%ke
+  ntr = OBC%ntr
+
+  if (.not.present(PCM_cell)) PCM(:) = .false.
+
+  if (associated(OBC)) then ; if (OBC%OBC_pe) then ; do n=1,OBC%number_of_segments
+    segment => OBC%segment(n)
+    if (.not.associated(segment%tr_Reg)) cycle
+
+    if (segment%is_E_or_W) then
+      I = segment%HI%IsdB
+      do j=segment%HI%jsd,segment%HI%jed
+
+        ! Store a column of the start and final grids
+        if (segment%direction == OBC_DIRECTION_W) then
+          if (G%mask2dT(i+1,j) == 0.0) cycle
+          h1(:) = h_old(i+1,j,:)
+          h2(:) = h_new(i+1,j,:)
+          if (present(PCM_cell)) then ; PCM(:) = PCM_cell(i+1,j,:) ; endif
+        else
+          if (G%mask2dT(i,j) == 0.0) cycle
+          h1(:) = h_old(i,j,:)
+          h2(:) = h_new(i,j,:)
+          if (present(PCM_cell)) then ; PCM(:) = PCM_cell(i,j,:) ; endif
+        endif
+
+        ! Vertically remap the reservoir tracer concentrations
+        do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+          I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
+
+          if (present(PCM_cell)) then
+            call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%tr_Reg%Tr(m)%tres(I,j,:), nz, h2, tr_column, &
+                                  PCM_cell=PCM)
+          else
+            call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%tr_Reg%Tr(m)%tres(I,j,:), nz, h2, tr_column)
+          endif
+
+          ! Possibly underflow any very tiny tracer concentrations to 0?
+
+          ! Update tracer concentrations
+          segment%tr_Reg%Tr(m)%tres(I,j,:) = tr_column(:)
+          if (allocated(OBC%tres_x)) then ; do k=1,nz
+            OBC%tres_x(I,j,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(I,j,k)
+          enddo ; endif
+
+        endif ; enddo
+
+        ! Vertically remap the reservoir thicknesses?
+        if (associated(segment%h_Reg)) then
+          if (allocated(segment%h_Reg%h_res)) then
+            I_scale = 1.0 ; if (segment%h_Reg%scale /= 0.0) I_scale = 1.0 / segment%h_Reg%scale
+
+            if (present(PCM_cell)) then
+              call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%h_Reg%h_res(I,j,:), nz, h2, tr_column, &
+                                    PCM_cell=PCM)
+            else
+              call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%h_Reg%h_res(I,j,:), nz, h2, tr_column)
+            endif
+
+            ! Possibly underflow any very tiny tracer concentrations to 0?
+
+            ! Update tracer concentrations
+            segment%h_Reg%h_res(I,j,:) = tr_column(:)
+            if (allocated(OBC%h_res_x)) then ; do k=1,nz
+              OBC%h_res_x(I,j,k) = I_scale * segment%h_Reg%h_res(I,j,k)
+            enddo ; endif
+          endif
+        endif
+
+        if (segment%radiation .and. (OBC%gamma_uv < 1.0)) then
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%rx_norm_rad(I,j,:), nz, h2, r_norm_col, &
+                                PCM_cell=PCM)
+
+          do k=1,nz
+            segment%rx_norm_rad(I,j,k) = r_norm_col(k)
+            OBC%rx_normal(I,j,k) = segment%rx_norm_rad(I,j,k)
+          enddo
+        endif
+
+        if (segment%oblique .and. (OBC%gamma_uv < 1.0)) then
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%rx_norm_obl(I,j,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%rx_norm_obl(I,j,:) = rxy_col(:)
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%ry_norm_obl(I,j,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%ry_norm_obl(I,j,:) = rxy_col(:)
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%cff_normal(I,j,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%cff_normal(I,j,:) = rxy_col(:)
+
+          do k=1,nz
+            OBC%rx_oblique_u(I,j,k) = segment%rx_norm_obl(I,j,k)
+            OBC%ry_oblique_u(I,j,k) = segment%ry_norm_obl(I,j,k)
+            OBC%cff_normal_u(I,j,k) = segment%cff_normal(I,j,k)
+          enddo
+        endif
+
+      enddo
+    elseif (segment%is_N_or_S) then
+      J = segment%HI%JsdB
+      do i=segment%HI%isd,segment%HI%ied
+
+        ! Store a column of the start and final grids
+        if (segment%direction == OBC_DIRECTION_S) then
+          if (G%mask2dT(i,j+1) == 0.0) cycle
+          h1(:) = h_old(i,j+1,:)
+          h2(:) = h_new(i,j+1,:)
+          if (present(PCM_cell)) then ; PCM(:) = PCM_cell(i,j+1,:) ; endif
+        else
+          if (G%mask2dT(i,j) == 0.0) cycle
+          h1(:) = h_old(i,j,:)
+          h2(:) = h_new(i,j,:)
+          if (present(PCM_cell)) then ; PCM(:) = PCM_cell(i,j,:) ; endif
+        endif
+
+        ! Vertically remap the reservoir tracer concentrations
+        do m=1,ntr ; if (allocated(segment%tr_Reg%Tr(m)%tres)) then
+          I_scale = 1.0 ; if (segment%tr_Reg%Tr(m)%scale /= 0.0) I_scale = 1.0 / segment%tr_Reg%Tr(m)%scale
+
+          if (present(PCM_cell)) then
+            call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%tr_Reg%Tr(m)%tres(i,J,:), nz, h2, tr_column, &
+                                  PCM_cell=PCM)
+          else
+            call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%tr_Reg%Tr(m)%tres(i,J,:), nz, h2, tr_column)
+          endif
+
+          ! Possibly underflow any very tiny tracer concentrations to 0?
+
+          ! Update tracer concentrations
+          segment%tr_Reg%Tr(m)%tres(i,J,:) = tr_column(:)
+          if (allocated(OBC%tres_y)) then ; do k=1,nz
+            OBC%tres_y(i,J,k,m) = I_scale * segment%tr_Reg%Tr(m)%tres(i,J,k)
+          enddo ; endif
+
+        endif ; enddo
+
+        ! Vertically remap the reservoir thicknesses?
+        if (associated(segment%h_Reg)) then
+          if (allocated(segment%h_Reg%h_res)) then
+            I_scale = 1.0 ; if (segment%h_Reg%scale /= 0.0) I_scale = 1.0 / segment%h_Reg%scale
+
+            if (present(PCM_cell)) then
+              call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%h_Reg%h_res(i,J,:), nz, h2, tr_column, &
+                                    PCM_cell=PCM)
+            else
+              call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%h_Reg%h_res(i,J,:), nz, h2, tr_column)
+            endif
+
+            ! Possibly underflow any very tiny tracer concentrations to 0?
+
+            ! Update tracer concentrations
+            segment%h_Reg%h_res(i,J,:) = tr_column(:)
+            if (allocated(OBC%h_res_y)) then ; do k=1,nz
+              OBC%h_res_y(i,J,k) = I_scale * segment%h_Reg%h_res(i,J,k)
+            enddo ; endif
+          endif
+        endif
+
+        if (segment%radiation .and. (OBC%gamma_uv < 1.0)) then
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%ry_norm_rad(i,J,:), nz, h2, r_norm_col, &
+                                PCM_cell=PCM)
+
+          do k=1,nz
+            segment%ry_norm_rad(i,J,k) = r_norm_col(k)
+            OBC%ry_normal(i,J,k) = segment%ry_norm_rad(i,J,k)
+          enddo
+        endif
+
+        if (segment%oblique .and. (OBC%gamma_uv < 1.0)) then
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%rx_norm_obl(i,J,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%rx_norm_obl(i,J,:) = rxy_col(:)
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%ry_norm_obl(i,J,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%ry_norm_obl(i,J,:) = rxy_col(:)
+          call remapping_core_h(OBC%remap_h_CS, nz, h1, segment%cff_normal(i,J,:), nz, h2, rxy_col, &
+                                PCM_cell=PCM)
+          segment%cff_normal(i,J,:) = rxy_col(:)
+
+          do k=1,nz
+            OBC%rx_oblique_v(i,J,k) = segment%rx_norm_obl(i,J,k)
+            OBC%ry_oblique_v(i,J,k) = segment%ry_norm_obl(i,J,k)
+            OBC%cff_normal_v(i,J,k) = segment%cff_normal(i,J,k)
+          enddo
+        endif
+
+      enddo
+    endif
+  enddo ; endif ; endif
+  if (OBC%radiation_BCs_exist_globally) call pass_vector(OBC%rx_normal, OBC%ry_normal, G%Domain, &
+                     To_All+Scalar_Pair)
+  if (OBC%oblique_BCs_exist_globally) then
+    call do_group_pass(OBC%pass_oblique, G%Domain)
+  endif
+
+end procedure remap_OBC_fields
+module procedure adjustSegmentEtaToFitBathymetry
+  integer :: i, j, k, is, ie, js, je, nz, contractions, dilations
+  real, allocatable, dimension(:,:,:) :: eta ! Segment source data interface heights [Z ~> m]
+  real, allocatable, dimension(:,:)   :: dz_tot ! Segment total thicknesses [Z ~> m]
+  real :: hTolerance = 0.1 !<  Tolerance to exceed adjustment criteria [Z ~> m]
+  hTolerance = 0.1*US%m_to_Z
+
+  nz = size(segment%field(fld)%dz_src,3)
+
+  if (segment%is_E_or_W) then
+    is = segment%HI%IsdB ; ie = segment%HI%IedB
+    if (at_node) then   ! This point is at the OBC nodes, rather than the cell face centers.
+      Js = max(segment%Js_obc, G%jsd)
+      Je = min(segment%Je_obc, G%jed-1)
+    else   ! Segment thicknesses are defined at cell face centers.
+      js = segment%HI%jsd ; je = segment%HI%jed
+    endif
+  else ! segment%is_N_or_S
+    js = segment%HI%jsdB ; je = segment%HI%jedB
+    if (at_node) then  ! This point is at the OBC nodes, rather than the cell face centers.
+      is = max(segment%HI%IsdB, G%isd)
+      ie = min(segment%HI%IedB, G%ied-1)
+    else   ! Segment thicknesses are defined at cell face centers.
+      is = segment%HI%isd ; ie = segment%HI%ied
+    endif
+  endif
+  allocate(eta(is:ie,js:je,nz+1))
+  allocate(dz_tot(is:ie,js:je), source=0.0)
+
+  if (at_node) then
+    if (segment%is_E_or_W) then
+      I = Is
+      do J=Js,Je
+        dz_tot(I,J) = 0.5*(segment%dZtot(I,j) + segment%dZtot(I,j+1))
+      enddo
+      ! Do not extrapolate past the end of a global segment.
+      ! ### For a concave corner between segments, perhaps we should do something more sophisticated.
+      if (Js == segment%Js_obc) dz_tot(I,Js) = segment%dZtot(I,js+1)
+      if (Je == segment%Js_obc) dz_tot(I,Je) = segment%dZtot(I,je)
+    else
+      J = Js
+      do I=Is,Ie
+        dz_tot(I,J) = 0.5*(segment%dZtot(i,J) + segment%dZtot(i+1,J))
+      enddo
+      ! Do not extrapolate past the end of a global segment.
+      if (Is == segment%Is_obc) dz_tot(Is,J) = segment%dZtot(is+1,J)
+      if (Ie == segment%Is_obc) dz_tot(Ie,J) = segment%dZtot(ie,J)
+    endif
+  else
+    do j=js,je ; do i=is,ie
+      dz_tot(i,j) = segment%dZtot(i,j)
+    enddo ; enddo
+  endif
+
+  contractions = 0 ; dilations = 0
+  do j=js,je ; do i=is,ie
+    eta(i,j,1) = 0.0  ! segment data are assumed to be located on a static grid
+    ! For remapping calls, the entire column will be dilated
+    ! by a factor equal to the ratio of the sum of the geopotential referenced
+    ! source data thicknesses, and the current model thicknesses. This could be
+    ! an issue to be addressed, for instance if we are placing open boundaries
+    ! under ice shelf cavities.
+    do k=2,nz+1
+      eta(i,j,k) = eta(i,j,k-1) - segment%field(fld)%dz_src(i,j,k-1)
+    enddo
+    ! The normal slope at the boundary is zero by a
+    ! previous call to open_boundary_impose_normal_slope
+    do k=nz+1,1,-1
+      if (-eta(i,j,k) > dz_tot(i,j) + hTolerance) then
+        eta(i,j,k) = -dz_tot(i,j)
+        contractions = contractions + 1
+      endif
+    enddo
+
+    do k=1,nz
+      ! Collapse layers to thinnest possible if the thickness less than
+      ! the thinnest possible (or negative).
+      if (eta(i,j,K) < (eta(i,j,K+1) + GV%Angstrom_Z)) then
+        eta(i,j,K) = eta(i,j,K+1) + GV%Angstrom_Z
+        segment%field(fld)%dz_src(i,j,k) = GV%Angstrom_Z
+      else
+        segment%field(fld)%dz_src(i,j,k) = (eta(i,j,K) - eta(i,j,K+1))
+      endif
+    enddo
+
+    !   The whole column is dilated to accommodate deeper topography than
+    ! the bathymetry would indicate.
+    if (-eta(i,j,nz+1) < dz_tot(i,j) - hTolerance) then
+      dilations = dilations + 1
+      ! expand bottom-most cell only
+      eta(i,j,nz+1) = -dz_tot(i,j)
+      segment%field(fld)%dz_src(i,j,nz) = eta(i,j,nz) - eta(i,j,nz+1)
+      ! if (eta(i,j,1) <= eta(i,j,nz+1)) then
+      !   do k=1,nz ; segment%field(fld)%dz_src(i,j,k) = (eta(i,j,1) + G%bathyT(i,j)) / real(nz) ; enddo
+      ! else
+      !   dilate = (eta(i,j,1) + G%bathyT(i,j)) / (eta(i,j,1) - eta(i,j,nz+1))
+      !   do k=1,nz ; segment%field(fld)%dz_src(i,j,k) = segment%field(fld)%dz_src(i,j,k) * dilate ; enddo
+      ! endif
+      !do k=nz,2,-1 ; eta(i,j,K) = eta(i,j,K+1) + segment%field(fld)%dz_src(i,j,k) ; enddo
+    endif
+  enddo ; enddo
+
+  ! can not do communication call here since only PEs on the current segment are here
+  ! call sum_across_PEs(contractions)
+  ! if ((contractions > 0) .and. (is_root_pe())) then
+  !    write(mesg,'("Thickness OBCs were contracted ",'// &
+  !         '"to fit topography in ",I0," places.")') contractions
+  !    call MOM_error(WARNING, 'adjustEtaToFitBathymetry: '//mesg)
+  ! endif
+  ! call sum_across_PEs(dilations)
+  ! if ((dilations > 0) .and. (is_root_pe())) then
+  !    write(mesg,'("Thickness OBCs were dilated ",'// &
+  !         '"to fit topography in ",I0," places.")') dilations
+  !    call MOM_error(WARNING, 'adjustEtaToFitBathymetry: '//mesg)
+  ! endif
+
+  deallocate(eta, dz_tot)
+
+end procedure adjustSegmentEtaToFitBathymetry
+module procedure rotate_OBC_config
+  integer :: c, n, l_seg
+  if (OBC_in%number_of_segments == 0) return
+
+  ! Scalar and logical transfer
+  OBC%number_of_segments = OBC_in%number_of_segments
+  OBC%ke = OBC_in%ke
+  OBC%user_BCs_set_globally = OBC_in%user_BCs_set_globally
+
+  ! These are conditionally read and set if number_of_segments > 0
+  OBC%vorticity_config = OBC_in%vorticity_config
+  OBC%strain_config = OBC_in%strain_config
+  OBC%zero_biharmonic = OBC_in%zero_biharmonic
+  OBC%silly_h = OBC_in%silly_h
+  OBC%silly_u = OBC_in%silly_u
+  OBC%reverse_segment_order = OBC_in%reverse_segment_order
+
+  ! Segment rotation
+  allocate(OBC%segment(0:OBC%number_of_segments))
+  do l_seg=1,OBC%number_of_segments
+    call rotate_OBC_segment_config(OBC_in%segment(l_seg), G_in, OBC%segment(l_seg), G, turns)
+    ! Data stored in setup_[uv]_point_obc is needed for allocate_obc_segment_data
+    call allocate_OBC_segment_data(OBC, OBC%segment(l_seg))
+  enddo
+
+  ! The horizontal segment map
+  allocate(OBC%segnum_u(G%IsdB:G%IedB,G%jsd:G%jed), source=0)
+  allocate(OBC%segnum_v(G%isd:G%ied,G%JsdB:G%JedB), source=0)
+  call rotate_array_pair(OBC_in%segnum_u, OBC_in%segnum_v, turns, OBC%segnum_u, OBC%segnum_v)
+  call set_segnum_signs(OBC, G)
+
+  ! These are conditionally enabled during segment configuration
+  if (modulo(turns,2) == 0) then
+    OBC%open_u_BCs_exist_globally = OBC_in%open_u_BCs_exist_globally
+    OBC%open_v_BCs_exist_globally = OBC_in%open_v_BCs_exist_globally
+    OBC%Flather_u_BCs_exist_globally = OBC_in%Flather_u_BCs_exist_globally
+    OBC%Flather_v_BCs_exist_globally = OBC_in%Flather_v_BCs_exist_globally
+    OBC%nudged_u_BCs_exist_globally = OBC_in%nudged_u_BCs_exist_globally
+    OBC%nudged_v_BCs_exist_globally = OBC_in%nudged_v_BCs_exist_globally
+    OBC%specified_u_BCs_exist_globally = OBC_in%specified_u_BCs_exist_globally
+    OBC%specified_v_BCs_exist_globally = OBC_in%specified_v_BCs_exist_globally
+  else  ! Swap information for u- and v- OBCs
+    OBC%open_u_BCs_exist_globally = OBC_in%open_v_BCs_exist_globally
+    OBC%open_v_BCs_exist_globally = OBC_in%open_u_BCs_exist_globally
+    OBC%Flather_u_BCs_exist_globally = OBC_in%Flather_v_BCs_exist_globally
+    OBC%Flather_v_BCs_exist_globally = OBC_in%Flather_u_BCs_exist_globally
+    OBC%nudged_u_BCs_exist_globally = OBC_in%nudged_v_BCs_exist_globally
+    OBC%nudged_v_BCs_exist_globally = OBC_in%nudged_u_BCs_exist_globally
+    OBC%specified_u_BCs_exist_globally = OBC_in%specified_v_BCs_exist_globally
+    OBC%specified_v_BCs_exist_globally = OBC_in%specified_u_BCs_exist_globally
+  endif
+  OBC%oblique_BCs_exist_globally = OBC_in%oblique_BCs_exist_globally
+  OBC%radiation_BCs_exist_globally = OBC_in%radiation_BCs_exist_globally
+
+  ! These are set by initialize_segment_data
+  OBC%brushcutter_mode = OBC_in%brushcutter_mode
+  OBC%update_OBC = OBC_in%update_OBC
+  OBC%any_needs_IO_for_data = OBC_in%any_needs_IO_for_data
+
+  OBC%update_OBC_seg_data = OBC_in%update_OBC_seg_data
+  OBC%ntr = OBC_in%ntr
+  if (OBC%ntr > 0) then
+    allocate(OBC%tracer_x_reservoirs_used(OBC%ntr), source=.false.)
+    allocate(OBC%tracer_y_reservoirs_used(OBC%ntr), source=.false.)
+    if (modulo(turns,2) == 0) then
+      do n=1,OBC%ntr
+        OBC%tracer_x_reservoirs_used(n) = OBC_in%tracer_x_reservoirs_used(n)
+        OBC%tracer_y_reservoirs_used(n) = OBC_in%tracer_y_reservoirs_used(n)
+      enddo
+    else  ! Swap information for u- and v- OBCs
+      do n=1,OBC%ntr
+        OBC%tracer_x_reservoirs_used(n) = OBC_in%tracer_y_reservoirs_used(n)
+        OBC%tracer_y_reservoirs_used(n) = OBC_in%tracer_x_reservoirs_used(n)
+      enddo
+    endif
+  endif
+
+  OBC%gamma_uv = OBC_in%gamma_uv
+  OBC%rx_max = OBC_in%rx_max
+  OBC%OBC_pe = OBC_in%OBC_pe
+
+  ! These are run-time parameters that are read in via open_boundary_config
+  OBC%debug = OBC_in%debug
+  OBC%ramp = OBC_in%ramp
+  OBC%ramping_is_activated = OBC_in%ramping_is_activated
+  OBC%ramp_timescale = OBC_in%ramp_timescale
+  OBC%trunc_ramp_time = OBC_in%trunc_ramp_time
+  OBC%ramp_value = OBC_in%ramp_value
+  OBC%ramp_start_time = OBC_in%ramp_start_time
+  OBC%remap_answer_date = OBC_in%remap_answer_date
+  OBC%check_reconstruction  = OBC_in%check_reconstruction
+  OBC%check_remapping = OBC_in%check_remapping
+  OBC%force_bounds_in_subcell = OBC_in%force_bounds_in_subcell
+  OBC%om4_remap_via_sub_cells = OBC_in%om4_remap_via_sub_cells
+  OBC%remappingScheme = OBC_in%remappingScheme
+  OBC%exterior_OBC_bug = OBC_in%exterior_OBC_bug
+  OBC%hor_index_bug = OBC_in%hor_index_bug
+  OBC%n_tide_constituents = OBC_in%n_tide_constituents
+  OBC%add_tide_constituents = OBC_in%add_tide_constituents
+
+  ! These are read in via initialize_obc_tides when n_tide_constituents > 0
+  if (OBC%add_tide_constituents .and. (OBC%n_tide_constituents>0)) then
+    OBC%add_eq_phase = OBC_in%add_eq_phase
+    OBC%add_nodal_terms = OBC_in%add_nodal_terms
+    OBC%time_ref = OBC_in%time_ref
+
+    allocate(OBC%tide_names(OBC%n_tide_constituents))
+    allocate(OBC%tide_frequencies(OBC%n_tide_constituents))
+    allocate(OBC%tide_eq_phases(OBC%n_tide_constituents))
+    allocate(OBC%tide_fn(OBC%n_tide_constituents))
+    allocate(OBC%tide_un(OBC%n_tide_constituents))
+    do c=1,OBC%n_tide_constituents
+      OBC%tide_names(c) = OBC_in%tide_names(c)
+      OBC%tide_frequencies(c) = OBC_in%tide_frequencies(c)
+      OBC%tide_eq_phases(c) = OBC_in%tide_eq_phases(c)
+      OBC%tide_fn(c) = OBC_in%tide_fn(c)
+      OBC%tide_un(c) = OBC_in%tide_un(c)
+    enddo
+
+    if (OBC%add_eq_phase .or.  OBC%add_nodal_terms)  &
+      OBC%tidal_longitudes = OBC_in%tidal_longitudes
+  endif
+
+end procedure rotate_OBC_config
+module procedure rotate_OBC_segment_config
+  integer :: Is_obc_in, Ie_obc_in, Js_obc_in, Je_obc_in ! Input domain global indices
+  integer :: Is_obc, Ie_obc, Js_obc, Je_obc             ! Rotated domain global indices
+  integer :: qturns ! The number of quarter turns in the range of 0 to 3
+  segment%on_pe = segment_in%on_pe
+
+  qturns = modulo(turns, 4)
+
+  ! Transfer configuration flags
+  segment%Flather = segment_in%Flather
+  segment%radiation = segment_in%radiation
+  segment%radiation_tan = segment_in%radiation_tan
+  segment%radiation_grad = segment_in%radiation_grad
+  segment%oblique = segment_in%oblique
+  segment%oblique_tan = segment_in%oblique_tan
+  segment%oblique_grad = segment_in%oblique_grad
+  segment%nudged = segment_in%nudged
+  segment%nudged_tan = segment_in%nudged_tan
+  segment%nudged_grad = segment_in%nudged_grad
+  segment%specified = segment_in%specified
+  segment%specified_tan = segment_in%specified_tan
+  segment%specified_grad = segment_in%specified_grad
+  segment%open = segment_in%open
+  segment%gradient = segment_in%gradient
+
+  ! These are conditionally set if nudged
+  segment%Velocity_nudging_timescale_in = segment_in%Velocity_nudging_timescale_in
+  segment%Velocity_nudging_timescale_out = segment_in%Velocity_nudging_timescale_out
+
+  ! Rotate segment indices
+
+  ! Reverse engineer the input [IJ][se]_obc segment indices
+  ! NOTE: The values stored in the segment are always saved in ascending order,
+  !   e.g. (is < ie).  In order to use setup_segment_indices, we reorder the
+  !   indices here to indicate face direction.
+  !   Segment indices are also indexed locally, so here we convert to global indices
+  if (segment_in%direction == OBC_DIRECTION_N) then
+    Is_obc_in = segment_in%Ie_obc + G_in%idg_offset
+    Ie_obc_in = segment_in%Is_obc + G_in%idg_offset
+  else
+    Is_obc_in = segment_in%Is_obc + G_in%idg_offset
+    Ie_obc_in = segment_in%Ie_obc + G_in%idg_offset
+  endif
+
+  if (segment_in%direction == OBC_DIRECTION_W) then
+    Js_obc_in = segment_in%Je_obc + G_in%jdg_offset
+    Je_obc_in = segment_in%Js_obc + G_in%jdg_offset
+  else
+    Js_obc_in = segment_in%Js_obc + G_in%jdg_offset
+    Je_obc_in = segment_in%Je_obc + G_in%jdg_offset
+  endif
+
+  ! Rotate the global indices of the segment according to the number of turns.
+  if (qturns == 0) then
+    Is_obc = Is_obc_in ; Ie_obc = Ie_obc_in
+    Js_obc = Js_obc_in ; Je_obc = Je_obc_in
+  elseif (qturns == 1) then
+    Is_obc = G_in%JegB - Js_obc_in ; Ie_obc = G_in%JegB - Je_obc_in
+    Js_obc = Is_obc_in ; Je_obc = Ie_obc_in
+  elseif (qturns == 2) then
+    Is_obc = G_in%IegB - Is_obc_in ; Ie_obc = G_in%IegB - Ie_obc_in
+    Js_obc = G_in%JegB - Js_obc_in ; Je_obc = G_in%JegB - Je_obc_in
+  elseif (qturns == 3) then
+    Is_obc = Js_obc_in ; Ie_obc = Je_obc_in
+    Js_obc = G_in%IegB - Is_obc_in ; Je_obc = G_in%IegB - Ie_obc_in
+  endif
+
+  ! Orientation is based on the index ordering, and setup_segment_indices
+  ! is based on the original order in the intput files.
+  call setup_segment_indices(G, segment, Is_obc, Ie_obc, Js_obc, Je_obc)
+
+  ! Re-order [IJ][se]_obc back to ascending, and remove the global indexing offset.
+  if (Is_obc > Ie_obc) then
+    segment%Is_obc = Ie_obc - G%idg_offset
+    segment%Ie_obc = Is_obc - G%idg_offset
+  else
+    segment%Is_obc = Is_obc - G%idg_offset
+    segment%Ie_obc = Ie_obc - G%idg_offset
+  endif
+
+  if (Js_obc > Je_obc) then
+    segment%Js_obc = Je_obc - G%jdg_offset
+    segment%Je_obc = Js_obc - G%jdg_offset
+  else
+    segment%Js_obc = Js_obc - G%jdg_offset
+    segment%Je_obc = Je_obc - G%jdg_offset
+  endif
+
+  ! Reconfigure the directional flags
+  segment%direction = rotate_OBC_segment_direction(segment_in%direction, turns)
+
+  segment%is_E_or_W_2 = ((segment%direction == OBC_DIRECTION_E) .or. &
+                         (segment%direction == OBC_DIRECTION_W))
+  segment%is_E_or_W = segment_in%on_PE .and. segment%is_E_or_W_2
+  segment%is_N_or_S = segment_in%on_PE .and. &
+                        ((segment%direction == OBC_DIRECTION_N) .or. &
+                         (segment%direction == OBC_DIRECTION_S))
+
+  ! These are conditionally set if Lscale_{in,out} are present
+  segment%Tr_InvLscale_in = segment_in%Tr_InvLscale_in
+  segment%Tr_InvLscale_out = segment_in%Tr_InvLscale_out
+  segment%Th_InvLscale_in = segment_in%Th_InvLscale_in
+  segment%Th_InvLscale_out = segment_in%Th_InvLscale_out
+
+  ! This needs to be set
+  segment%num_fields = segment_in%num_fields
+end procedure rotate_OBC_segment_config
+module procedure rotate_OBC_segment_direction
+  integer :: qturns ! The number of quarter turns in the range of 0 to 3
+  qturns = modulo(turns, 4)
+
+  if ((qturns == 0) .or. (direction == OBC_NONE)) then
+    rotated_dir = direction
+  else  ! Determine the segment direction on a rotated grid
+    select case (direction)
+      case (OBC_DIRECTION_N)
+        if (qturns == 0) rotated_dir = OBC_DIRECTION_N
+        if (qturns == 1) rotated_dir = OBC_DIRECTION_W
+        if (qturns == 2) rotated_dir = OBC_DIRECTION_S
+        if (qturns == 3) rotated_dir = OBC_DIRECTION_E
+      case (OBC_DIRECTION_W)
+        if (qturns == 0) rotated_dir = OBC_DIRECTION_W
+        if (qturns == 1) rotated_dir = OBC_DIRECTION_S
+        if (qturns == 2) rotated_dir = OBC_DIRECTION_E
+        if (qturns == 3) rotated_dir = OBC_DIRECTION_N
+      case (OBC_DIRECTION_S)
+        if (qturns == 0) rotated_dir = OBC_DIRECTION_S
+        if (qturns == 1) rotated_dir = OBC_DIRECTION_E
+        if (qturns == 2) rotated_dir = OBC_DIRECTION_N
+        if (qturns == 3) rotated_dir = OBC_DIRECTION_W
+      case (OBC_DIRECTION_E)
+        if (qturns == 0) rotated_dir = OBC_DIRECTION_E
+        if (qturns == 1) rotated_dir = OBC_DIRECTION_N
+        if (qturns == 2) rotated_dir = OBC_DIRECTION_W
+        if (qturns == 3) rotated_dir = OBC_DIRECTION_S
+      case (OBC_NONE)
+        rotated_dir = OBC_NONE
+      case default ! This should never happen.
+        rotated_dir = direction
+    end select
+  endif
+
+end procedure rotate_OBC_segment_direction
+module procedure rotated_field_name
+  if (modulo(turns, 2) /= 0) then
+    select case (input_name)
+      case ('U')      ; rotated_field_name = 'V'
+      case ('Uamp')   ; rotated_field_name = 'Vamp'
+      case ('Uphase') ; rotated_field_name = 'Vphase'
+      case ('V')      ; rotated_field_name = 'U'
+      case ('Vamp')   ; rotated_field_name = 'Uamp'
+      case ('Vphase') ; rotated_field_name = 'Uphase'
+      case ('DVDX')   ; rotated_field_name = 'DUDY'
+      case ('DUDY')   ; rotated_field_name = 'DVDX'
+      case default    ; rotated_field_name = input_name
+    end select
+  else
+    rotated_field_name = input_name
+  endif
+
+end procedure rotated_field_name
+module procedure allocate_rotated_seg_data
+  integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, nk
+  logical :: corner  ! True if this field is discretized at the OBC segment nodes rather than the faces.
+  isd = segment%HI%isd ; ied = segment%HI%ied ; IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
+  jsd = segment%HI%jsd ; jed = segment%HI%jed ; JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
+  nk = size(src_array, 3)
+
+  ! Determine whether the source array is allocated at a segment face or at the corners.
+  corner = (size(src_array, 1) == abs(HI_in%IedB - HI_in%IsdB) + 1 ) .and. &
+           (size(src_array, 2) == abs(HI_in%JedB - HI_in%JsdB) + 1 )
+
+  if (corner) then
+    allocate(tgt_array(IsdB:IedB,JsdB:JedB,nk), source=0.0)
+  elseif (segment%is_E_or_W) then
+    allocate(tgt_array(IsdB:IedB,jsd:jed,nk), source=0.0)
+  elseif (segment%is_N_or_S) then
+    allocate(tgt_array(isd:ied,JsdB:JedB,nk), source=0.0)
+  endif
+end procedure allocate_rotated_seg_data
+module procedure write_OBC_info
+  type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  integer :: turns      ! Number of index quarter turns
+  integer :: n          ! The segment number reported in output
+  integer :: n_seg      ! The internal segment number
+  integer :: dir        ! This indicates the internal logical orientation of a segment
+  integer :: unrot_dir  ! This indicates the logical orientation a segment would have had
+  integer :: c          ! Used to loop over tidal constituents
+  character(len=1024) :: mesg
+  turns = modulo(G%HI%turns, 4)
+
+  write(mesg, '("OBC has ", I0, " segments.")') OBC%number_of_segments
+  call MOM_mesg(mesg, verb=1)
+  !  call MOM_error(WARNING, mesg)
+
+  if (modulo(turns, 2) == 0) then
+    if (OBC%open_u_BCs_exist_globally) call MOM_mesg("open_u_BCs_exist_globally", verb=1)
+    if (OBC%open_v_BCs_exist_globally) call MOM_mesg("open_v_BCs_exist_globally", verb=1)
+    if (OBC%Flather_u_BCs_exist_globally) call MOM_mesg("Flather_u_BCs_exist_globally", verb=1)
+    if (OBC%Flather_v_BCs_exist_globally) call MOM_mesg("Flather_v_BCs_exist_globally", verb=1)
+    if (OBC%nudged_u_BCs_exist_globally) call MOM_mesg("nudged_u_BCs_exist_globally", verb=1)
+    if (OBC%nudged_v_BCs_exist_globally) call MOM_mesg("nudged_v_BCs_exist_globally", verb=1)
+    if (OBC%specified_u_BCs_exist_globally) call MOM_mesg("specified_u_BCs_exist_globally", verb=1)
+    if (OBC%specified_v_BCs_exist_globally) call MOM_mesg("specified_v_BCs_exist_globally", verb=1)
+  else  ! The u- and v-directions are swapped.
+    if (OBC%open_v_BCs_exist_globally) call MOM_mesg("open_u_BCs_exist_globally", verb=1)
+    if (OBC%open_u_BCs_exist_globally) call MOM_mesg("open_v_BCs_exist_globally", verb=1)
+    if (OBC%Flather_v_BCs_exist_globally) call MOM_mesg("Flather_u_BCs_exist_globally", verb=1)
+    if (OBC%Flather_u_BCs_exist_globally) call MOM_mesg("Flather_v_BCs_exist_globally", verb=1)
+    if (OBC%nudged_v_BCs_exist_globally) call MOM_mesg("nudged_u_BCs_exist_globally", verb=1)
+    if (OBC%nudged_u_BCs_exist_globally) call MOM_mesg("nudged_v_BCs_exist_globally", verb=1)
+    if (OBC%specified_v_BCs_exist_globally) call MOM_mesg("specified_u_BCs_exist_globally", verb=1)
+    if (OBC%specified_u_BCs_exist_globally) call MOM_mesg("specified_v_BCs_exist_globally", verb=1)
+  endif
+
+  if (OBC%oblique_BCs_exist_globally) call MOM_mesg("oblique_BCs_exist_globally", verb=1)
+  if (OBC%radiation_BCs_exist_globally) call MOM_mesg("radiation_BCs_exist_globally", verb=1)
+  if (OBC%user_BCs_set_globally) call MOM_mesg("user_BCs_set_globally", verb=1)
+  if (OBC%update_OBC) call MOM_mesg("update_OBC", verb=1)
+  if (OBC%update_OBC_seg_data) call MOM_mesg("update_OBC_seg_data", verb=1)
+  if (OBC%any_needs_IO_for_data) call MOM_mesg("any_needs_IO_for_data", verb=1)
+  if (OBC%zero_biharmonic) call MOM_mesg("zero_biharmonic", verb=1)
+  if (OBC%brushcutter_mode) call MOM_mesg("brushcutter_mode", verb=1)
+  if (OBC%check_reconstruction) call MOM_mesg("check_reconstruction", verb=1)
+  if (OBC%check_remapping) call MOM_mesg("check_remapping", verb=1)
+  if (OBC%force_bounds_in_subcell) call MOM_mesg("force_bounds_in_subcell", verb=1)
+  if (OBC%om4_remap_via_sub_cells) call MOM_mesg("om4_remap_via_sub_cells", verb=1)
+  if (OBC%exterior_OBC_bug) call MOM_mesg("exterior_OBC_bug", verb=1)
+  if (OBC%hor_index_bug) call MOM_mesg("hor_index_bug", verb=1)
+  if (OBC%debug) call MOM_mesg("debug", verb=1)
+  if (OBC%ramp) call MOM_mesg("ramp", verb=1)
+  if (OBC%ramping_is_activated) call MOM_mesg("ramping_is_activated", verb=1)
+  write(mesg, '("n_tide_constituents ", I0)') OBC%n_tide_constituents
+  call MOM_mesg(mesg, verb=1)
+  if (OBC%n_tide_constituents > 0) then
+    do c=1,OBC%n_tide_constituents
+      write(mesg, '(" properties ", 4ES16.6)') &
+            US%s_to_T*OBC%tide_frequencies(c), OBC%tide_eq_phases(c), OBC%tide_fn(c), OBC%tide_un(c)
+      call MOM_mesg(trim(OBC%tide_names(c))//mesg, verb=1)
+    enddo
+  endif
+  if (OBC%ramp) then
+    write(mesg, '("ramp_values ", 3ES16.6)') OBC%ramp_timescale, OBC%trunc_ramp_time, OBC%ramp_value
+    call MOM_mesg(mesg, verb=1)
+  endif
+  write(mesg, '("gamma_uv ", ES16.6)') OBC%gamma_uv
+  call MOM_mesg(mesg, verb=1)
+  write(mesg, '("rx_max ", ES16.6)') OBC%rx_max
+  call MOM_mesg(mesg, verb=1)
+
+  call MOM_mesg("remappingScheme = "//trim(OBC%remappingScheme), verb=1)
+
+  do n=1,OBC%number_of_segments
+    n_seg = n ; if (OBC%reverse_segment_order) n_seg = OBC%number_of_segments + 1 - n
+    segment => OBC%segment(n_seg)
+    dir = segment%direction
+
+    unrot_dir = rotate_OBC_segment_direction(dir, -turns)
+    write(mesg, '(" Segment ", I0, " has direction ", I0)') n, unrot_dir
+    if (unrot_dir == OBC_DIRECTION_N)  write(mesg, '(" Segment ", I0, " is Northern")') n
+    if (unrot_dir == OBC_DIRECTION_S)  write(mesg, '(" Segment ", I0, " is Southern")') n
+    if (unrot_dir == OBC_DIRECTION_E)  write(mesg, '(" Segment ", I0, " is Eastern")') n
+    if (unrot_dir == OBC_DIRECTION_W)  write(mesg, '(" Segment ", I0, " is Western")') n
+    call MOM_mesg(mesg, verb=1)
+
+    ! write(mesg, '("  range:", 4(1x,I0))') segment%Is_obc, segment%Ie_obc, segment%Js_obc, segment%Je_obc
+    if (modulo(turns, 2) == 0) then
+      write(mesg, '("  size: ", I0," ",I0)') 1+abs(segment%Ie_obc-segment%Is_obc), 1+abs(segment%Je_obc-segment%Js_obc)
+    else
+      write(mesg, '("  size: ", I0," ",I0)') 1+abs(segment%Je_obc-segment%Js_obc), 1+abs(segment%Ie_obc-segment%Is_obc)
+    endif
+    call MOM_mesg(mesg, verb=1)
+
+    if (segment%on_pe)          call MOM_mesg("  Segment is on PE.", verb=1)
+
+    if (segment%Flather)        call MOM_mesg("  Flather", verb=1)
+    if (segment%radiation)      call MOM_mesg("  radiation", verb=1)
+    if (segment%radiation_tan)  call MOM_mesg("  radiation_tan", verb=1)
+    if (segment%radiation_grad) call MOM_mesg("  radiation_grad", verb=1)
+    if (segment%oblique)        call MOM_mesg("  oblique", verb=1)
+    if (segment%oblique_tan)    call MOM_mesg("  oblique_tan", verb=1)
+    if (segment%oblique_grad)   call MOM_mesg("  oblique_grad", verb=1)
+    if (segment%nudged)         call MOM_mesg("  nudged", verb=1)
+    if (segment%nudged_tan)     call MOM_mesg("  nudged_tan", verb=1)
+    if (segment%nudged_grad)    call MOM_mesg("  nudged_grad", verb=1)
+    if (segment%specified)      call MOM_mesg("  specified", verb=1)
+    if (segment%specified_tan)  call MOM_mesg("  specified_tan", verb=1)
+    if (segment%specified_grad) call MOM_mesg("  specified_grad", verb=1)
+    if (segment%open)           call MOM_mesg("  open", verb=1)
+    if (segment%gradient)       call MOM_mesg("  gradient", verb=1)
+    if (modulo(turns, 2) == 0) then
+      if (segment%is_N_or_S)      call MOM_mesg("  is_N_or_S", verb=1)
+      if (segment%is_E_or_W)      call MOM_mesg("  is_E_or_W", verb=1)
+    else  ! The x- and y-directions are swapped.
+      if (segment%is_E_or_W)      call MOM_mesg("  is_N_or_S", verb=1)
+      if (segment%is_N_or_S)      call MOM_mesg("  is_E_or_W", verb=1)
+    endif
+!    if (segment%is_E_or_W_2)    call MOM_mesg("  is_E_or_W_2", verb=1)
+    if (segment%temp_segment_data_exists) call MOM_mesg("  temp_segment_data_exists", verb=1)
+    if (segment%salt_segment_data_exists) call MOM_mesg("  salt_segment_data_exists", verb=1)
+
+    write(mesg, '("  Tr_InvLscale_out ", ES16.6)') segment%Tr_InvLscale_out*US%m_to_L
+    call MOM_mesg(mesg, verb=1)
+    write(mesg, '("  Tr_InvLscale_in ", ES16.6)') segment%Tr_InvLscale_in*US%m_to_L
+    call MOM_mesg(mesg, verb=1)
+    write(mesg, '("  Th_InvLscale_out ", ES16.6)') segment%Th_InvLscale_out*US%m_to_L
+    call MOM_mesg(mesg, verb=1)
+    write(mesg, '("  Th_InvLscale_in ", ES16.6)') segment%Th_InvLscale_in*US%m_to_L
+    call MOM_mesg(mesg, verb=1)
+
+  enddo
+
+  call chksum_OBC_segments(OBC, G, GV, US, 0)
+
+end procedure write_OBC_info
+module procedure chksum_OBC_segments
+  integer :: n          ! The segment number reported in output
+  integer :: n_seg      ! The internal segment number
+  do n=1,OBC%number_of_segments
+    n_seg = n ; if (OBC%reverse_segment_order) n_seg = OBC%number_of_segments + 1 - n
+
+    call chksum_OBC_segment_data(OBC%segment(n_seg), GV, US, nk, n)
+  enddo
+
+end procedure chksum_OBC_segments
+module procedure chksum_OBC_segment_data
+  real :: norm ! A sign change used when rotating a normal component [nondim]
+  real :: tang ! A sign change used when rotating a tangential component [nondim]
+  character(len=8) :: sn, segno
+  integer :: dir        ! This indicates the internal logical orientation of a segment
+    dir = segment%direction
+
+    write(segno, '(I0)') nseg_out
+    sn = '('//trim(segno)//')'
+
+    ! Turn each segment and write it as though it is an eastern face.
+    norm = 0.0 ; tang = 0.0
+    if (dir == OBC_DIRECTION_E) then
+      norm = 1.0 ; tang = 1.0
+    elseif (dir == OBC_DIRECTION_N) then
+      norm = 1.0 ; tang = -1.0
+    elseif (dir == OBC_DIRECTION_W) then
+      norm = -1.0 ; tang = -1.0
+    elseif (dir == OBC_DIRECTION_S) then
+      norm = -1.0 ; tang = 1.0
+    endif
+
+    if (allocated(segment%Htot)) call write_2d_array_vals("Htot"//trim(sn), segment%Htot, dir, nk, unscale=GV%H_to_mks)
+    if (allocated(segment%dZtot)) call write_2d_array_vals("dZtot"//trim(sn), segment%dZtot, dir, nk, unscale=US%Z_to_m)
+    if (allocated(segment%SSH)) call write_2d_array_vals("SSH"//trim(sn), segment%SSH, dir, nk, unscale=US%Z_to_m)
+    if (allocated(segment%normal_vel)) &
+      call write_3d_array_vals("normal_vel"//trim(sn), segment%normal_vel, dir, nk, unscale=norm*US%L_T_to_m_s)
+    if (allocated(segment%normal_vel_bt)) &
+      call write_2d_array_vals("normal_vel_bt"//trim(sn), segment%normal_vel_bt, dir, nk, unscale=norm*US%L_T_to_m_s)
+    if (allocated(segment%tangential_vel)) &
+      call write_3d_array_vals("tangential_vel"//trim(sn), segment%tangential_vel, dir, nk, unscale=tang*US%L_T_to_m_s)
+    if (allocated(segment%tangential_grad)) &
+      call write_3d_array_vals("tangential_grad"//trim(sn), segment%tangential_grad, dir, nk, &
+                    unscale=tang*norm*US%s_to_T)
+    if (allocated(segment%normal_trans)) &
+      call write_3d_array_vals("normal_trans"//trim(sn), segment%normal_trans, dir, nk, &
+                    unscale=norm*GV%H_to_mks*US%L_T_to_m_s*US%L_to_m)
+    if (allocated(segment%grad_normal)) &
+      call write_3d_array_vals("grad_normal"//trim(sn), segment%grad_normal, dir, nk, unscale=norm*tang*US%L_T_to_m_s)
+    if (allocated(segment%grad_tan)) &
+      call write_3d_array_vals("grad_tan"//trim(sn), segment%grad_tan, dir, nk, unscale=1.0*US%L_T_to_m_s)
+    if (allocated(segment%grad_gradient)) &
+      call write_3d_array_vals("grad_gradient"//trim(sn), segment%grad_gradient, dir, nk, unscale=norm*US%s_to_T)
+
+    if (allocated(segment%rx_norm_rad)) &
+      call write_3d_array_vals("rxy_norm_rad"//trim(sn), segment%rx_norm_rad, dir, nk, unscale=1.0)
+    if (allocated(segment%ry_norm_rad)) &
+      call write_3d_array_vals("rxy_norm_rad"//trim(sn), segment%ry_norm_rad, dir, nk, unscale=1.0)
+    if (segment%is_E_or_W) then
+      if (allocated(segment%rx_norm_obl)) &
+        call write_3d_array_vals("rx_norm_obl"//trim(sn), segment%rx_norm_obl, dir, nk, unscale=US%L_T_to_m_s**2)
+      if (allocated(segment%ry_norm_obl)) &
+        call write_3d_array_vals("ry_norm_obl"//trim(sn), segment%ry_norm_obl, dir, nk, unscale=US%L_T_to_m_s**2)
+    else ! The x- and y- directions are swapped.
+      if (allocated(segment%ry_norm_obl)) &
+        call write_3d_array_vals("rx_norm_obl"//trim(sn), segment%ry_norm_obl, dir, nk, unscale=US%L_T_to_m_s**2)
+      if (allocated(segment%rx_norm_obl)) &
+        call write_3d_array_vals("ry_norm_obl"//trim(sn), segment%rx_norm_obl, dir, nk, unscale=US%L_T_to_m_s**2)
+    endif
+
+    if (allocated(segment%cff_normal)) &
+      call write_3d_array_vals("cff_normal"//trim(sn), segment%cff_normal, dir, nk, unscale=US%L_T_to_m_s**2)
+    if (allocated(segment%nudged_normal_vel)) &
+      call write_3d_array_vals("nudged_normal_vel"//trim(sn), segment%nudged_normal_vel, dir, nk, &
+                    unscale=norm*US%L_T_to_m_s)
+    if (allocated(segment%nudged_tangential_vel)) &
+      call write_3d_array_vals("nudged_tangential_vel"//trim(sn), segment%nudged_tangential_vel, dir, nk, &
+                    unscale=tang*US%L_T_to_m_s)
+    if (allocated(segment%nudged_tangential_grad)) &
+      call write_3d_array_vals("nudged_tangential_grad"//trim(sn), segment%nudged_tangential_grad, dir, nk, &
+                    unscale=tang*norm*US%s_to_T)
+
+  contains
+
+  !> Write out the values in a named 2-d segment data array
+  subroutine write_2d_array_vals(name, Array, seg_dir, nkp, unscale)
+    character(len=*),     intent(in) :: name    !< The name of the variable
+    real, dimension(:,:), intent(in) :: Array   !< The 2-d array to write [A ~> a]
+    integer,              intent(in) :: seg_dir !< The direction of the segment
+    integer,              intent(in) :: nkp     !< Print all the values if this is greater than 0
+    real,       optional, intent(in) :: unscale !< A factor that undoes the scaling of the array [a A-1 ~> 1]
+    ! Local variables
+    real :: scale  !  A factor that undoes the scaling of the array [a A-1 ~> 1]
+    character(len=1024) :: mesg
+    character(len=24) :: val
+    integer :: i, j, n, iounit
+
+    scale = 1.0 ; if (present(unscale)) scale = unscale
+    iounit = stderr
+
+    if (nkp > 0) then
+      write(iounit, '(2X,A,":")') trim(name)
+      mesg = "" ; n = 0
+      if ((seg_dir == OBC_DIRECTION_N) .or. (seg_dir == OBC_DIRECTION_W)) then
+        do j=size(Array,2),1,-1 ; do i=size(Array,1),1,-1
+          write(val, '(ES16.6)') scale*Array(i,j)
+          mesg = trim(mesg)//" "//trim(val) ;  n = n + 1
+          if (n >= 12) then
+            write(iounit, '(2X,A)') trim(mesg)
+            mesg = "" ; n = 0
+          endif
+        enddo ; enddo
+      else
+        do j=1,size(Array,2) ; do i=1,size(Array,1)
+          write(val, '(ES16.6)') scale*Array(i,j)
+          mesg = trim(mesg)//" "//trim(val) ;  n = n + 1
+          if (n >= 12) then
+            write(iounit, '(2X,A)') trim(mesg)
+            mesg = "" ; n = 0
+          endif
+        enddo ; enddo
+      endif
+      if (n > 0) write(iounit, '(2X,A)') trim(mesg)
+    endif
+
+    if (scale == 1.0) then
+      call chksum(Array, name)
+    else
+      call chksum(scale*Array(:,:), name)
+    endif
+  end subroutine write_2d_array_vals
+
+  !> Write out the values in a 3-d segment data array
+  subroutine write_3d_array_vals(name, Array, seg_dir, nkp, unscale)
+    character(len=*),       intent(in) :: name    !< The name of the variable
+    real, dimension(:,:,:), intent(in) :: Array   !< The 3-d array to write
+    integer,                intent(in) :: seg_dir !< The direction of the segment
+    integer,                intent(in) :: nkp     !< The number of layers to print
+    real,         optional, intent(in) :: unscale !< A factor that undoes the scaling of the array [a A-1 ~> 1]
+    ! Local variables
+    real :: scale  !  A factor that undoes the scaling of the array [a A-1 ~> 1]
+    logical :: reverse
+    character(len=1024) :: mesg
+    character(len=24) :: val
+    integer :: i, j, k, n, nk, iounit
+
+    scale = 1.0 ; if (present(unscale)) scale = unscale
+    iounit = stderr
+
+    if (nkp > 0) then
+      nk = min(nkp, size(Array,3))
+      write(iounit, '(2X,A,":")') trim(name)
+      do k=1,nk
+        mesg = "" ; n = 0
+        if ((seg_dir == OBC_DIRECTION_N) .or. (seg_dir == OBC_DIRECTION_W)) then
+          do j=size(Array,2),1,-1 ; do i=size(Array,1),1,-1
+            write(val, '(ES16.6)') scale*Array(i,j,k)
+            mesg = trim(mesg)//" "//trim(val) ; n = n + 1
+            if (n >= 12) then
+              write(iounit, '(2X,A)') trim(mesg)
+              mesg = "" ; n = 0
+            endif
+          enddo ; enddo
+        else
+          do j=1,size(Array,2) ; do i=1,size(Array,1)
+            write(val, '(ES16.6)') scale*Array(i,j,k)
+            mesg = trim(mesg)//" "//trim(val) ; n = n + 1
+            if (n >= 12) then
+              write(iounit, '(2X,A)') trim(mesg)
+              mesg = "" ; n = 0
+            endif
+          enddo ; enddo
+        endif
+        if (n > 0) write(iounit, '(2X,A)') trim(mesg)
+      enddo
+    endif
+
+    if (scale == 1.0) then
+      call chksum(Array, name)
+    else
+      call chksum(scale*Array(:,:,:), name)
+    endif
+
+  end subroutine write_3d_array_vals
+
+end procedure chksum_OBC_segment_data
+end submodule MOM_open_boundary_s

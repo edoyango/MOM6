@@ -124,45 +124,16 @@ type, public :: tracer_flow_control_CS ; private
   !>@}
 end type tracer_flow_control_CS
 
-contains
 
-
-!> This subroutine carries out a series of calls to initialize the air-sea
-!! tracer fluxes, but it does not record the generated indicies, and it may
-!! be called _before_ the ocean model has been initialized and may be called
-!! on non-ocean PEs.  It is not necessary to call this routine for ocean-only
-!! runs, because the same calls are made again inside of the routines called by
-!! call_tracer_register
-subroutine call_tracer_flux_init(verbosity)
+  interface
+module subroutine call_tracer_flux_init(verbosity)
   integer, optional, intent(in) :: verbosity !< A 0-9 integer indicating a level of verbosity.
 
-  type(param_file_type) :: param_file ! A structure to parse for run-time parameters
-  character(len=40)  :: mdl = "call_tracer_flux_init"  ! This module's name.
-  logical :: use_OCMIP_CFCs, use_MOM_generic_tracer
 
   ! Determine which tracer routines with tracer fluxes are to be called.  Note
   ! that not every tracer package is required to have a flux_init call.
-  call get_MOM_Input(param_file, check_params=.false.)
-
-  call get_param(param_file, mdl, "USE_OCMIP2_CFC", use_OCMIP_CFCs, &
-                 default=.false., do_not_log=.true.)
-  call get_param(param_file, mdl, "USE_generic_tracer", use_MOM_generic_tracer,&
-                 default=.false., do_not_log=.true.)
-  call close_param_file(param_file, quiet_close=.true.)
-
-  if (use_OCMIP_CFCs) call flux_init_OCMIP2_CFC(verbosity=verbosity)
-  if (use_MOM_generic_tracer) then
-    call MOM_generic_flux_init(verbosity=verbosity)
-  endif
-
 end subroutine call_tracer_flux_init
-
-! The following 5 subroutines and associated definitions provide the machinery to register and call
-! the subroutines that initialize tracers and apply vertical column processes to tracers.
-
-!> This subroutine determines which tracer packages are to be used and does the calls to
-!! register their tracers to be advected, diffused, and read from restarts.
-subroutine call_tracer_register(G, GV, US, param_file, CS, tr_Reg, restart_CS)
+module subroutine call_tracer_register(G, GV, US, param_file, CS, tr_Reg, restart_CS)
   type(ocean_grid_type),        intent(in) :: G          !< The ocean's grid structure.
   type(verticalGrid_type),      intent(in) :: GV         !< The ocean's vertical grid structure.
   type(unit_scale_type),        intent(in) :: US         !< A dimensional unit scaling type
@@ -177,123 +148,9 @@ subroutine call_tracer_register(G, GV, US, param_file, CS, tr_Reg, restart_CS)
                                                          !! structure.
 
   ! This include declares and sets the variable "version".
-# include "version_variable.h"
-  character(len=40)  :: mdl = "MOM_tracer_flow_control" ! This module's name.
-
-  if (associated(CS)) then
-    call MOM_error(WARNING, "call_tracer_register called with an associated "// &
-                            "control structure.")
-    return
-  else ; allocate(CS) ; endif
-
-  ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mdl, version, "")
-  call get_param(param_file, mdl, "USE_USER_TRACER_EXAMPLE", CS%use_USER_tracer_example, &
-                 "If true, use the USER_tracer_example tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_DOME_TRACER", CS%use_DOME_tracer, &
-                 "If true, use the DOME_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_ISOMIP_TRACER", CS%use_ISOMIP_tracer, &
-                 "If true, use the ISOMIP_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_RGC_TRACER", CS%use_RGC_tracer, &
-                 "If true, use the RGC_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_IDEAL_AGE_TRACER", CS%use_ideal_age, &
-                 "If true, use the ideal_age_example tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_MARBL_TRACERS", CS%use_marbl_tracers, &
-                 "If true, use the MARBL tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_REGIONAL_DYES", CS%use_regional_dyes, &
-                 "If true, use the regional_dyes tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_OIL_TRACER", CS%use_oil, &
-                 "If true, use the oil_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_ADVECTION_TEST_TRACER", CS%use_advection_test_tracer, &
-                 "If true, use the advection_test_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_OCMIP2_CFC", CS%use_OCMIP2_CFC, &
-                 "If true, use the MOM_OCMIP2_CFC tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_CFC_CAP", CS%use_CFC_cap, &
-                 "If true, use the MOM_CFC_cap tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_generic_tracer", CS%use_MOM_generic_tracer, &
-                 "If true and _USE_GENERIC_TRACER is defined as a "//&
-                 "preprocessor macro, use the MOM_generic_tracer packages.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_PSEUDO_SALT_TRACER", CS%use_pseudo_salt_tracer, &
-                 "If true, use the pseudo salt tracer, typically run as a diagnostic.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_BOUNDARY_IMPULSE_TRACER", CS%use_boundary_impulse_tracer, &
-                 "If true, use the boundary impulse tracer.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_DYED_OBC_TRACER", CS%use_dyed_obc_tracer, &
-                 "If true, use the dyed_obc_tracer tracer package.", &
-                 default=.false.)
-  call get_param(param_file, mdl, "USE_NW2_TRACERS", CS%use_nw2_tracers, &
-                 "If true, use the NeverWorld2 tracers.", &
-                 default=.false.)
-
-!    Add other user-provided calls to register tracers for restarting here. Each
-!  tracer package registration call returns a logical false if it cannot be run
-!  for some reason.  This then overrides the run-time selection from above.
-  if (CS%use_USER_tracer_example) CS%use_USER_tracer_example = &
-    USER_register_tracer_example(G, GV, US, param_file, CS%USER_tracer_example_CSp, &
-                                 tr_Reg, restart_CS)
-  if (CS%use_DOME_tracer) CS%use_DOME_tracer = &
-    register_DOME_tracer(G, GV, US, param_file, CS%DOME_tracer_CSp, &
-                         tr_Reg, restart_CS)
-  if (CS%use_ISOMIP_tracer) CS%use_ISOMIP_tracer = &
-    register_ISOMIP_tracer(G%HI, GV, param_file, CS%ISOMIP_tracer_CSp, &
-                           tr_Reg, restart_CS)
-  if (CS%use_RGC_tracer) CS%use_RGC_tracer = &
-    register_RGC_tracer(G, GV, param_file, CS%RGC_tracer_CSp, &
-                           tr_Reg, restart_CS)
-  if (CS%use_ideal_age) CS%use_ideal_age = &
-    register_ideal_age_tracer(G%HI, GV, param_file, CS%ideal_age_tracer_CSp, &
-                              tr_Reg, restart_CS)
-  if (CS%use_MARBL_tracers) CS%use_MARBL_tracers = &
-    register_MARBL_tracers(G%HI, GV, US, param_file,  CS%MARBL_tracers_CSp, &
-                        tr_Reg, restart_CS, CS%get_chl_from_MARBL)
-  if (CS%use_regional_dyes) CS%use_regional_dyes = &
-    register_dye_tracer(G%HI, GV, US, param_file, CS%dye_tracer_CSp, &
-                        tr_Reg, restart_CS)
-  if (CS%use_oil) CS%use_oil = &
-    register_oil_tracer(G%HI, GV, US, param_file,  CS%oil_tracer_CSp, &
-                        tr_Reg, restart_CS)
-  if (CS%use_advection_test_tracer) CS%use_advection_test_tracer = &
-    register_advection_test_tracer(G, GV, param_file, CS%advection_test_tracer_CSp, &
-                                   tr_Reg, restart_CS)
-  if (CS%use_OCMIP2_CFC) CS%use_OCMIP2_CFC = &
-    register_OCMIP2_CFC(G%HI, GV, param_file, CS%OCMIP2_CFC_CSp, &
-                        tr_Reg, restart_CS)
-  if (CS%use_CFC_cap) CS%use_CFC_cap = &
-    register_CFC_cap(G%HI, GV, param_file, CS%CFC_cap_CSp, &
-                        tr_Reg, restart_CS)
-  if (CS%use_MOM_generic_tracer) CS%use_MOM_generic_tracer = &
-    register_MOM_generic_tracer(G%HI, GV, param_file, CS%MOM_generic_tracer_CSp, &
-                                tr_Reg, restart_CS)
-  if (CS%use_pseudo_salt_tracer) CS%use_pseudo_salt_tracer = &
-    register_pseudo_salt_tracer(G%HI, GV, param_file, CS%pseudo_salt_tracer_CSp, &
-                                tr_Reg, restart_CS)
-  if (CS%use_boundary_impulse_tracer) CS%use_boundary_impulse_tracer = &
-    register_boundary_impulse_tracer(G%HI, GV, US, param_file, CS%boundary_impulse_tracer_CSp, &
-                                     tr_Reg, restart_CS)
-  if (CS%use_dyed_obc_tracer) CS%use_dyed_obc_tracer = &
-    register_dyed_obc_tracer(G%HI, GV, param_file, CS%dyed_obc_tracer_CSp, &
-                             tr_Reg, restart_CS)
-  if (CS%use_nw2_tracers) CS%use_nw2_tracers = &
-    register_nw2_tracers(G%HI, GV, US, param_file, CS%nw2_tracers_CSp, tr_Reg, restart_CS)
 
 end subroutine call_tracer_register
-
-!> This subroutine calls all registered tracer initialization
-!! subroutines.
-subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag, OBC, &
+module subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag, OBC, &
                                     CS, sponge_CSp, ALE_sponge_CSp, tv)
   logical,                               intent(in)    :: restart !< 1 if the fields have already
                                                                   !! been read from a restart file.
@@ -324,59 +181,8 @@ subroutine tracer_flow_control_init(restart, day, G, GV, US, h, param_file, diag
   type(thermo_var_ptrs),                 intent(in)    :: tv      !< A structure pointing to various
                                                                   !! thermodynamic variables
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "tracer_flow_control_init: "// &
-         "Module must be initialized via call_tracer_register before it is used.")
-
-!  Add other user-provided calls here.
-  if (CS%use_USER_tracer_example) &
-    call USER_initialize_tracer(restart, day, G, GV, US, h, diag, OBC, CS%USER_tracer_example_CSp, &
-                                sponge_CSp)
-  if (CS%use_DOME_tracer) &
-    call initialize_DOME_tracer(restart, day, G, GV, US, h, diag, OBC, CS%DOME_tracer_CSp, &
-                                sponge_CSp, tv)
-  if (CS%use_ISOMIP_tracer) &
-    call initialize_ISOMIP_tracer(restart, day, G, GV, h, diag, OBC, CS%ISOMIP_tracer_CSp, &
-                                ALE_sponge_CSp)
-  if (CS%use_RGC_tracer) &
-    call initialize_RGC_tracer(restart, day, G, GV, h, diag, OBC, CS%RGC_tracer_CSp, &
-                                sponge_CSp, ALE_sponge_CSp)
-  if (CS%use_ideal_age) &
-    call initialize_ideal_age_tracer(restart, day, G, GV, US, h, diag, OBC, CS%ideal_age_tracer_CSp, &
-                                sponge_CSp)
-  if (CS%use_MARBL_tracers) &
-    call initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag, OBC, CS%MARBL_tracers_CSp, &
-                                sponge_CSp)
-  if (CS%use_regional_dyes) &
-    call initialize_dye_tracer(restart, day, G, GV, US, h, diag, OBC, CS%dye_tracer_CSp, sponge_CSp, tv)
-  if (CS%use_oil) &
-    call initialize_oil_tracer(restart, day, G, GV, US, h, diag, OBC, CS%oil_tracer_CSp, sponge_CSp)
-  if (CS%use_advection_test_tracer) &
-    call initialize_advection_test_tracer(restart, day, G, GV, h, diag, OBC, CS%advection_test_tracer_CSp, &
-                                sponge_CSp)
-  if (CS%use_OCMIP2_CFC) &
-    call initialize_OCMIP2_CFC(restart, day, G, GV, US, h, diag, OBC, CS%OCMIP2_CFC_CSp, sponge_CSp)
-  if (CS%use_CFC_cap) &
-    call initialize_CFC_cap(restart, day, G, GV, US, h, diag, OBC, CS%CFC_cap_CSp)
-
-  if (CS%use_MOM_generic_tracer) &
-    call initialize_MOM_generic_tracer(restart, day, G, GV, US, h, tv, param_file, diag, OBC, &
-                                CS%MOM_generic_tracer_CSp, sponge_CSp, ALE_sponge_CSp)
-  if (CS%use_pseudo_salt_tracer) &
-    call initialize_pseudo_salt_tracer(restart, day, G, GV, US, h, diag, OBC, CS%pseudo_salt_tracer_CSp, &
-                                sponge_CSp, tv)
-  if (CS%use_boundary_impulse_tracer) &
-    call initialize_boundary_impulse_tracer(restart, day, G, GV, US, h, diag, OBC, CS%boundary_impulse_tracer_CSp, &
-                                sponge_CSp, tv)
-  if (CS%use_dyed_obc_tracer) &
-    call initialize_dyed_obc_tracer(restart, day, G, GV, h, diag, OBC, CS%dyed_obc_tracer_CSp)
-  if (CS%use_nw2_tracers) &
-    call initialize_nw2_tracers(restart, day, G, GV, US, h, tv, diag, CS%nw2_tracers_CSp)
-
 end subroutine tracer_flow_control_init
-
-!> This subroutine calls all registered tracers to register their OBC segments
-!! similar to register_temp_salt_segments for T&S
-subroutine call_tracer_register_obc_segments(GV, param_file, CS, tr_Reg, OBC)
+module subroutine call_tracer_register_obc_segments(GV, param_file, CS, tr_Reg, OBC)
   type(verticalGrid_type),      intent(in) :: GV         !< The ocean's vertical grid structure.
   type(param_file_type),        intent(in) :: param_file !< A structure to parse for run-time
                                                          !! parameters.
@@ -390,13 +196,8 @@ subroutine call_tracer_register_obc_segments(GV, param_file, CS, tr_Reg, OBC)
                                                          !! and what open boundary
                                                          !! conditions are used.
 
-  if (CS%use_MOM_generic_tracer) &
-      call register_MOM_generic_tracer_segments(CS%MOM_generic_tracer_CSp, GV, OBC, tr_Reg, param_file)
-
 end subroutine call_tracer_register_obc_segments
-
-!> This subroutine extracts the chlorophyll concentrations from the model state, if possible
-subroutine get_chl_from_model(Chl_array, G, GV, CS)
+module subroutine get_chl_from_model(Chl_array, G, GV, CS)
   type(ocean_grid_type),        intent(in)  :: G         !< The ocean's grid structure.
   type(verticalGrid_type),      intent(in)  :: GV        !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -405,21 +206,8 @@ subroutine get_chl_from_model(Chl_array, G, GV, CS)
   type(tracer_flow_control_CS), pointer     :: CS        !< The control structure returned by a
                                                          !! previous call to call_tracer_register.
 
-  if (CS%get_chl_from_MARBL) then
-    call MARBL_tracers_get('Chl', G, GV, Chl_array, CS%MARBL_tracers_CSp)
-  elseif (CS%use_MOM_generic_tracer) then
-    call MOM_generic_tracer_get('chl', 'field', Chl_array, CS%MOM_generic_tracer_CSp)
-  else
-    call MOM_error(FATAL, "get_chl_from_model was called in a configuration "// &
-             "that is unable to provide a sensible model-based value.\n"// &
-             "CS%use_MOM_generic_tracer is false and no other viable options are on.")
-  endif
-
 end subroutine get_chl_from_model
-
-!> This subroutine calls the individual tracer modules' subroutines to
-!! specify or read quantities related to their surface forcing.
-subroutine call_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, G, US, Rho0, CS)
+module subroutine call_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, G, US, Rho0, CS)
 
   type(surface),                intent(inout) :: sfc_state !< A structure containing fields that
                                                            !! describe the surface state of the
@@ -436,22 +224,8 @@ subroutine call_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, G
   type(tracer_flow_control_CS), pointer       :: CS        !< The control structure returned by a
                                                            !! previous call to call_tracer_register.
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_set_forcing: "// &
-         "Module must be initialized via call_tracer_register before it is used.")
-!  if (CS%use_ideal_age) &
-!    call ideal_age_tracer_set_forcing(sfc_state, fluxes, day_start, day_interval, &
-!                                      G, CS%ideal_age_tracer_CSp)
-  if (CS%use_CFC_cap) &
-    call CFC_cap_set_forcing(sfc_state, fluxes, day_start, day_interval, G, US, Rho0, &
-                             CS%CFC_cap_CSp)
-
-  if (CS%use_MARBL_tracers) &
-    call MARBL_tracers_set_forcing(day_start, G, CS%MARBL_tracers_CSp)
-
 end subroutine call_tracer_set_forcing
-
-!> This subroutine calls all registered tracer column physics subroutines.
-subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, mld, dt, G, GV, US, tv, optics, CS, &
+module subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, mld, dt, G, GV, US, tv, optics, CS, &
                                   debug, KPP_CSp, nonLocalTrans, evap_CFL_limit, minimum_forcing_depth, h_BL)
   type(ocean_grid_type),                 intent(in) :: G      !< The ocean's grid structure.
   type(verticalGrid_type),               intent(in) :: GV     !< The ocean's vertical grid structure.
@@ -490,185 +264,9 @@ subroutine call_tracer_column_fns(h_old, h_new, ea, eb, fluxes, mld, dt, G, GV, 
   real, dimension(:,:),        optional, pointer    :: h_BL   !< Thickness of active mixing layer [H ~> m or kg m-2]
 
   ! Local variables
-  real :: Hbl(SZI_(G),SZJ_(G))    !< Boundary layer thickness [H ~> m or kg m-2]
-  logical :: use_h_BL
-
-  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_column_fns: "// &
-         "Module must be initialized via call_tracer_register before it is used.")
-
-  ! Use the applyTracerBoundaryFluxesInOut to handle surface fluxes
-  if (present(evap_CFL_limit) .and. present(minimum_forcing_depth)) then
-    ! Add calls to tracer column functions here.
-    if (CS%use_USER_tracer_example) &
-      call tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                 G, GV, US, CS%USER_tracer_example_CSp)
-    if (CS%use_DOME_tracer) &
-      call DOME_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%DOME_tracer_CSp, &
-                                      evap_CFL_limit=evap_CFL_limit, &
-                                      minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_ISOMIP_tracer) &
-      call ISOMIP_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                        G, GV, US, CS%ISOMIP_tracer_CSp, &
-                                        evap_CFL_limit=evap_CFL_limit, &
-                                        minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_RGC_tracer) &
-      call RGC_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                        G, GV, US, CS%RGC_tracer_CSp, &
-                                        evap_CFL_limit=evap_CFL_limit, &
-                                        minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_ideal_age) then
-      use_h_BL = .false. ; if (present(h_BL)) use_h_BL = associated(h_BL)
-      if (present(h_BL)) then
-        Hbl(:,:) = h_BL(:,:)
-      else  ! This option is here mostly to support the offline tracers.
-        call convert_MLD_to_ML_thickness(mld, h_new, Hbl, tv, G, GV)
-      endif
-      call ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                           G, GV, US, CS%ideal_age_tracer_CSp, &
-                                           evap_CFL_limit=evap_CFL_limit, &
-                                           minimum_forcing_depth=minimum_forcing_depth, Hbl=Hbl)
-    endif
-    if (CS%use_MARBL_tracers) &
-      call MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                        G, GV, US, CS%MARBL_tracers_CSp, tv, &
-                                        KPP_CSp=KPP_CSp, &
-                                        nonLocalTrans=nonLocalTrans, &
-                                        evap_CFL_limit=evap_CFL_limit, &
-                                        minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_regional_dyes) &
-      call dye_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, tv, CS%dye_tracer_CSp, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_oil) &
-      call oil_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%oil_tracer_CSp, tv, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-
-    if (CS%use_advection_test_tracer) &
-      call advection_test_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                                G, GV, US, CS%advection_test_tracer_CSp, &
-                                                evap_CFL_limit=evap_CFL_limit, &
-                                                minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_OCMIP2_CFC) &
-      call OCMIP2_CFC_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%OCMIP2_CFC_CSp, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_CFC_cap) &
-      call CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%CFC_cap_CSp, &
-                                     KPP_CSp=KPP_CSp, &
-                                     nonLocalTrans=nonLocalTrans, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_MOM_generic_tracer) then
-      if (US%QRZ_T_to_W_m2 /= 1.0) call MOM_error(FATAL, "MOM_generic_tracer_column_physics "//&
-            "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
-            "[QRZT]_RESCALE_POWER parameters to 0.")
-      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, mld, dt, &
-                                             G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics, &
-                                             evap_CFL_limit=evap_CFL_limit, &
-                                             minimum_forcing_depth=minimum_forcing_depth)
-    endif
-    if (CS%use_pseudo_salt_tracer) &
-      call pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%pseudo_salt_tracer_CSp, tv, &
-                                     debug, &
-                                     KPP_CSp=KPP_CSp, &
-                                     nonLocalTrans=nonLocalTrans, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_boundary_impulse_tracer) &
-      call boundary_impulse_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%boundary_impulse_tracer_CSp, tv, debug, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_dyed_obc_tracer) &
-      call dyed_obc_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%dyed_obc_tracer_CSp, &
-                                      evap_CFL_limit=evap_CFL_limit, &
-                                      minimum_forcing_depth=minimum_forcing_depth)
-    if (CS%use_nw2_tracers) &
-      call nw2_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, tv, CS%nw2_tracers_CSp, &
-                                     evap_CFL_limit=evap_CFL_limit, &
-                                     minimum_forcing_depth=minimum_forcing_depth)
-  else ! Apply tracer surface fluxes using ea on the first layer
-    if (CS%use_USER_tracer_example) &
-      call tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                 G, GV, US, CS%USER_tracer_example_CSp)
-    if (CS%use_DOME_tracer) &
-      call DOME_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%DOME_tracer_CSp)
-    if (CS%use_ISOMIP_tracer) &
-      call ISOMIP_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%ISOMIP_tracer_CSp)
-    if (CS%use_RGC_tracer) &
-      call RGC_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%RGC_tracer_CSp)
-    if (CS%use_ideal_age) then
-      use_h_BL = .false. ; if (present(h_BL)) use_h_BL = associated(h_BL)
-      if (present(h_BL)) then
-        Hbl(:,:) = h_BL(:,:)
-      else  ! This option is here mostly to support the offline tracers.
-        call convert_MLD_to_ML_thickness(mld, h_new, Hbl, tv, G, GV)
-      endif
-      call ideal_age_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                           G, GV, US, CS%ideal_age_tracer_CSp, Hbl=Hbl)
-    endif
-    if (CS%use_MARBL_tracers) &
-      call MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                        G, GV, US, CS%MARBL_tracers_CSp, tv, &
-                                        KPP_CSp=KPP_CSp, &
-                                        nonLocalTrans=nonLocalTrans)
-    if (CS%use_regional_dyes) &
-      call dye_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                           G, GV, US, tv, CS%dye_tracer_CSp)
-    if (CS%use_oil) &
-      call oil_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%oil_tracer_CSp, tv)
-    if (CS%use_advection_test_tracer) &
-      call advection_test_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%advection_test_tracer_CSp)
-    if (CS%use_OCMIP2_CFC) &
-      call OCMIP2_CFC_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%OCMIP2_CFC_CSp)
-    if (CS%use_CFC_cap) &
-      call CFC_cap_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%CFC_cap_CSp, &
-                                     KPP_CSp=KPP_CSp, &
-                                     nonLocalTrans=nonLocalTrans)
-    if (CS%use_MOM_generic_tracer) then
-      if (US%QRZ_T_to_W_m2 /= 1.0) call MOM_error(FATAL, "MOM_generic_tracer_column_physics "//&
-            "has not been written to permit dimensionsal rescaling.  Set all 4 of the "//&
-            "[QRZT]_RESCALE_POWER parameters to 0.")
-      call MOM_generic_tracer_column_physics(h_old, h_new, ea, eb, fluxes, mld, dt, &
-                                     G, GV, US, CS%MOM_generic_tracer_CSp, tv, optics)
-    endif
-    if (CS%use_pseudo_salt_tracer) &
-      call pseudo_salt_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%pseudo_salt_tracer_CSp, &
-                                     tv, debug, &
-                                     KPP_CSp=KPP_CSp, &
-                                     nonLocalTrans=nonLocalTrans)
-    if (CS%use_boundary_impulse_tracer) &
-      call boundary_impulse_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                     G, GV, US, CS%boundary_impulse_tracer_CSp, tv, debug)
-    if (CS%use_dyed_obc_tracer) &
-      call dyed_obc_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                      G, GV, US, CS%dyed_obc_tracer_CSp)
-    if (CS%use_nw2_tracers) call nw2_tracer_column_physics(h_old, h_new, ea, eb, fluxes, dt, &
-                                                           G, GV, US, tv, CS%nw2_tracers_CSp)
-  endif
 
 end subroutine call_tracer_column_fns
-
-!> This subroutine calls all registered tracer packages to enable them to
-!! add to the surface state returned to the coupler. These routines are optional.
-subroutine call_tracer_stocks(h, stock_values, G, GV, US, CS, stock_names, stock_units, &
+module subroutine call_tracer_stocks(h, stock_values, G, GV, US, CS, stock_names, stock_units, &
                               num_stocks, stock_index, got_min_max, global_min, global_max, &
                               xgmin, ygmin, zgmin, xgmax, ygmax, zgmax)
   type(ocean_grid_type),          intent(in)  :: G           !< The ocean's grid structure.
@@ -706,121 +304,13 @@ subroutine call_tracer_stocks(h, stock_values, G, GV, US, CS, stock_names, stock
   real, dimension(:), optional, intent(out)   :: zgmax       !< The z-position of the global maximum [layer]
 
   ! Local variables
-  character(len=200), dimension(MAX_FIELDS_) :: names, units
-  character(len=200) :: set_pkg_name
   ! real, dimension(MAX_FIELDS_) :: values ! Globally integrated tracer amounts in a
                                            ! new list for each tracer package [kg conc]
-  type(EFP_type), dimension(MAX_FIELDS_) :: values_EFP     ! Globally integrated tracer amounts in a
                                                            ! new list for each tracer package [kg conc]
-  type(EFP_type), dimension(MAX_FIELDS_) :: stock_val_EFP  ! Globally integrated tracer amounts in a
                                                            ! single master list for all tracers [kg conc]
-  integer :: max_ns, ns_tot, ns, index, nn, n
-
-  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_stocks: "// &
-       "Module must be initialized via call_tracer_register before it is used.")
-
-  index = -1 ; if (present(stock_index)) index = stock_index
-  ns_tot = 0
-  max_ns = size(stock_values)
-  if (present(stock_names)) max_ns = min(max_ns,size(stock_names))
-  if (present(stock_units)) max_ns = min(max_ns,size(stock_units))
-
-!  Add other user-provided calls here.
-  if (CS%use_USER_tracer_example) then
-    ns = USER_tracer_stock(h, values_EFP, G, GV, CS%USER_tracer_example_CSp, &
-                           names, units, stock_index)
-    call store_stocks("tracer_example", ns, names, units, values_EFP, index, stock_val_EFP, &
-                       set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-! if (CS%use_DOME_tracer) then
-!   ns = DOME_tracer_stock(h, values, G, GV, CS%DOME_tracer_CSp, &
-!                          names, units, stock_index)
-!   do n=1,ns ; values_EFP(n) = real_to_EFP(values(n)) ; enddo
-!   call store_stocks("DOME_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-!                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-! endif
-  if (CS%use_ideal_age) then
-    ns = ideal_age_stock(h, values_EFP, G, GV, CS%ideal_age_tracer_CSp, &
-                         names, units, stock_index)
-    call store_stocks("ideal_age_example", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-  if (CS%use_MARBL_tracers) then
-    ns = MARBL_tracers_stock(h, values_EFP, G, GV, CS%MARBL_tracers_CSp, &
-                             names, units, stock_index)
-    call store_stocks("MARBL_tracers", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-  if (CS%use_regional_dyes) then
-    ns = dye_stock(h, values_EFP, G, GV, CS%dye_tracer_CSp, names, units, stock_index)
-    call store_stocks("regional_dyes", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-  if (CS%use_oil) then
-    ns = oil_stock(h, values_EFP, G, GV, CS%oil_tracer_CSp, names, units, stock_index)
-    call store_stocks("oil_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-  if (CS%use_OCMIP2_CFC) then
-    ns = OCMIP2_CFC_stock(h, values_EFP, G, GV, CS%OCMIP2_CFC_CSp, names, units, stock_index)
-    call store_stocks("MOM_OCMIP2_CFC", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-
-  if (CS%use_CFC_cap) then
-    ns = CFC_cap_stock(h, values_EFP, G, GV, CS%CFC_cap_CSp, names, units, stock_index)
-    call store_stocks("MOM_CFC_cap", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-
-  if (CS%use_advection_test_tracer) then
-    ns = advection_test_stock( h, values_EFP, G, GV, CS%advection_test_tracer_CSp, &
-                         names, units, stock_index )
-    ! do n=1,ns ; values_EFP(n) = real_to_EFP(values(n)) ; enddo
-    call store_stocks("advection_test_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-
-  if (CS%use_MOM_generic_tracer) then
-    ns = MOM_generic_tracer_stock(h, values_EFP, G, GV, CS%MOM_generic_tracer_CSp, &
-                                   names, units, stock_index)
-    call store_stocks("MOM_generic_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-    nn=ns_tot-ns+1
-    if (present(got_min_max) .and. present(global_min) .and. present(global_max)) &
-      nn = MOM_generic_tracer_min_max(nn, got_min_max, global_min, global_max, &
-                                      G, CS%MOM_generic_tracer_CSp, names, units, &
-                                      xgmin, ygmin, zgmin, xgmax, ygmax, zgmax)
-
-  endif
-  if (CS%use_pseudo_salt_tracer) then
-    ns = pseudo_salt_stock(h, values_EFP, G, GV, CS%pseudo_salt_tracer_CSp, &
-                         names, units, stock_index)
-    call store_stocks("pseudo_salt_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-
-  if (CS%use_boundary_impulse_tracer) then
-    ns = boundary_impulse_stock(h, values_EFP, G, GV, CS%boundary_impulse_tracer_CSp, &
-                         names, units, stock_index)
-    call store_stocks("boundary_impulse_tracer", ns, names, units, values_EFP, index, stock_val_EFP, &
-                      set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
-  endif
-
-  !   Sum the various quantities across all the processors.
-  if (ns_tot > 0) then
-    call EFP_sum_across_PEs(stock_val_EFP, ns_tot)
-    do n=1,ns_tot ; stock_values(n) = EFP_to_real(stock_val_EFP(n)) ; enddo
-  else
-    stock_values(1) = 0.0
-  endif
-
-  if (present(num_stocks)) num_stocks = ns_tot
 
 end subroutine call_tracer_stocks
-
-!> This routine stores the stocks and does error handling for call_tracer_stocks.
-subroutine store_stocks(pkg_name, ns, names, units, values, index, stock_values, &
+module subroutine store_stocks(pkg_name, ns, names, units, values, index, stock_values, &
                         set_pkg_name, max_ns, ns_tot, stock_names, stock_units)
   character(len=*),   intent(in)    :: pkg_name !< The tracer package name
   integer,            intent(in)    :: ns      !< The number of stocks associated with this tracer package
@@ -846,43 +336,9 @@ subroutine store_stocks(pkg_name, ns, names, units, values, index, stock_values,
             optional, intent(inout) :: stock_units !< Units to use in the metadata for each stock in the master list
 
 ! This routine stores the stocks and does error handling for call_tracer_stocks.
-  character(len=16) :: ind_text, ns_text, max_text
-  integer :: n
-
-  if ((index > 0) .and. (ns > 0)) then
-    write(ind_text,'(I0)') index
-    if (ns > 1) then
-      call MOM_error(FATAL,"Tracer package "//trim(pkg_name)//&
-          " is not permitted to return more than one value when queried "//&
-          "for specific stock index "//trim(ind_text)//".")
-    elseif (ns+ns_tot > 1) then
-      call MOM_error(FATAL,"Tracer packages "//trim(pkg_name)//" and "//&
-          trim(set_pkg_name)//" both attempted to set values for "//&
-          "specific stock index "//trim(ind_text)//".")
-    else
-      set_pkg_name = pkg_name
-    endif
-  endif
-
-  if (ns_tot+ns > max_ns) then
-    write(ns_text,'(I0)') ns_tot+ns ; write(max_text,'(I0)') max_ns
-    call MOM_error(FATAL,"Attempted to return more tracer stock values (at least "//&
-      trim(ns_text)//") than the size "//trim(max_text)//&
-      "of the smallest value, name, or units array.")
-  endif
-
-  do n=1,ns
-    stock_values(ns_tot+n) = values(n)
-    if (present(stock_names)) stock_names(ns_tot+n) = names(n)
-    if (present(stock_units)) stock_units(ns_tot+n) = units(n)
-  enddo
-  ns_tot = ns_tot + ns
 
 end subroutine store_stocks
-
-!> This subroutine calls all registered tracer packages to enable them to
-!! add to the surface state returned to the coupler. These routines are optional.
-subroutine call_tracer_surface_state(sfc_state, h, G, GV, US, CS)
+module subroutine call_tracer_surface_state(sfc_state, h, G, GV, US, CS)
   type(surface),                intent(inout) :: sfc_state !< A structure containing fields that
                                                        !! describe the surface state of the ocean.
   type(ocean_grid_type),        intent(in)    :: G     !< The ocean's grid structure.
@@ -893,65 +349,12 @@ subroutine call_tracer_surface_state(sfc_state, h, G, GV, US, CS)
   type(tracer_flow_control_CS), pointer       :: CS    !< The control structure returned by a
                                                        !! previous call to call_tracer_register.
 
-  if (.not. associated(CS)) call MOM_error(FATAL, "call_tracer_surface_state: "// &
-         "Module must be initialized via call_tracer_register before it is used.")
-
-!  Add other user-provided calls here.
-  if (CS%use_USER_tracer_example) &
-    call USER_tracer_surface_state(sfc_state, h, G, GV, CS%USER_tracer_example_CSp)
-  if (CS%use_DOME_tracer) &
-    call DOME_tracer_surface_state(sfc_state, h, G, GV, CS%DOME_tracer_CSp)
-  if (CS%use_ISOMIP_tracer) &
-    call ISOMIP_tracer_surface_state(sfc_state, h, G, GV, CS%ISOMIP_tracer_CSp)
-  if (CS%use_ideal_age) &
-    call ideal_age_tracer_surface_state(sfc_state, h, G, GV, CS%ideal_age_tracer_CSp)
-  if (CS%use_MARBL_tracers) &
-    call MARBL_tracers_surface_state(sfc_state, G, US, CS%MARBL_tracers_CSp)
-  if (CS%use_regional_dyes) &
-    call dye_tracer_surface_state(sfc_state, h, G, GV, CS%dye_tracer_CSp)
-  if (CS%use_oil) &
-    call oil_tracer_surface_state(sfc_state, h, G, GV, CS%oil_tracer_CSp)
-  if (CS%use_advection_test_tracer) &
-    call advection_test_tracer_surface_state(sfc_state, h, G, GV, CS%advection_test_tracer_CSp)
-  if (CS%use_OCMIP2_CFC) &
-    call OCMIP2_CFC_surface_state(sfc_state, h, G, GV, US, CS%OCMIP2_CFC_CSp)
-  if (CS%use_MOM_generic_tracer) &
-    call MOM_generic_tracer_surface_state(sfc_state, h, G, GV, CS%MOM_generic_tracer_CSp)
-
 end subroutine call_tracer_surface_state
-
-subroutine tracer_flow_control_end(CS)
+module subroutine tracer_flow_control_end(CS)
   type(tracer_flow_control_CS), pointer :: CS    !< The control structure returned by a
                                                  !! previous call to call_tracer_register.
 
-  if (CS%use_USER_tracer_example) &
-    call USER_tracer_example_end(CS%USER_tracer_example_CSp)
-  if (CS%use_DOME_tracer) call DOME_tracer_end(CS%DOME_tracer_CSp)
-  if (CS%use_ISOMIP_tracer) call ISOMIP_tracer_end(CS%ISOMIP_tracer_CSp)
-  if (CS%use_RGC_tracer) call RGC_tracer_end(CS%RGC_tracer_CSp)
-  if (CS%use_ideal_age) call ideal_age_example_end(CS%ideal_age_tracer_CSp)
-  if (CS%use_MARBL_tracers) call MARBL_tracers_end(CS%MARBL_tracers_CSp)
-  if (CS%use_regional_dyes) call regional_dyes_end(CS%dye_tracer_CSp)
-  if (CS%use_oil) call oil_tracer_end(CS%oil_tracer_CSp)
-  if (CS%use_advection_test_tracer) call advection_test_tracer_end(CS%advection_test_tracer_CSp)
-  if (CS%use_OCMIP2_CFC) call OCMIP2_CFC_end(CS%OCMIP2_CFC_CSp)
-  if (CS%use_CFC_cap) call CFC_cap_end(CS%CFC_cap_CSp)
-  if (CS%use_MOM_generic_tracer) call end_MOM_generic_tracer(CS%MOM_generic_tracer_CSp)
-  if (CS%use_pseudo_salt_tracer) call pseudo_salt_tracer_end(CS%pseudo_salt_tracer_CSp)
-  if (CS%use_boundary_impulse_tracer) call boundary_impulse_tracer_end(CS%boundary_impulse_tracer_CSp)
-  if (CS%use_dyed_obc_tracer) call dyed_obc_tracer_end(CS%dyed_obc_tracer_CSp)
-  if (CS%use_nw2_tracers) call nw2_tracers_end(CS%nw2_tracers_CSp)
-
-  if (associated(CS)) deallocate(CS)
 end subroutine tracer_flow_control_end
+  end interface
 
-!> \namespace MOM_tracer_flow_control
-!!
-!!  By Will Cooke, April 2003
-!!  Edited by Elizabeth Yankovsky, May 2019
-!!
-!!    This module contains two subroutines into which calls to other
-!!  tracer initialization (call_tracer_init_fns) and column physics
-!!  routines (call_tracer_column_fns) can be inserted.
-!!
 end module MOM_tracer_flow_control

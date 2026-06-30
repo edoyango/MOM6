@@ -51,28 +51,20 @@ module marbl_interface
     !> Error message that appears if the dummy interface is called
     character(len=*), parameter :: error_msg = "MOM6 built the MARBL stubs rather than the full library"
 
-contains
 
-    !> Dummy version of MARBL's put_setting() function
-    subroutine put_setting(self, str_in)
+  interface
+    module subroutine put_setting(self, str_in)
         class(marbl_interface_class), intent(in) :: self
         character(len=*),             intent(in) :: str_in
 
-        call MOM_error(FATAL, error_msg)
     end subroutine put_setting
-
-    !> Dummy version of MARBL's get_setting() function
-    subroutine get_setting(self, str_in, log_out)
+    module subroutine get_setting(self, str_in, log_out)
       class(marbl_interface_class), intent(in)  :: self
       character(len=*),             intent(in)  :: str_in
       logical,                      intent(out) :: log_out
 
-      log_out = .false.
-      call MOM_error(FATAL, error_msg)
-  end subroutine get_setting
-
-  !> Dummy version of MARBL's init() function
-    subroutine init(self,                  &
+    end subroutine get_setting
+    module subroutine init(self,                  &
         gcm_num_levels,                    &
         gcm_num_PAR_subcols,               &
         gcm_num_elements_surface_flux,     &
@@ -92,38 +84,23 @@ contains
         character(len=*),             intent(in)    :: unit_system_opt
         logical,                      intent(in)    :: lgcm_has_global_ops
 
-        call MOM_error(FATAL, error_msg)
     end subroutine init
-
-    !> Dummy version of MARBL's compute_totChl() function
-    subroutine compute_totChl(self)
+    module subroutine compute_totChl(self)
 
       class(marbl_interface_class), intent(inout) :: self
 
-      call MOM_error(FATAL, error_msg)
-
     end subroutine compute_totChl
-
-    !> Dummy version of MARBL's surface_flux_compute() function
-    subroutine surface_flux_compute(self)
+    module subroutine surface_flux_compute(self)
 
         class(marbl_interface_class), intent(inout) :: self
-
-        call MOM_error(FATAL, error_msg)
 
     end subroutine surface_flux_compute
-
-    !> Dummy version of MARBL's interior_tendency_compute() function
-    subroutine interior_tendency_compute(self)
+    module subroutine interior_tendency_compute(self)
 
         class(marbl_interface_class), intent(inout) :: self
 
-        call MOM_error(FATAL, error_msg)
-
     end subroutine interior_tendency_compute
-
-    !> Dummy version of MARBL's add_output_for_GCM() function
-    subroutine add_output_for_GCM(self, num_elements, field_name, output_id, field_source, num_levels)
+    module subroutine add_output_for_GCM(self, num_elements, field_name, output_id, field_source, num_levels)
 
         class (marbl_interface_class), intent(inout) :: self
         integer,                       intent(in)    :: num_elements
@@ -132,18 +109,12 @@ contains
         character(len=*),              intent(out)   :: field_source
         integer,             optional, intent(in) :: num_levels
 
-        output_id = 0
-        field_source = ""
-
     end subroutine add_output_for_GCM
-
-    !> Dummy version of MARBL's shutdown() function
-    subroutine shutdown(self)
+    module subroutine shutdown(self)
 
         class(marbl_interface_class), intent(inout) :: self
 
-        call MOM_error(FATAL, error_msg)
-
     end subroutine shutdown
+  end interface
 
 end module marbl_interface

@@ -67,21 +67,13 @@ interface build_horiz_interp_weights
   module procedure build_horiz_interp_weights_2d_to_2d
 end interface build_horiz_interp_weights
 
-contains
 
-!> Do any initialization for the horizontal interpolation
-subroutine horizontal_interp_init()
-  call horiz_interp_init()
+  interface
+module subroutine horizontal_interp_init()
 end subroutine horizontal_interp_init
-
-!> Do any initialization for the time and space interpolation infrastructure
-subroutine time_interp_extern_init()
-  call time_interp_external_init()
+module subroutine time_interp_extern_init()
 end subroutine time_interp_extern_init
-
-!> perform horizontal interpolation of a 2d field using pre-computed weights
-!! source and destination coordinates are 2d
-subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
+module subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
                                              missing_value, missing_permit, err_msg)
 
   type(horiz_interp_type),        intent(in)  :: Interp   !< type containing interpolation options and weights
@@ -95,15 +87,8 @@ subroutine horiz_interp_from_weights_field2d(Interp, data_in, data_out, verbose,
                                                           !! missing value for interpolation (0-3)
   character(len=*),     optional, intent(out) :: err_msg  !< error message
 
-  call horiz_interp(Interp, data_in, data_out, verbose, &
-                    mask_in, mask_out, missing_value, missing_permit, &
-                    err_msg, new_missing_handle=.true. )
-
 end subroutine horiz_interp_from_weights_field2d
-
-!> perform horizontal interpolation of a 3d field using pre-computed weights
-!! source and destination coordinates are 2d
-subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
+module subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose, mask_in, mask_out, &
                                              missing_value, missing_permit, err_msg)
 
   type(horiz_interp_type),          intent(in)  :: Interp   !< type containing interpolation options and weights
@@ -117,15 +102,8 @@ subroutine horiz_interp_from_weights_field3d(Interp, data_in, data_out, verbose,
                                                             !! missing value for interpolation (0-3)
   character(len=*),       optional, intent(out) :: err_msg  !< error message
 
-  call horiz_interp(Interp, data_in, data_out, verbose, mask_in, mask_out, &
-                    missing_value, missing_permit, err_msg)
-
 end subroutine horiz_interp_from_weights_field3d
-
-
-!> build horizontal interpolation weights from source grid defined by 2d lon/lat to destination grid
-!! defined by 2d lon/lat
-subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, lat_out, &
+module subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, lat_out, &
                                                verbose, interp_method, num_nbrs, max_dist, &
                                                src_modulo, mask_in, mask_out, &
                                                is_latlon_in, is_latlon_out)
@@ -145,152 +123,49 @@ subroutine build_horiz_interp_weights_2d_to_2d(Interp, lon_in, lat_in, lon_out, 
   logical,          optional, intent(in) :: is_latlon_in   !< input grid is regular lat/lon grid
   logical,          optional, intent(in) :: is_latlon_out  !< output grid is regular lat/lon grid
 
-  call horiz_interp_new(Interp, lon_in, lat_in, lon_out, lat_out, &
-                        verbose, interp_method, num_nbrs, max_dist, &
-                        src_modulo, mask_in, mask_out, &
-                        is_latlon_in, is_latlon_out)
-
 end subroutine build_horiz_interp_weights_2d_to_2d
-
-
-!> get size of an external field from field index
-function get_extern_field_size(index)
+module function get_extern_field_size(index)
 
   integer, intent(in) :: index         !< field index
   integer :: get_extern_field_size(4)  !< field size
 
-  get_extern_field_size = get_external_field_size(index)
-
 end function get_extern_field_size
-
-
-!> get axes of an external field from field index
-function get_extern_field_axes(field) result(axes)
+module function get_extern_field_axes(field) result(axes)
   type(external_field), intent(in) :: field
     !< Field handle
   type(axistype), dimension(4) :: axes
     !< Field axes
 
-  integer :: ndims
     ! Number of variable dimensions
-  integer, allocatable :: dims(:)
     ! netCDF dimension IDs of variable
-  character(len=256) :: dim_name
     ! Dimension name
-  integer :: dim_len
     ! Dimension length
-  integer :: var_dim
     ! netCDF ID of the variable associated with dimension of the same name
-  real, allocatable :: axis_points(:)
     ! Axis values
 
-  integer :: ncid
     ! netCDF file ID
-  integer :: varid
     ! netCDF variable ID
-  integer :: rc
     ! netCDF return code
 
   ! netCDF requires the following to be length-1 arrays
-  integer :: nc_start(1)
     ! netCDF start index
-  integer :: nc_count(1)
     ! netCDF index count
 
-  integer :: d
     ! Dimension index
-  character(len=2) :: d_str
     ! Display string of d
 
   ! This is a reimplementation of get_var_axes_info(), maybe it can be used
   ! by the existing get_var_axes_info() ?
 
   ! Open field%filename
-  rc = nf90_open(trim(field%filename), NF90_NOWRITE, ncid)
-  if (rc /= NF90_NOERR) &
-    call MOM_error(FATAL, "Error opening file " // trim(field%filename) // ".")
-
-  ! Use field%label to get the netCDF varid
-  rc = nf90_inq_varid(ncid, trim(field%label), varid)
-  if (rc /= NF90_NOERR) &
-    call MOM_error(FATAL, "Error finding variable " // trim(field%label) &
-        // " in " // trim(field%filename) // ".")
-
-  ! Use the varid to get the number of dims (ndims) and their IDs (dims(:))
-  !   Verify that ndims >= 3
-  rc = nf90_inquire_variable(ncid, varid, ndims=ndims)
-  if (rc /= NF90_NOERR) &
-    call MOM_error(FATAL, "Error querying variable " // trim(field%label) &
-        // " in " // trim(field%filename) // ".")
-
-  if (ndims < 3) &
-    call MOM_error(FATAL, trim(field%label) // " in " // trim(field%filename) &
-        // " has too few dimensions to be read as a 3D array.")
-
-  allocate(dims(ndims))
-
-  rc = nf90_inquire_variable(ncid, varid, dimids=dims)
-  if (rc /= NF90_NOERR) &
-    call MOM_error(FATAL, "Error querying variable " // trim(field%label) &
-        // " in " // trim(field%filename) // ".")
-
-  do d=1,ndims
-    ! Determine the name of each dimension
-    rc = nf90_inquire_dimension(ncid, dims(d), dim_name, len=dim_len)
-    if (rc /= NF90_NOERR) then
-      write(d_str, '(i0)') d
-      call MOM_error(FATAL, "Error querying dimension " // trim(d_str) &
-          // " of " // trim(field%label) // " in " // trim(field%filename) &
-          // ".")
-    endif
-
-    ! Now locate a variable with the same name as the dimension (e.g. "x")
-    rc = nf90_inq_varid(ncid, dim_name, var_dim)
-    if (rc /= NF90_NOERR) &
-      call MOM_error(FATAL, "Error finding dimension variable " &
-          // trim(dim_name) // " of " // trim(field%label) // " in " &
-          // trim(field%filename))
-
-    allocate(axis_points(dim_len))
-
-    ! Get the dimensional axis values
-    nc_start(1) = 1
-    nc_count(1) = dim_len
-    rc = nf90_get_var(ncid, var_dim, axis_points, nc_start, nc_count)
-    if (rc /= NF90_NOERR) &
-      call MOM_error(FATAL, "Error reading dimension " // trim(dim_name) &
-          // " axis data of " // trim(field%label) // " in " &
-          // trim(field%filename))
-
-    ! write via set_axis_info() equivalent for axistype
-    call set_axis_data(axes(d), dim_name, axis_points)
-
-    deallocate(axis_points)
-  enddo
-
-  deallocate(dims)
-
-  ! Close external file
-  rc = nf90_close(ncid)
-  if (rc /= NF90_NOERR) &
-    call MOM_error(FATAL, "Error closing file "//trim(field%filename)//".")
-
 end function get_extern_field_axes
-
-
-!> get missing value of an external field from field index
-function get_extern_field_missing(index)
+module function get_extern_field_missing(index)
 
   integer, intent(in) :: index     !< field index
   real :: get_extern_field_missing !< field missing value
 
-  get_extern_field_missing = get_external_field_missing(index)
-
 end function get_extern_field_missing
-
-
-!> Get information about the external fields.
-subroutine get_external_field_info(field, size, axes, missing)
+module subroutine get_external_field_info(field, size, axes, missing)
   type(external_field), intent(in) :: field
     !< handle for time interpolated external field returned from a previous
     !! call to init_external_field()
@@ -301,34 +176,15 @@ subroutine get_external_field_info(field, size, axes, missing)
   real, optional, intent(inout) :: missing
     !< Missing value for the input data
 
-  if (present(size)) then
-    size(:) = get_extern_field_size(field%id)
-  endif
-
-  if (present(axes)) then
-    axes(:) = get_extern_field_axes(field)
-  endif
-
-  if (present(missing)) then
-    missing = get_extern_field_missing(field%id)
-  endif
 end subroutine get_external_field_info
-
-
-!> Read a scalar field based on model time.
-subroutine time_interp_extern_0d(field, time, data_in, verbose)
+module subroutine time_interp_extern_0d(field, time, data_in, verbose)
   type(external_field), intent(in) :: field    !< Handle for time interpolated field
   type(time_type),   intent(in)    :: time     !< The target time for the data
   real,              intent(inout) :: data_in  !< The interpolated value
   logical, optional, intent(in)    :: verbose  !< If true, write verbose output for debugging
 
-  call time_interp_external(field%id, time, data_in, verbose=verbose)
 end subroutine time_interp_extern_0d
-
-
-!> Read a 2d field from an external based on model time, potentially including horizontal
-!! interpolation and rotation of the data
-subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_interp, mask_out)
+module subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_interp, mask_out)
   type(external_field), intent(in)    :: field    !< Handle for time interpolated field
   type(time_type),      intent(in)    :: time     !< The target time for the data
   real, dimension(:,:), intent(inout) :: data_in  !< The array in which to store the interpolated values
@@ -339,13 +195,8 @@ subroutine time_interp_extern_2d(field, time, data_in, interp, verbose, horz_int
   logical, dimension(:,:), &
               optional, intent(out)   :: mask_out !< An array that is true where there is valid data
 
-  call time_interp_external(field%id, time, data_in, interp=interp, verbose=verbose, &
-                            horz_interp=horz_interp, mask_out=mask_out)
 end subroutine time_interp_extern_2d
-
-
-!> Read a 3d field based on model time, and rotate to the model grid
-subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_interp, mask_out)
+module subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_interp, mask_out)
   type(external_field),   intent(in)    :: field    !< Handle for time interpolated field
   type(time_type),        intent(in)    :: time     !< The target time for the data
   real, dimension(:,:,:), intent(inout) :: data_in  !< The array in which to store the interpolated values
@@ -356,13 +207,8 @@ subroutine time_interp_extern_3d(field, time, data_in, interp, verbose, horz_int
   logical, dimension(:,:,:), &
                 optional, intent(out)   :: mask_out !< An array that is true where there is valid data
 
-  call time_interp_external(field%id, time, data_in, interp=interp, verbose=verbose, &
-                            horz_interp=horz_interp, mask_out=mask_out)
 end subroutine time_interp_extern_3d
-
-
-!> initialize an external field
-function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
+module function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
     threading, ierr, ignore_axis_atts, correct_leap_year_inconsistency) &
     result(field)
 
@@ -386,68 +232,15 @@ function init_extern_field(file, fieldname, MOM_domain, domain, verbose, &
                                                  !! a model date of Feb 29. onto a common year on Feb. 28.
   type(external_field) :: field                  !< Handle to external field
 
-  type(FmsNetcdfFile_t) :: extern_file
     ! Local instance of netCDF file used to locate case-insensitive field name
-  integer :: num_fields
     ! Number of fields in external file
-  character(len=256), allocatable :: extern_fieldnames(:)
     ! List of field names in file
     ! NOTE: length should NF90_MAX_NAME, but I don't know how to read it
-  character(len=:), allocatable :: label
     ! Case-insensitive match to fieldname in file
-  logical :: rc
     ! Return status
-  integer :: i
     ! Loop index
 
-  field%filename = file
-
-  ! FMS2's init_external_field is case sensitive, so we must replicate the
-  !   case-insensitivity of FMS1.  This requires opening the file twice.
-
-  rc = netcdf_file_open(extern_file, file, 'read')
-  if (.not. rc) then
-    call MOM_error(FATAL, 'init_extern_file: file ' // trim(file) &
-        // ' could not be opened.')
-  endif
-
-  ! TODO: broadcast = .false.?
-  num_fields = get_num_variables(extern_file)
-
-  allocate(extern_fieldnames(num_fields))
-  call get_variable_names(extern_file, extern_fieldnames)
-
-  do i = 1, num_fields
-    if (lowercase(extern_fieldnames(i)) == lowercase(fieldname)) then
-      field%label = extern_fieldnames(i)
-      exit
-    endif
-  enddo
-
-  call netcdf_file_close(extern_file)
-
-  if (.not. allocated(field%label)) then
-    call MOM_error(FATAL, 'init_extern_field: field ' // trim(fieldname) &
-        // ' not found in ' // trim(file) // '.')
-  endif
-
-  ! Pass to FMS2 implementation of init_external_field
-
-  ! NOTE: external fields are currently assumed to be on-grid, which holds
-  ! across the current codebase.  In the future, we may need to either enforce
-  ! this or somehow relax this requirement.
-
-  if (present(MOM_Domain)) then
-    field%id = init_external_field(file, field%label, domain=MOM_domain%mpp_domain, &
-             verbose=verbose, ierr=ierr, ignore_axis_atts=ignore_axis_atts, &
-             correct_leap_year_inconsistency=correct_leap_year_inconsistency, &
-             ongrid=.true.)
-  else
-    field%id = init_external_field(file, field%label, domain=domain, &
-             verbose=verbose, ierr=ierr, ignore_axis_atts=ignore_axis_atts, &
-             correct_leap_year_inconsistency=correct_leap_year_inconsistency, &
-             ongrid=.true.)
-  endif
 end function init_extern_field
+  end interface
 
 end module MOM_interp_infra

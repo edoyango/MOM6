@@ -1,0 +1,426 @@
+submodule (MOM_harmonic_analysis) MOM_harmonic_analysis_s
+#include <MOM_memory.h>
+  implicit none
+contains
+module procedure HA_init
+  logical :: tides                                  !< True if tidal forcing module is enabled
+  logical :: use_eq_phase                           !< If true, tidal forcing is phase-shifted to match
+  logical :: add_nodal_terms                        !< If true, insert terms for the 18.6 year modulation when
+  integer, dimension(3)  :: tide_ref_date           !< Reference date (t = 0) for tidal forcing (year, month, day)
+  integer, dimension(3)  :: nodal_ref_date          !< Date to calculate nodal modulation for (year, month, day)
+  type(time_type)        :: nodal_time              !< Model time to calculate nodal modulation for.
+  type(astro_longitudes) :: tidal_longitudes        !< Astronomical longitudes used to calculate
+  type(astro_longitudes) :: nodal_longitudes        !< Solar and lunar longitudes for tidal forcing
+  character(len=50)      :: const_name              !< Names of all tidal constituents to be harmonically analyzed
+  integer :: c
+  type(HA_type) :: ha1                              !< A temporary, null field used for initializing CS%list
+  real :: HA_start_time                             !< Start time of harmonic analysis [T ~> s]
+  real :: HA_end_time                               !< End time of harmonic analysis [T ~> s]
+  logical :: HA_ssh, HA_ubt, HA_vbt
+  character(len=40)  :: mdl="MOM_harmonic_analysis" !< This module's name
+  character(len=255) :: mesg
+  integer :: year, month, day, hour, minute, second
+  call get_param(param_file, mdl, "TIDES", tides, &
+      "If true, apply tidal momentum forcing.", default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "TIDE_USE_EQ_PHASE", use_eq_phase, &
+      "If true, add the equilibrium phase argument to the specified tidal phases.", &
+      old_name="OBC_TIDE_ADD_EQ_PHASE", default=.false., do_not_log=tides)
+  call get_param(param_file, mdl, "TIDE_ADD_NODAL", add_nodal_terms, &
+      "If true, include 18.6 year nodal modulation in the boundary tidal forcing.", &
+      old_name="OBC_TIDE_ADD_NODAL", default=.false., do_not_log=tides)
+  call get_param(param_file, mdl, "TIDE_REF_DATE", tide_ref_date, &
+      "Reference date to use for tidal calculations and equilibrium phase.", &
+      old_name="OBC_TIDE_REF_DATE", defaults=(/0, 0, 0/), do_not_log=tides)
+  call get_param(param_file, mdl, "TIDE_NODAL_REF_DATE", nodal_ref_date, &
+      "Fixed reference date to use for nodal modulation.", &
+      old_name="OBC_TIDE_NODAL_REF_DATE", defaults=(/0, 0, 0/), do_not_log=tides)
+  call get_param(param_file, mdl, "HA_CONSTITUENTS", const_name, &
+      "Names of tidal constituents to be harmonically analyzed. "//&
+      "They don't have to be the same as those used in MOM_tidal_forcing.", &
+      fail_if_missing=.true.)
+
+  if (sum(tide_ref_date) == 0) then  ! tide_ref_date defaults to 0.
+    CS%time_ref = set_date(1, 1, 1, 0, 0, 0)
+  else
+    if (.not. use_eq_phase) then
+      ! Using a reference date but not using phase relative to equilibrium.
+      ! This makes sense as long as either phases are overridden, or
+      ! correctly simulating tidal phases is not desired.
+      call MOM_mesg('Tidal phases will *not* be corrected with equilibrium arguments.')
+    endif
+    CS%time_ref = set_date(tide_ref_date(1), tide_ref_date(2), tide_ref_date(3), 0, 0, 0)
+  endif
+
+  ! Initialize reference time for tides and find relevant lunar and solar
+  ! longitudes at the reference time.
+  if (use_eq_phase) call astro_longitudes_init(CS%time_ref, tidal_longitudes)
+
+  ! If the nodal correction is based on a different time, initialize that.
+  ! Otherwise, it can use N from the time reference.
+  if (add_nodal_terms) then
+    if (sum(nodal_ref_date) /= 0) then
+      ! A reference date was provided for the nodal correction
+      nodal_time = set_date(nodal_ref_date(1), nodal_ref_date(2), nodal_ref_date(3))
+      call astro_longitudes_init(nodal_time, nodal_longitudes)
+    elseif (use_eq_phase) then
+      ! Astronomical longitudes were already calculated for use in equilibrium phases,
+      ! so use nodal longitude from that.
+      nodal_longitudes = tidal_longitudes
+    else
+      ! Tidal reference time is a required parameter, so calculate the longitudes from that.
+      call astro_longitudes_init(CS%time_ref, nodal_longitudes)
+    endif
+  endif
+
+  allocate(CS%const_name(nc))
+  allocate(CS%freq(nc))
+  allocate(CS%phase0(nc))
+  allocate(CS%tide_fn(nc))
+  allocate(CS%tide_un(nc))
+
+  ! Tidal constituents for harmonic analysis can be different from those defined in MOM_tidal_forcing
+  read(const_name, *) CS%const_name
+
+  ! For major tidal constituents, tidal parameters defined in MOM_tidal_forcing will be used.
+  ! For those not available in MOM_tidal_forcing, parameters needs to be defined in MOM_input.
+  do c=1,nc
+    call get_param(param_file, mdl, "HA_"//trim(CS%const_name(c))//"_FREQ", &
+                   CS%freq(c), "Frequency of the "//trim(CS%const_name(c))//&
+                   " constituent. This is used if USE_HA is true and "//trim(CS%const_name(c))//&
+                   " is in HA_CONSTITUENTS.", units="rad s-1", scale=US%T_to_s, default=0.0)
+    if (CS%freq(c)<=0.0) then
+      select case (trim(CS%const_name(c)))
+        case ('M4')
+          CS%freq(c) = tidal_frequency('M2') * 2
+        case ('M6')
+          CS%freq(c) = tidal_frequency('M2') * 3
+        case ('M8')
+          CS%freq(c) = tidal_frequency('M2') * 4
+        case ('S4')
+          CS%freq(c) = tidal_frequency('S2') * 2
+        case ('S6')
+          CS%freq(c) = tidal_frequency('S2') * 3
+        case ('MK3')
+          CS%freq(c) = tidal_frequency('M2') + tidal_frequency('K1')
+        case ('MS4')
+          CS%freq(c) = tidal_frequency('M2') + tidal_frequency('S2')
+        case ('MN4')
+          CS%freq(c) = tidal_frequency('M2') + tidal_frequency('N2')
+        case default
+          CS%freq(c) = tidal_frequency(trim(CS%const_name(c)))
+      end select
+    endif
+
+    call get_param(param_file, mdl, "HA_"//trim(CS%const_name(c))//"_PHASE_T0", CS%phase0(c), &
+                   "Phase of the "//trim(CS%const_name(c))//" tidal constituent at time 0. "//&
+                   "This is only used if USE_HA is true and "//trim(CS%const_name(c))// &
+                   " is in HA_CONSTITUENTS.", units="radians", default=0.0)
+    if (use_eq_phase) CS%phase0(c) = eq_phase(trim(CS%const_name(c)), tidal_longitudes)
+
+    ! Nodal modulation should be turned off for tidal constituents not available in MOM_tidal_forcing
+    if (add_nodal_terms) then
+      call nodal_fu(trim(trim(CS%const_name(c))), nodal_longitudes%N, CS%tide_fn(c), CS%tide_un(c))
+    else
+      CS%tide_fn(c) = 1.0
+      CS%tide_un(c) = 0.0
+    endif
+  enddo
+
+  ! Determine CS%time_start and CS%time_end
+  call get_param(param_file, mdl, "HA_START_TIME", HA_start_time, &
+                 "Start time of harmonic analysis, in units of days after "//&
+                 "the start of the current run segment. Must be smaller than "//&
+                 "HA_END_TIME, otherwise harmonic analysis will not be performed. "//&
+                 "If negative, |HA_START_TIME| determines the length of harmonic analysis, "//&
+                 "and harmonic analysis will start |HA_START_TIME| days before HA_END_TIME, "//&
+                 "or at the beginning of the run segment, whichever occurs later.", &
+                 units="days", default=0.0, scale=86400.0*US%s_to_T)
+  call get_param(param_file, mdl, "HA_END_TIME", HA_end_time, &
+                 "End time of harmonic analysis, in units of days after "//&
+                 "the start of the current run segment. Must be positive "//&
+                 "and smaller than the length of the currnet run segment, "//&
+                 "otherwise harmonic analysis will not be performed.", &
+                 units="days", default=0.0, scale=86400.0*US%s_to_T)
+
+  if (HA_end_time <= 0.0) then
+    call MOM_mesg('MOM_harmonic_analysis: HA_END_TIME is zero or negative. '//&
+                  'Harmonic analysis will not be performed.')
+    CS%HAready = .false. ; return
+  endif
+
+  if (HA_end_time <= HA_start_time) then
+    call MOM_mesg('MOM_harmonic_analysis: HA_END_TIME is smaller than or equal to HA_START_TIME. '//&
+                  'Harmonic analysis will not be performed.')
+    CS%HAready = .false. ; return
+  endif
+
+  CS%HAready = .true.
+
+  if (HA_start_time < 0.0) then
+    HA_start_time = HA_end_time + HA_start_time
+    if (HA_start_time <= 0.0) HA_start_time = 0.0
+  endif
+
+  CS%time_start = Time + real_to_time(HA_start_time, unscale=US%T_to_s)
+  CS%time_end = Time + real_to_time(HA_end_time, unscale=US%T_to_s)
+
+  call get_date(Time, year, month, day, hour, minute, second)
+  write(mesg,*) "MOM_harmonic_analysis: run segment starts on ", year, month, day, hour, minute, second
+  call MOM_error(NOTE, trim(mesg))
+  call get_date(CS%time_start, year, month, day, hour, minute, second)
+  write(mesg,*) "MOM_harmonic_analysis: harmonic analysis starts on ", year, month, day, hour, minute, second
+  call MOM_error(NOTE, trim(mesg))
+  call get_date(CS%time_end, year, month, day, hour, minute, second)
+  write(mesg,*) "MOM_harmonic_analysis: harmonic analysis ends on ", year, month, day, hour, minute, second
+  call MOM_error(NOTE, trim(mesg))
+
+  ! Set path to directory where output will be written
+  call get_param(param_file, mdl, "HA_PATH", CS%path, &
+                 "Path to output files for runtime harmonic analysis.", default="./")
+
+  ! Populate some parameters of the control structure
+  CS%nc         =  nc
+  CS%length     =  0
+  CS%US         =  US
+
+  ! Initialize CS%list
+  allocate(CS%list)
+  CS%list%this  =  ha1
+  nullify(CS%list%next)
+
+  ! Register variables/fields to be analyzed
+  call get_param(param_file, mdl, "HA_SSH", HA_ssh, &
+                 "If true, perform harmonic analysis of sea serface height.", default=.false.)
+  if (HA_ssh) call HA_register('ssh', 'h', CS)
+  call get_param(param_file, mdl, "HA_UBT", HA_ubt, &
+                 "If true, perform harmonic analysis of zonal barotropic velocity.", default=.false.)
+  if (HA_ubt) call HA_register('ubt', 'u', CS)
+  call get_param(param_file, mdl, "HA_VBT", HA_vbt, &
+                 "If true, perform harmonic analysis of meridional barotropic velocity.", default=.false.)
+  if (HA_vbt) call HA_register('vbt', 'v', CS)
+
+end procedure HA_init
+module procedure HA_register
+  type(HA_type)          :: ha1                        !< Control structure for the current field
+  type(HA_node), pointer :: tmp                        !< A temporary list to hold the current field
+  if (.not. CS%HAready) return
+
+  allocate(tmp)
+  ha1%key   =  trim(key)
+  ha1%grid  =  trim(grid)
+  tmp%this  =  ha1
+  tmp%next  => CS%list
+  CS%list   => tmp
+  CS%length =  CS%length + 1
+
+end procedure HA_register
+module procedure HA_accum
+  type(HA_type), pointer :: ha1
+  type(HA_node), pointer :: tmp
+  real :: now                                    !< The relative time compared with the tidal reference [T ~> s]
+  real :: dt                                     !< The current time step size of the accumulator [T ~> s]
+  real :: cosomegat, sinomegat, ccosomegat, ssinomegat !< The components of the phase [nondim]
+  integer :: nc, i, j, k, c, cc, icos, isin, iccos, issin, is, ie, js, je
+  character(len=128) :: mesg
+  if (.not. CS%HAready) return
+  if (CS%length == 0) return
+  if (Time < CS%time_start) return
+  if (Time > CS%time_end) return
+
+  ! Loop through the full list to find the current field
+  tmp => CS%list
+  do k=1,CS%length
+    ha1 => tmp%this
+    if (trim(key) == trim(ha1%key)) exit
+    tmp => tmp%next
+    if (k == CS%length) return              !< Do not perform harmonic analysis of a field that is not registered
+  enddo
+
+  nc  = CS%nc
+  now = time_minus_signed(Time, CS%time_ref, scale=CS%US%s_to_T)
+
+  !!! Additional processing at the initial accumulating step !!!
+  if (ha1%old_time < 0.0) then
+    ha1%old_time = now
+
+    write(mesg,*) "MOM_harmonic_analysis: initializing accumulator, key = ", trim(ha1%key)
+    call MOM_error(NOTE, trim(mesg))
+
+    ! Get the lower and upper bounds of input data
+    ha1%is = LBOUND(data,1) ; is = ha1%is
+    ha1%ie = UBOUND(data,1) ; ie = ha1%ie
+    ha1%js = LBOUND(data,2) ; js = ha1%js
+    ha1%je = UBOUND(data,2) ; je = ha1%je
+
+    allocate(ha1%ref(is:ie,js:je), source=0.0)
+    allocate(ha1%FtF(2*nc+1,2*nc+1), source=0.0)
+    allocate(ha1%FtSSH(is:ie,js:je,2*nc+1), source=0.0)
+    ha1%ref(:,:) = data(:,:)
+  endif
+
+  dt = now - ha1%old_time
+  ha1%old_time = now                        !< Keep track of time so we know when Time approaches CS%time_end
+
+  is = ha1%is ; ie = ha1%ie ; js = ha1%js ; je = ha1%je
+
+  !!! Accumulator of FtF !!!
+  !< First entry, corresponding to the zero frequency constituent (mean)
+  ha1%FtF(1,1) = ha1%FtF(1,1) + 1.0
+
+  do c=1,nc
+    icos = 2*c
+    isin = 2*c+1
+    cosomegat = CS%tide_fn(c) * cos(CS%freq(c) * now + (CS%phase0(c) + CS%tide_un(c)))
+    sinomegat = CS%tide_fn(c) * sin(CS%freq(c) * now + (CS%phase0(c) + CS%tide_un(c)))
+
+    ! First column, corresponding to the zero frequency constituent (mean)
+    ha1%FtF(icos,1) = ha1%FtF(icos,1) + cosomegat
+    ha1%FtF(isin,1) = ha1%FtF(isin,1) + sinomegat
+
+    do cc=1,c
+      iccos = 2*cc
+      issin = 2*cc+1
+      ccosomegat = CS%tide_fn(cc) * cos(CS%freq(cc) * now + (CS%phase0(cc) + CS%tide_un(cc)))
+      ssinomegat = CS%tide_fn(cc) * sin(CS%freq(cc) * now + (CS%phase0(cc) + CS%tide_un(cc)))
+
+      ! Interior of the matrix, corresponding to the products of cosine and sine terms
+      ha1%FtF(icos,iccos) = ha1%FtF(icos,iccos) + cosomegat * ccosomegat
+      ha1%FtF(icos,issin) = ha1%FtF(icos,issin) + cosomegat * ssinomegat
+      ha1%FtF(isin,iccos) = ha1%FtF(isin,iccos) + sinomegat * ccosomegat
+      ha1%FtF(isin,issin) = ha1%FtF(isin,issin) + sinomegat * ssinomegat
+    enddo ! cc=1,c
+  enddo ! c=1,nc
+
+  !!! Accumulator of FtSSH !!!
+  !< First entry, corresponding to the zero frequency constituent (mean)
+  do j=js,je ; do i=is,ie
+    ha1%FtSSH(i,j,1) = ha1%FtSSH(i,j,1) + (data(i,j) - ha1%ref(i,j))
+  enddo ; enddo
+
+  !< The remaining entries
+  do c=1,nc
+    icos = 2*c
+    isin = 2*c+1
+    cosomegat = CS%tide_fn(c) * cos(CS%freq(c) * now + (CS%phase0(c) + CS%tide_un(c)))
+    sinomegat = CS%tide_fn(c) * sin(CS%freq(c) * now + (CS%phase0(c) + CS%tide_un(c)))
+    do j=js,je ; do i=is,ie
+      ha1%FtSSH(i,j,icos) = ha1%FtSSH(i,j,icos) + (data(i,j) - ha1%ref(i,j)) * cosomegat
+      ha1%FtSSH(i,j,isin) = ha1%FtSSH(i,j,isin) + (data(i,j) - ha1%ref(i,j)) * sinomegat
+    enddo ; enddo
+  enddo ! c=1,nc
+
+  !!! Compute harmonic constants and write output as Time approaches CS%time_end !!!
+  ! This guarantees that HA_write will be called before Time becomes larger than CS%time_end.
+  ! Result of subtracting time types is always >= 0, which is acceptable here.
+  if (time_to_real(CS%time_end - Time, scale=CS%US%s_to_T) <= dt) then
+    call HA_write(ha1, Time, G, CS)
+
+    write(mesg,*) "MOM_harmonic_analysis: harmonic analysis done, key = ", trim(ha1%key)
+    call MOM_error(NOTE, trim(mesg))
+
+    ! De-register the current field and deallocate memory
+    ha1%key = 'none'
+    deallocate(ha1%ref)
+    deallocate(ha1%FtSSH)
+  endif
+
+end procedure HA_accum
+module procedure HA_write
+  real, dimension(:,:,:), allocatable :: FtSSHw    !< An array containing the harmonic constants [A]
+  integer :: year, month, day, hour, minute, second
+  integer :: nc, i, j, k, is, ie, js, je
+  character(len=255)           :: filename         !< Output file name
+  type(MOM_infra_file)         :: cdf              !< The file handle for output harmonic constants
+  type(vardesc),   allocatable :: cdf_vars(:)      !< Output variable names
+  type(MOM_field), allocatable :: cdf_fields(:)    !< Field type variables for the output fields
+  nc = CS%nc ; is = ha1%is ; ie = ha1%ie ; js = ha1%js ; je = ha1%je
+
+  allocate(FtSSHw(is:ie,js:je,2*nc+1), source=0.0)
+
+  ! Compute the harmonic coefficients
+  call HA_solver(ha1, nc, ha1%FtF, FtSSHw)
+
+  ! Output file name
+  call get_date(Time, year, month, day, hour, minute, second)
+  write(filename, '(a,"HA_",a,i0.4,i0.2,i0.2,".nc")') &
+      trim(CS%path), trim(ha1%key), year, month, day
+
+  allocate(cdf_vars(2*nc+1))
+  allocate(cdf_fields(2*nc+1))
+
+  ! Variable names
+  cdf_vars(1) = var_desc("z0", "m" ,"mean value", ha1%grid, '1', '1')
+  do k=1,nc
+    cdf_vars(2*k  ) = var_desc(trim(CS%const_name(k))//"cos", "m", "cosine coefficient", ha1%grid, '1', '1')
+    cdf_vars(2*k+1) = var_desc(trim(CS%const_name(k))//"sin", "m", "sine coefficient", ha1%grid, '1', '1')
+  enddo
+
+  ! Create output file
+  call create_MOM_file(cdf, trim(filename), cdf_vars, &
+                       2*nc+1, cdf_fields, SINGLE_FILE, 86400.0, G=G)
+
+  ! Add the initial field back to the mean state
+  do j=js,je ; do i=is,ie
+    FtSSHw(i,j,1) = FtSSHw(i,j,1) + ha1%ref(i,j)
+  enddo ; enddo
+
+  ! Write data
+  call MOM_write_field(cdf, cdf_fields(1), G%domain, FtSSHw(:,:,1), 0.0)
+  do k=1,nc
+    call MOM_write_field(cdf, cdf_fields(2*k  ), G%domain, FtSSHw(:,:,2*k  ), 0.0)
+    call MOM_write_field(cdf, cdf_fields(2*k+1), G%domain, FtSSHw(:,:,2*k+1), 0.0)
+  enddo
+
+  call cdf%flush()
+  deallocate(cdf_vars)
+  deallocate(cdf_fields)
+  deallocate(FtSSHw)
+
+end procedure HA_write
+module procedure HA_solver
+  real :: tmp0                                !< Temporary variable for Cholesky decomposition [nondim]
+  real, dimension(2*nc+1,2*nc+1)      :: L    !< Lower triangular matrix of Cholesky decomposition [nondim]
+  real, dimension(2*nc+1)             :: tmp1 !< Inverse of the diagonal entries of L [nondim]
+  real, dimension(ha1%is:ha1%ie,ha1%js:ha1%je)        :: tmp2 !< 2D temporary array involving FtSSH [A]
+  real, dimension(ha1%is:ha1%ie,ha1%js:ha1%je,2*nc+1) :: y    !< 3D temporary array, i.e., L' * x [A]
+  integer :: k, m, n
+  do m=1,2*nc+1
+
+    ! First, calculate the diagonal entries
+    tmp0 = 0.0
+    do k=1,m-1                             ! This loop operates along the m-th row
+      tmp0 = tmp0 + L(m,k) * L(m,k)
+    enddo
+    L(m,m) = sqrt(FtF(m,m) - tmp0)         ! This is the m-th diagonal entry
+
+    ! Now calculate the off-diagonal entries
+    tmp1(m) = 1 / L(m,m)
+    do k=m+1,2*nc+1                        ! This loop operates along the column below the m-th diagonal entry
+      tmp0 = 0.0
+      do n=1,m-1
+        tmp0 = tmp0 + L(k,n) * L(m,n)
+      enddo
+      L(k,m) = (FtF(k,m) - tmp0) * tmp1(m) ! This is the k-th off-diagonal entry below the m-th diagonal entry
+    enddo
+  enddo
+
+  ! Solve for y from L * y = FtSSH
+  do k=1,2*nc+1
+    tmp2(:,:) = 0.0
+    do m=1,k-1
+      tmp2(:,:) = tmp2(:,:) + L(k,m) * y(:,:,m)
+    enddo
+    y(:,:,k) = (ha1%FtSSH(:,:,k) - tmp2(:,:)) * tmp1(k)
+  enddo
+
+  ! Solve for x from L' * x = y
+  do k=2*nc+1,1,-1
+    tmp2(:,:) = 0.0
+    do m=k+1,2*nc+1
+      tmp2(:,:) = tmp2(:,:) + L(m,k) * x(:,:,m)
+    enddo
+    x(:,:,k) = (y(:,:,k) - tmp2(:,:)) * tmp1(k)
+  enddo
+
+end procedure HA_solver
+end submodule MOM_harmonic_analysis_s

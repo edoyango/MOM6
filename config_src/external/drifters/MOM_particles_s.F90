@@ -1,0 +1,16 @@
+submodule (MOM_particles_mod) MOM_particles_mod_s
+  implicit none
+contains
+module procedure particles_init
+end procedure particles_init
+module procedure particles_run
+end procedure particles_run
+module procedure particles_save_restart
+end procedure particles_save_restart
+module procedure particles_end
+end procedure particles_end
+module procedure particles_to_k_space
+end procedure particles_to_k_space
+module procedure particles_to_z_space
+end procedure particles_to_z_space
+end submodule MOM_particles_mod_s

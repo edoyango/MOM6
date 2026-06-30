@@ -14,10 +14,9 @@ implicit none ; private
 public :: init_stochastic_physics_ocn
 public :: run_stochastic_physics_ocn
 
-contains
 
-!> Initializes the stochastic physics perturbations.
-subroutine init_stochastic_physics_ocn(delt, geoLonT, geoLatT, nxT, nyT, nz, &
+  interface
+module subroutine init_stochastic_physics_ocn(delt, geoLonT, geoLatT, nxT, nyT, nz, &
                                              geoLonB, geoLatB, nxB, nyB, &
                                              pert_epbl_in, do_sppt_in, &
                                              do_skeb_in, mpiroot, mpicomm, iret)
@@ -38,27 +37,8 @@ subroutine init_stochastic_physics_ocn(delt, geoLonT, geoLatT, nxT, nyT, nz, &
   integer, intent(in)    :: mpicomm !< mpi communicator
   integer, intent(out)   :: iret    !< return code
 
-  iret=0
-  if (pert_epbl_in) then
-    call MOM_error(WARNING, 'init_stochastic_physics_ocn: pert_epbl needs to be false if using the stub')
-    iret=-1
-  endif
-  if (do_sppt_in) then
-    call MOM_error(WARNING, 'init_stochastic_physics_ocn: do_sppt needs to be false if using the stub')
-    iret=-1
-  endif
-  if (do_skeb_in) then
-    call MOM_error(WARNING, 'init_stochastic_physics_ocn: do_skeb needs to be false if using the stub')
-    iret=-1
-  endif
-
-  ! This stub function does not actually do anything.
-  return
 end subroutine init_stochastic_physics_ocn
-
-
-!> Determines the stochastic physics perturbations.
-subroutine run_stochastic_physics_ocn(sppt_wts, skeb_wts, t_rp1, t_rp2)
+module subroutine run_stochastic_physics_ocn(sppt_wts, skeb_wts, t_rp1, t_rp2)
   real, intent(inout) :: sppt_wts(:,:) !< array containing random weights for SPPT range [0,2]
   real, intent(inout) :: skeb_wts(:,:) !< array containing random weights for SKEB
   real, intent(inout) :: t_rp1(:,:)    !< array containing random weights for ePBL
@@ -67,7 +47,7 @@ subroutine run_stochastic_physics_ocn(sppt_wts, skeb_wts, t_rp1, t_rp2)
                                        !! perturbations (KE dissipation) range [0,2]
 
   ! This stub function does not actually do anything.
-  return
 end subroutine run_stochastic_physics_ocn
+  end interface
 
 end module stochastic_physics

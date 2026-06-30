@@ -107,126 +107,70 @@ type, public :: file_type ; private
   logical :: open_to_write = .false. !< If true, this file or fileset can be written to
 end type file_type
 
-contains
 
-!> Reads the checksum value for a field that was recorded in a file, along with a flag indicating
-!! whether the file contained a valid checksum for this field.
-subroutine read_field_chksum(field, chksum, valid_chksum)
+  interface
+module subroutine read_field_chksum(field, chksum, valid_chksum)
   type(fieldtype),     intent(in)  :: field !< The field whose checksum attribute is to be read.
   integer(kind=int64), intent(out) :: chksum !< The checksum for the field.
   logical,             intent(out) :: valid_chksum  !< If true, chksum has been successfully read.
   ! Local variables
-  integer(kind=int64), dimension(3) :: checksum_file
 
-  checksum_file(:) = -1
-  valid_chksum = mpp_attribute_exist(field, "checksum")
-  if (valid_chksum) then
-    call get_field_atts(field, checksum=checksum_file)
-    chksum = checksum_file(1)
-  else
-    chksum = -1
-  endif
 end subroutine read_field_chksum
-
-!> Returns true if the named file or its domain-decomposed variant exists.
-logical function MOM_file_exists(filename, MOM_Domain)
+logical module function MOM_file_exists(filename, MOM_Domain)
   character(len=*),       intent(in) :: filename   !< The name of the file being inquired about
   type(MOM_domain_type),  intent(in) :: MOM_Domain !< The MOM_Domain that describes the decomposition
 
 ! This function uses the fms_io function file_exist to determine whether
 ! a named file (or its decomposed variant) exists.
 
-  MOM_file_exists = file_exist(filename, MOM_Domain%mpp_domain)
-
 end function MOM_file_exists
-
-!> Returns true if the named file or its domain-decomposed variant exists.
-logical function FMS_file_exists(filename)
+logical module function FMS_file_exists(filename)
   character(len=*),         intent(in) :: filename  !< The name of the file being inquired about
   ! This function uses the fms_io function file_exist to determine whether
   ! a named file (or its decomposed variant) exists.
 
-  FMS_file_exists = file_exist(filename)
 end function FMS_file_exists
-
-!> indicates whether an I/O handle is attached to an open file
-logical function file_is_open(IO_handle)
+logical module function file_is_open(IO_handle)
   type(file_type), intent(in) :: IO_handle !< Handle to a file to inquire about
 
-  file_is_open = (IO_handle%unit >= 0)
 end function file_is_open
-
-!> closes a file (or fileset).  If the file handle does not point to an open file,
-!! close_file_type simply returns without doing anything.
-subroutine close_file_type(IO_handle)
+module subroutine close_file_type(IO_handle)
   type(file_type), intent(inout) :: IO_handle   !< The I/O handle for the file to be closed
 
-  call mpp_close(IO_handle%unit)
-  if (allocated(IO_handle%filename)) deallocate(IO_handle%filename)
-  IO_handle%open_to_read = .false. ; IO_handle%open_to_write = .false.
 end subroutine close_file_type
-
-!> closes a file.  If the unit does not point to an open file,
-!! close_file_unit simply returns without doing anything.
-subroutine close_file_unit(unit)
+module subroutine close_file_unit(unit)
   integer, intent(inout) :: unit   !< The I/O unit for the file to be closed
 
-  call mpp_close(unit)
 end subroutine close_file_unit
-
-!> Ensure that the output stream associated with a file handle is fully sent to disk.
-subroutine flush_file_type(file)
+module subroutine flush_file_type(file)
   type(file_type), intent(in) :: file    !< The I/O handle for the file to flush
 
-  call mpp_flush(file%unit)
 end subroutine flush_file_type
-
-!> Ensure that the output stream associated with a unit is fully sent to disk.
-subroutine flush_file_unit(unit)
+module subroutine flush_file_unit(unit)
   integer, intent(in) :: unit    !< The I/O unit for the file to flush
 
-  call mpp_flush(unit)
 end subroutine flush_file_unit
-
-!> Initialize the underlying I/O infrastructure
-subroutine io_infra_init(maxunits)
+module subroutine io_infra_init(maxunits)
   integer,   optional, intent(in) :: maxunits !< An optional maximum number of file
                                               !! unit numbers that can be used.
-  call mpp_io_init(maxunit=maxunits)
 end subroutine io_infra_init
-
-!> Gracefully close out and terminate the underlying I/O infrastructure
-subroutine io_infra_end()
-  call fms_io_exit()
+module subroutine io_infra_end()
 end subroutine io_infra_end
-
-!> Open a single namelist file that is potentially readable by all PEs.
-function MOM_namelist_file(file) result(unit)
+module function MOM_namelist_file(file) result(unit)
   character(len=*), optional, intent(in) :: file !< The file to open, by default "input.nml".
   integer                                :: unit !< The opened unit number of the namelist file
-  unit = open_namelist_file(file)
 end function MOM_namelist_file
-
-!> Checks the iostat argument that is returned after reading a namelist variable and writes a
-!! message if there is an error.
-subroutine check_namelist_error(IOstat, nml_name)
+module subroutine check_namelist_error(IOstat, nml_name)
   integer,          intent(in) :: IOstat   !< An I/O status field from a namelist read call
   character(len=*), intent(in) :: nml_name !< The name of the namelist
-  integer :: ierr
-  ierr = check_nml_error(IOstat, nml_name)
 end subroutine check_namelist_error
-
-!> Write a file version number to the log file or other output file
-subroutine write_version(version, tag, unit)
+module subroutine write_version(version, tag, unit)
   character(len=*),           intent(in) :: version !< A string that contains the routine name and version
   character(len=*), optional, intent(in) :: tag  !< A tag name to add to the message
   integer,          optional, intent(in) :: unit !< An alternate unit number for output
 
-  call write_version_number(version, tag, unit)
 end subroutine write_version
-
-!> open_file opens a file for parallel or single-file I/O.
-subroutine open_file_unit(unit, filename, action, form, threading, fileset, nohdrs, domain, MOM_domain)
+module subroutine open_file_unit(unit, filename, action, form, threading, fileset, nohdrs, domain, MOM_domain)
   integer,                  intent(out) :: unit   !< The I/O unit for the opened file
   character(len=*),         intent(in)  :: filename !< The name of the file being opened
   integer,        optional, intent(in)  :: action !< A flag indicating whether the file can be read
@@ -244,17 +188,8 @@ subroutine open_file_unit(unit, filename, action, form, threading, fileset, nohd
   type(domain2d), optional, intent(in)  :: domain !< A domain2d type that describes the decomposition
   type(MOM_domain_type), optional, intent(in) :: MOM_Domain !< A MOM_Domain that describes the decomposition
 
-  if (present(MOM_Domain)) then
-    call mpp_open(unit, filename, action=action, form=form, threading=threading, fileset=fileset, &
-                  nohdrs=nohdrs, domain=MOM_Domain%mpp_domain)
-  else
-    call mpp_open(unit, filename, action=action, form=form, threading=threading, fileset=fileset, &
-                  nohdrs=nohdrs, domain=domain)
-  endif
 end subroutine open_file_unit
-
-!> open_file opens a file for parallel or single-file I/O.
-subroutine open_file_type(IO_handle, filename, action, MOM_domain, threading, fileset)
+module subroutine open_file_type(IO_handle, filename, action, MOM_domain, threading, fileset)
   type(file_type),          intent(inout) :: IO_handle !< The handle for the opened file
   character(len=*),         intent(in)    :: filename !< The path name of the file being opened
   integer,        optional, intent(in)    :: action !< A flag indicating whether the file can be read
@@ -269,28 +204,8 @@ subroutine open_file_type(IO_handle, filename, action, MOM_domain, threading, fi
                                                     !! to threading=MULTIPLE write to the same file (SINGLE_FILE)
                                                     !! or to one file per PE (MULTIPLE, the default).
 
-  if (present(MOM_Domain)) then
-    call mpp_open(IO_handle%unit, filename, action=action, form=NETCDF_FILE, threading=threading, &
-                  fileset=fileset, domain=MOM_Domain%mpp_domain)
-  else
-    call mpp_open(IO_handle%unit, filename, action=action, form=NETCDF_FILE, threading=threading, &
-                  fileset=fileset)
-  endif
-  IO_handle%filename = trim(filename)
-  if (present(action)) then
-    if (action == READONLY_FILE) then
-      IO_handle%open_to_read = .true. ; IO_handle%open_to_write = .false.
-    else
-      IO_handle%open_to_read = .false. ; IO_handle%open_to_write = .true.
-    endif
-  else
-    IO_handle%open_to_read = .false. ; IO_handle%open_to_write = .true.
-  endif
-
 end subroutine open_file_type
-
-!> open_file opens an ascii file for parallel or single-file I/O using Fortran read and write calls.
-subroutine open_ASCII_file(unit, file, action, threading, fileset)
+module subroutine open_ASCII_file(unit, file, action, threading, fileset)
   integer,                  intent(out) :: unit   !< The I/O unit for the opened file
   character(len=*),         intent(in)  :: file   !< The name of the file being opened
   integer,        optional, intent(in)  :: action !< A flag indicating whether the file can be read
@@ -302,81 +217,41 @@ subroutine open_ASCII_file(unit, file, action, threading, fileset)
                                                   !! to threading=MULTIPLE write to the same file (SINGLE_FILE)
                                                   !! or to one file per PE (MULTIPLE, the default).
 
-  call mpp_open(unit, file, action=action, form=ASCII_FILE, threading=threading, fileset=fileset, &
-                  nohdrs=.true.)
-
 end subroutine open_ASCII_file
-
-
-!> Provide a string to append to filenames, to differentiate ensemble members, for example.
-subroutine get_filename_suffix(suffix)
+module subroutine get_filename_suffix(suffix)
   character(len=*), intent(out) :: suffix !< A string to append to filenames
 
-  call get_filename_appendix(suffix)
 end subroutine get_filename_suffix
-
-
-!> Get information about the number of dimensions, variables and time levels
-!! in the file associated with an open file unit
-subroutine get_file_info(IO_handle, ndim, nvar, ntime)
+module subroutine get_file_info(IO_handle, ndim, nvar, ntime)
   type(file_type),    intent(in)  :: IO_handle !< Handle for a file that is open for I/O
   integer,  optional, intent(out) :: ndim  !< The number of dimensions in the file
   integer,  optional, intent(out) :: nvar  !< The number of variables in the file
   integer,  optional, intent(out) :: ntime !< The number of time levels in the file
 
   ! Local variables
-  integer :: ndims, nvars, natts, ntimes
-
-  call mpp_get_info(IO_handle%unit, ndims, nvars, natts, ntimes )
-
-  if (present(ndim)) ndim = ndims
-  if (present(nvar)) nvar = nvars
-  if (present(ntime)) ntime = ntimes
 
 end subroutine get_file_info
-
-
-!> Get the times of records from a file
- !### Modify this to also convert to time_type, using information about the dimensions?
-subroutine get_file_times(IO_handle, time_values, ntime)
+module subroutine get_file_times(IO_handle, time_values, ntime)
   type(file_type),                 intent(in)    :: IO_handle !< Handle for a file that is open for I/O
   real, allocatable, dimension(:), intent(inout) :: time_values !< The real times for the records in file.
   integer,               optional, intent(out)   :: ntime !< The number of time levels in the file
 
-  integer :: ntimes
 
-  if (allocated(time_values)) deallocate(time_values)
-  call get_file_info(IO_handle, ntime=ntimes)
-  if (present(ntime)) ntime = ntimes
-  if (ntimes > 0) then
-    allocate(time_values(ntimes))
-    call mpp_get_times(IO_handle%unit, time_values)
-  endif
 end subroutine get_file_times
-
-!> Set up the field information (e.g., names and metadata) for all of the variables in a file.  The
-!! argument fields must be allocated with a size that matches the number of variables in a file.
-subroutine get_file_fields(IO_handle, fields)
+module subroutine get_file_fields(IO_handle, fields)
   type(file_type),               intent(in)    :: IO_handle !< Handle for a file that is open for I/O
   type(fieldtype), dimension(:), intent(inout) :: fields !< Field-type descriptions of all of
                                                          !! the variables in a file.
-  call mpp_get_fields(IO_handle%unit, fields)
 end subroutine get_file_fields
-
-!> Extract information from a field type, as stored or as found in a file
-subroutine get_field_atts(field, name, units, longname, checksum)
+module subroutine get_field_atts(field, name, units, longname, checksum)
   type(fieldtype),            intent(in)  :: field !< The field to extract information from
   character(len=*), optional, intent(out) :: name  !< The variable name
   character(len=*), optional, intent(out) :: units !< The units of the variable
   character(len=*), optional, intent(out) :: longname  !< The long name of the variable
   integer(kind=int64),  dimension(:), &
                     optional, intent(out) :: checksum !< The checksums of the variable in a file
-  call mpp_get_atts(field, name=name, units=units, longname=longname, checksum=checksum)
 end subroutine get_field_atts
-
-!> Field_exists returns true if the field indicated by field_name is present in the
-!! file file_name.  If file_name does not exist, it returns false.
-function field_exists(filename, field_name, domain, no_domain, MOM_domain)
+module function field_exists(filename, field_name, domain, no_domain, MOM_domain)
   character(len=*),                 intent(in) :: filename   !< The name of the file being inquired about
   character(len=*),                 intent(in) :: field_name !< The name of the field being sought
   type(domain2d), target, optional, intent(in) :: domain     !< A domain2d type that describes the decomposition
@@ -384,16 +259,8 @@ function field_exists(filename, field_name, domain, no_domain, MOM_domain)
   type(MOM_domain_type),  optional, intent(in) :: MOM_Domain !< A MOM_Domain that describes the decomposition
   logical                                      :: field_exists !< True if filename exists and field_name is in filename
 
-  if (present(MOM_domain)) then
-    field_exists = field_exist(filename, field_name, domain=MOM_domain%mpp_domain, no_domain=no_domain)
-  else
-    field_exists = field_exist(filename, field_name, domain=domain, no_domain=no_domain)
-  endif
-
 end function field_exists
-
-!> Given filename and fieldname, this subroutine returns the size of the field in the file
-subroutine get_field_size(filename, fieldname, sizes, field_found, no_domain)
+module subroutine get_field_size(filename, fieldname, sizes, field_found, no_domain)
   character(len=*),      intent(in)    :: filename  !< The name of the file to read
   character(len=*),      intent(in)    :: fieldname !< The name of the variable whose sizes are returned
   integer, dimension(:), intent(inout) :: sizes     !< The sizes of the variable in each dimension
@@ -403,24 +270,15 @@ subroutine get_field_size(filename, fieldname, sizes, field_found, no_domain)
   logical,     optional, intent(in)    :: no_domain !< If present and true, do not check for file
                                                     !! names with an appended tile number
 
-  call field_size(filename, fieldname, sizes, field_found=field_found, no_domain=no_domain)
-
 end subroutine get_field_size
-
-
-!> Get the size of the axis
-function get_axis_size(axis) result(axis_size)
+module function get_axis_size(axis) result(axis_size)
   type(axistype), intent(in) :: axis
     !< Infra axis
   integer :: axis_size
     !< Axis size
 
-  axis_size = mpp_get_axis_length(axis)
 end function get_axis_size
-
-
-!> Extracts and returns the axis data stored in an axistype.
-subroutine get_axis_data(axis, axis_name, axis_data)
+module subroutine get_axis_data(axis, axis_name, axis_data)
   type(axistype), intent(in) :: axis
     !< Infra axis
   character(len=256), intent(out) :: axis_name
@@ -428,15 +286,8 @@ subroutine get_axis_data(axis, axis_name, axis_data)
   real, dimension(:), intent(out) :: axis_data
     !< Axis points
 
-  call mpp_get_atts(axis, name=axis_name)
-  call mpp_get_axis_data(axis, axis_data)
 end subroutine get_axis_data
-
-
-! NOTE: Unused, but provided to match the FMS2 API
-
-!> Return a new axistype based on axis specs
-subroutine set_axis_data(axis, axis_name, axis_data)
+module subroutine set_axis_data(axis, axis_name, axis_data)
   type(axistype), intent(inout) :: axis
     !< Target axis
   character(len=256), intent(in) :: axis_name
@@ -444,13 +295,8 @@ subroutine set_axis_data(axis, axis_name, axis_data)
   real, intent(in) :: axis_data(:)
     !< Target axis values
 
-  call MOM_error(FATAL, "set_axis_data in FMS1 is not yet implemented.")
 end subroutine set_axis_data
-
-
-!> This routine uses the fms_io subroutine read_data to read a scalar named
-!! "fieldname" from a single or domain-decomposed file "filename".
-subroutine read_field_0d(filename, fieldname, data, timelevel, scale, MOM_Domain, &
+module subroutine read_field_0d(filename, fieldname, data, timelevel, scale, MOM_Domain, &
                          global_file, file_may_be_4d)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -466,50 +312,9 @@ subroutine read_field_0d(filename, fieldname, data, timelevel, scale, MOM_Domain
                                                      !! is needed to read it due to FMS limitations.
 
   ! Local variables
-  character(len=80)  :: varname             ! The name of a variable in the file
-  type(fieldtype), allocatable :: fields(:) ! An array of types describing all the variables in the file
-  logical :: use_fms_read_data, file_is_global
-  integer :: n, unit, ndim, nvar, natt, ntime
 
-  use_fms_read_data = .true. ; if (present(file_may_be_4d)) use_fms_read_data = .not.file_may_be_4d
-  file_is_global = .true. ; if (present(global_file)) file_is_global = global_file
-
-  if (.not.use_fms_read_data) then
-    if (file_is_global) then
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=SINGLE_FILE) !, domain=MOM_Domain%mpp_domain )
-    else
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=MULTIPLE, domain=MOM_Domain%mpp_domain )
-    endif
-    call mpp_get_info(unit, ndim, nvar, natt, ntime)
-    allocate(fields(nvar))
-    call mpp_get_fields(unit, fields(1:nvar))
-    do n=1, nvar
-      call mpp_get_atts(fields(n), name=varname)
-      if (lowercase(trim(varname)) == lowercase(trim(fieldname))) then
-        ! Maybe something should be done depending on the value of ntime.
-        call mpp_read(unit, fields(n), data, timelevel)
-        exit
-      endif
-    enddo
-
-    deallocate(fields)
-    call mpp_close(unit)
-  elseif (present(MOM_Domain)) then
-    call read_data(filename, fieldname, data, MOM_Domain%mpp_domain, timelevel=timelevel)
-  else
-    call read_data(filename, fieldname, data, timelevel=timelevel, no_domain=.true.)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    data = scale*data
-  endif ; endif
 end subroutine read_field_0d
-
-!> This routine uses the fms_io subroutine read_data to read a 1-D data field named
-!! "fieldname" from a single or domain-decomposed file "filename".
-subroutine read_field_1d(filename, fieldname, data, timelevel, scale, MOM_Domain, &
+module subroutine read_field_1d(filename, fieldname, data, timelevel, scale, MOM_Domain, &
                             global_file, file_may_be_4d)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -525,54 +330,9 @@ subroutine read_field_1d(filename, fieldname, data, timelevel, scale, MOM_Domain
                                                      !! is needed to read it due to FMS limitations.
 
   ! Local variables
-  character(len=80)  :: varname             ! The name of a variable in the file
-  type(fieldtype), allocatable :: fields(:) ! An array of types describing all the variables in the file
-  logical :: use_fms_read_data, file_is_global
-  integer :: n, unit, ndim, nvar, natt, ntime
 
-  use_fms_read_data = .true. ; if (present(file_may_be_4d)) use_fms_read_data = .not.file_may_be_4d
-  file_is_global = .true. ; if (present(global_file)) file_is_global = global_file
-
-  if (.not.use_fms_read_data) then
-    if (file_is_global) then
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=SINGLE_FILE) !, domain=MOM_Domain%mpp_domain )
-    else
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=MULTIPLE, domain=MOM_Domain%mpp_domain )
-    endif
-    call mpp_get_info(unit, ndim, nvar, natt, ntime)
-    allocate(fields(nvar))
-    call mpp_get_fields(unit, fields(1:nvar))
-    do n=1, nvar
-      call mpp_get_atts(fields(n), name=varname)
-      if (lowercase(trim(varname)) == lowercase(trim(fieldname))) then
-        call MOM_error(NOTE, "Reading 1-d variable "//trim(fieldname)//" from file "//trim(filename))
-        ! Maybe something should be done depending on the value of ntime.
-        call mpp_read(unit, fields(n), data, timelevel)
-        exit
-      endif
-    enddo
-    if ((n == nvar+1) .or. (nvar < 1)) call MOM_error(WARNING, &
-      "read_field apparently did not find 1-d variable "//trim(fieldname)//" in file "//trim(filename))
-
-    deallocate(fields)
-    call mpp_close(unit)
-  elseif (present(MOM_Domain)) then
-    call read_data(filename, fieldname, data, MOM_Domain%mpp_domain, timelevel=timelevel)
-  else
-    call read_data(filename, fieldname, data, timelevel=timelevel, no_domain=.true.)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    data(:) = scale*data(:)
-  endif ; endif
 end subroutine read_field_1d
-
-!> This routine uses the fms_io subroutine read_data to read a distributed
-!! 2-D data field named "fieldname" from file "filename".  Valid values for
-!! "position" include CORNER, CENTER, EAST_FACE and NORTH_FACE.
-subroutine read_field_2d(filename, fieldname, data, MOM_Domain, &
+module subroutine read_field_2d(filename, fieldname, data, MOM_Domain, &
                          timelevel, position, scale, global_file, file_may_be_4d)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -589,52 +349,9 @@ subroutine read_field_2d(filename, fieldname, data, MOM_Domain, &
                                                      !! is needed to read it due to FMS limitations.
 
   ! Local variables
-  character(len=80)  :: varname             ! The name of a variable in the file
-  type(fieldtype), allocatable :: fields(:) ! An array of types describing all the variables in the file
-  logical :: use_fms_read_data, file_is_global
-  integer :: n, unit, ndim, nvar, natt, ntime
 
-  use_fms_read_data = .true. ; if (present(file_may_be_4d)) use_fms_read_data = .not.file_may_be_4d
-  file_is_global = .true. ; if (present(global_file)) file_is_global = global_file
-
-  if (use_fms_read_data) then
-    call read_data(filename, fieldname, data, MOM_Domain%mpp_domain, &
-                   timelevel=timelevel, position=position)
-  else
-    if (file_is_global) then
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=SINGLE_FILE) !, domain=MOM_Domain%mpp_domain )
-    else
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=MULTIPLE, domain=MOM_Domain%mpp_domain )
-    endif
-    call mpp_get_info(unit, ndim, nvar, natt, ntime)
-    allocate(fields(nvar))
-    call mpp_get_fields(unit, fields(1:nvar))
-    do n=1, nvar
-      call mpp_get_atts(fields(n), name=varname)
-      if (lowercase(trim(varname)) == lowercase(trim(fieldname))) then
-        call MOM_error(NOTE, "Reading 2-d variable "//trim(fieldname)//" from file "//trim(filename))
-        ! Maybe something should be done depending on the value of ntime.
-        call mpp_read(unit, fields(n), MOM_Domain%mpp_domain, data, timelevel)
-        exit
-      endif
-    enddo
-    if ((n == nvar+1) .or. (nvar < 1)) call MOM_error(WARNING, &
-      "read_field apparently did not find 2-d variable "//trim(fieldname)//" in file "//trim(filename))
-
-    deallocate(fields)
-    call mpp_close(unit)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    call rescale_comp_data(MOM_Domain, data, scale)
-  endif ; endif
 end subroutine read_field_2d
-
-!> This routine uses the fms_io subroutine read_data to read a region from a distributed or
-!! global 2-D data field named "fieldname" from file "filename".
-subroutine read_field_2d_region(filename, fieldname, data, start, nread, MOM_domain, &
+module subroutine read_field_2d_region(filename, fieldname, data, start, nread, MOM_domain, &
                                 no_domain, scale)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -653,27 +370,8 @@ subroutine read_field_2d_region(filename, fieldname, data, start, nread, MOM_dom
   real,         optional, intent(in)    :: scale     !< A scaling factor that the field is multiplied
                                                      !! by before it is returned.
 
-  if (present(MOM_Domain)) then
-    call read_data(filename, fieldname, data, start, nread, domain=MOM_Domain%mpp_domain, &
-                   no_domain=no_domain)
-  else
-    call read_data(filename, fieldname, data, start, nread, no_domain=no_domain)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    if (present(MOM_Domain)) then
-      call rescale_comp_data(MOM_Domain, data, scale)
-    else
-      ! Dangerously rescale the whole array
-      data(:,:) = scale*data(:,:)
-    endif
-  endif ; endif
 end subroutine read_field_2d_region
-
-!> This routine uses the fms_io subroutine read_data to read a distributed
-!! 3-D data field named "fieldname" from file "filename".  Valid values for
-!! "position" include CORNER, CENTER, EAST_FACE and NORTH_FACE.
-subroutine read_field_3d(filename, fieldname, data, MOM_Domain, &
+module subroutine read_field_3d(filename, fieldname, data, MOM_Domain, &
                             timelevel, position, scale, global_file, file_may_be_4d)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -690,52 +388,9 @@ subroutine read_field_3d(filename, fieldname, data, MOM_Domain, &
                                                      !! is needed to read it due to FMS limitations.
 
   ! Local variables
-  character(len=80)  :: varname             ! The name of a variable in the file
-  type(fieldtype), allocatable :: fields(:) ! An array of types describing all the variables in the file
-  logical :: use_fms_read_data, file_is_global
-  integer :: n, unit, ndim, nvar, natt, ntime
 
-  use_fms_read_data = .true. ; if (present(file_may_be_4d)) use_fms_read_data = .not.file_may_be_4d
-  file_is_global = .true. ; if (present(global_file)) file_is_global = global_file
-
-  if (use_fms_read_data) then
-    call read_data(filename, fieldname, data, MOM_Domain%mpp_domain, &
-                   timelevel=timelevel, position=position)
-  else
-    if (file_is_global) then
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=SINGLE_FILE) !, domain=MOM_Domain%mpp_domain )
-    else
-      call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                    threading=MULTIPLE, fileset=MULTIPLE, domain=MOM_Domain%mpp_domain )
-    endif
-    call mpp_get_info(unit, ndim, nvar, natt, ntime)
-    allocate(fields(nvar))
-    call mpp_get_fields(unit, fields(1:nvar))
-    do n=1, nvar
-      call mpp_get_atts(fields(n), name=varname)
-      if (lowercase(trim(varname)) == lowercase(trim(fieldname))) then
-        call MOM_error(NOTE, "Reading 3-d variable "//trim(fieldname)//" from file "//trim(filename))
-        ! Maybe something should be done depending on the value of ntime.
-        call mpp_read(unit, fields(n), MOM_Domain%mpp_domain, data, timelevel)
-        exit
-      endif
-    enddo
-    if ((n == nvar+1) .or. (nvar < 1)) call MOM_error(WARNING, &
-      "read_field apparently did not find 3-d variable "//trim(fieldname)//" in file "//trim(filename))
-
-    deallocate(fields)
-    call mpp_close(unit)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    call rescale_comp_data(MOM_Domain, data, scale)
-  endif ; endif
 end subroutine read_field_3d
-
-!> This routine uses the fms_io subroutine read_data to read a region from a distributed or
-!! global 3-D data field named "fieldname" from file "filename".
-subroutine read_field_3d_region(filename, fieldname, data, start, nread, MOM_domain, &
+module subroutine read_field_3d_region(filename, fieldname, data, start, nread, MOM_domain, &
                                 no_domain, scale)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -754,28 +409,8 @@ subroutine read_field_3d_region(filename, fieldname, data, start, nread, MOM_dom
   real,         optional, intent(in)    :: scale     !< A scaling factor that the field is multiplied
                                                      !! by before it is returned.
 
-  if (present(MOM_Domain)) then
-    call read_data(filename, fieldname, data, start, nread, domain=MOM_Domain%mpp_domain, &
-                   no_domain=no_domain)
-  else
-    call read_data(filename, fieldname, data, start, nread, no_domain=no_domain)
-  endif
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    if (present(MOM_Domain)) then
-      call rescale_comp_data(MOM_Domain, data, scale)
-    else
-      ! Dangerously rescale the whole array
-      data(:,:,:) = scale*data(:,:,:)
-    endif
-  endif ; endif
 end subroutine read_field_3d_region
-
-
-!> This routine uses the fms_io subroutine read_data to read a distributed
-!! 4-D data field named "fieldname" from file "filename".  Valid values for
-!! "position" include CORNER, CENTER, EAST_FACE and NORTH_FACE.
-subroutine read_field_4d(filename, fieldname, data, MOM_Domain, &
+module subroutine read_field_4d(filename, fieldname, data, MOM_Domain, &
                             timelevel, position, scale, global_file)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
@@ -789,75 +424,28 @@ subroutine read_field_4d(filename, fieldname, data, MOM_Domain, &
   logical,      optional, intent(in)    :: global_file !< If true, read from a single global file
 
   ! Local variables
-  character(len=80)  :: varname             ! The name of a variable in the file
-  type(fieldtype), allocatable :: fields(:) ! An array of types describing all the variables in the file
-  logical :: file_is_global
-  integer :: n, unit, ndim, nvar, natt, ntime
 
   ! This single call does not work for a 4-d array due to FMS limitations, so multiple calls are
   ! needed.
   ! call read_data(filename, fieldname, data, MOM_Domain%mpp_domain, &
   !                timelevel=timelevel, position=position)
 
-  file_is_global = .true. ; if (present(global_file)) file_is_global = global_file
-
-  if (file_is_global) then
-    call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                  threading=MULTIPLE, fileset=SINGLE_FILE) !, domain=MOM_Domain%mpp_domain )
-  else
-    call mpp_open(unit, trim(filename), form=NETCDF_FILE, action=READONLY_FILE, &
-                  threading=MULTIPLE, fileset=MULTIPLE, domain=MOM_Domain%mpp_domain )
-  endif
-  call mpp_get_info(unit, ndim, nvar, natt, ntime)
-  allocate(fields(nvar))
-  call mpp_get_fields(unit, fields(1:nvar))
-  do n=1, nvar
-    call mpp_get_atts(fields(n), name=varname)
-    if (lowercase(trim(varname)) == lowercase(trim(fieldname))) then
-        call MOM_error(NOTE, "Reading 4-d variable "//trim(fieldname)//" from file "//trim(filename))
-      ! Maybe something should be done depending on the value of ntime.
-      call mpp_read(unit, fields(n), MOM_Domain%mpp_domain, data, timelevel)
-      exit
-    endif
-  enddo
-  if ((n == nvar+1) .or. (nvar < 1)) call MOM_error(WARNING, &
-    "read_field apparently did not find 4-d variable "//trim(fieldname)//" in file "//trim(filename))
-
-  deallocate(fields)
-  call mpp_close(unit)
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    call rescale_comp_data(MOM_Domain, data, scale)
-  endif ; endif
 end subroutine read_field_4d
-
-!> This routine uses the fms_io subroutine read_data to read a scalar integer
-!! data field named "fieldname" from file "filename".
-subroutine read_field_0d_int(filename, fieldname, data, timelevel)
+module subroutine read_field_0d_int(filename, fieldname, data, timelevel)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
   integer,                intent(inout) :: data      !< The 1-dimensional array into which the data
   integer,      optional, intent(in)    :: timelevel !< The time level in the file to read
 
-  call read_data(filename, fieldname, data, timelevel=timelevel, no_domain=.true.)
 end subroutine read_field_0d_int
-
-!> This routine uses the fms_io subroutine read_data to read a 1-D integer
-!! data field named "fieldname" from file "filename".
-subroutine read_field_1d_int(filename, fieldname, data, timelevel)
+module subroutine read_field_1d_int(filename, fieldname, data, timelevel)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: fieldname !< The variable name of the data in the file
   integer, dimension(:),  intent(inout) :: data      !< The 1-dimensional array into which the data
   integer,      optional, intent(in)    :: timelevel !< The time level in the file to read
 
-  call read_data(filename, fieldname, data, timelevel=timelevel, no_domain=.true.)
 end subroutine read_field_1d_int
-
-
-!> This routine uses the fms_io subroutine read_data to read a pair of distributed
-!! 2-D data fields with names given by "[uv]_fieldname" from file "filename".  Valid values for
-!! "stagger" include CGRID_NE, BGRID_NE, and AGRID.
-subroutine MOM_read_vector_2d(filename, u_fieldname, v_fieldname, u_data, v_data, MOM_Domain, &
+module subroutine MOM_read_vector_2d(filename, u_fieldname, v_fieldname, u_data, v_data, MOM_Domain, &
                               timelevel, stagger, scalar_pair, scale)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: u_fieldname !< The variable name of the u data in the file
@@ -872,31 +460,9 @@ subroutine MOM_read_vector_2d(filename, u_fieldname, v_fieldname, u_data, v_data
   logical,      optional, intent(in)    :: scalar_pair !< If true, a pair of scalars are to be read
   real,         optional, intent(in)    :: scale     !< A scaling factor that the fields are multiplied
                                                      !! by before they are returned.
-  integer :: u_pos, v_pos
-
-  u_pos = EAST_FACE ; v_pos = NORTH_FACE
-  if (present(stagger)) then
-    if (stagger == CGRID_NE) then ; u_pos = EAST_FACE ; v_pos = NORTH_FACE
-    elseif (stagger == BGRID_NE) then ; u_pos = CORNER ; v_pos = CORNER
-    elseif (stagger == AGRID) then ; u_pos = CENTER ; v_pos = CENTER ; endif
-  endif
-
-  call read_data(filename, u_fieldname, u_data, MOM_Domain%mpp_domain, &
-                 timelevel=timelevel, position=u_pos)
-  call read_data(filename, v_fieldname, v_data, MOM_Domain%mpp_domain, &
-                 timelevel=timelevel, position=v_pos)
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    call rescale_comp_data(MOM_Domain, u_data, scale)
-    call rescale_comp_data(MOM_Domain, v_data, scale)
-  endif ; endif
 
 end subroutine MOM_read_vector_2d
-
-!> This routine uses the fms_io subroutine read_data to read a pair of distributed
-!! 3-D data fields with names given by "[uv]_fieldname" from file "filename".  Valid values for
-!! "stagger" include CGRID_NE, BGRID_NE, and AGRID.
-subroutine MOM_read_vector_3d(filename, u_fieldname, v_fieldname, u_data, v_data, MOM_Domain, &
+module subroutine MOM_read_vector_3d(filename, u_fieldname, v_fieldname, u_data, v_data, MOM_Domain, &
                               timelevel, stagger, scalar_pair, scale)
   character(len=*),       intent(in)    :: filename  !< The name of the file to read
   character(len=*),       intent(in)    :: u_fieldname !< The variable name of the u data in the file
@@ -912,30 +478,9 @@ subroutine MOM_read_vector_3d(filename, u_fieldname, v_fieldname, u_data, v_data
   real,         optional, intent(in)    :: scale     !< A scaling factor that the fields are multiplied
                                                      !! by before they are returned.
 
-  integer :: u_pos, v_pos
-
-  u_pos = EAST_FACE ; v_pos = NORTH_FACE
-  if (present(stagger)) then
-    if (stagger == CGRID_NE) then ; u_pos = EAST_FACE ; v_pos = NORTH_FACE
-    elseif (stagger == BGRID_NE) then ; u_pos = CORNER ; v_pos = CORNER
-    elseif (stagger == AGRID) then ; u_pos = CENTER ; v_pos = CENTER ; endif
-  endif
-
-  call read_data(filename, u_fieldname, u_data, MOM_Domain%mpp_domain, &
-                 timelevel=timelevel, position=u_pos)
-  call read_data(filename, v_fieldname, v_data, MOM_Domain%mpp_domain, &
-                 timelevel=timelevel, position=v_pos)
-
-  if (present(scale)) then ; if (scale /= 1.0) then
-    call rescale_comp_data(MOM_Domain, u_data, scale)
-    call rescale_comp_data(MOM_Domain, v_data, scale)
-  endif ; endif
 
 end subroutine MOM_read_vector_3d
-
-
-!> Write a 4d field to an output file.
-subroutine write_field_4d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
+module subroutine write_field_4d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
   type(file_type),          intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),          intent(in)    :: field_md   !< Field type with metadata
   type(MOM_domain_type),    intent(in)    :: MOM_domain !< The MOM_Domain that describes the decomposition
@@ -944,12 +489,8 @@ subroutine write_field_4d(IO_handle, field_md, MOM_domain, field, tstamp, tile_c
   integer,        optional, intent(in)    :: tile_count !< PEs per tile (default: 1)
   real,           optional, intent(in)    :: fill_value !< Missing data fill value
 
-  call mpp_write(IO_handle%unit, field_md, MOM_domain%mpp_domain, field, tstamp=tstamp, &
-                 tile_count=tile_count, default_data=fill_value)
 end subroutine write_field_4d
-
-!> Write a 3d field to an output file.
-subroutine write_field_3d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
+module subroutine write_field_3d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
   type(file_type),        intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),        intent(in)    :: field_md   !< Field type with metadata
   type(MOM_domain_type),  intent(in)    :: MOM_domain !< The MOM_Domain that describes the decomposition
@@ -958,12 +499,8 @@ subroutine write_field_3d(IO_handle, field_md, MOM_domain, field, tstamp, tile_c
   integer,      optional, intent(in)    :: tile_count !< PEs per tile (default: 1)
   real,         optional, intent(in)    :: fill_value !< Missing data fill value
 
-  call mpp_write(IO_handle%unit, field_md, MOM_domain%mpp_domain, field, tstamp=tstamp, &
-                   tile_count=tile_count, default_data=fill_value)
 end subroutine write_field_3d
-
-!> Write a 2d field to an output file.
-subroutine write_field_2d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
+module subroutine write_field_2d(IO_handle, field_md, MOM_domain, field, tstamp, tile_count, fill_value)
   type(file_type),        intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),        intent(in)    :: field_md   !< Field type with metadata
   type(MOM_domain_type),  intent(in)    :: MOM_domain !< The MOM_Domain that describes the decomposition
@@ -972,42 +509,27 @@ subroutine write_field_2d(IO_handle, field_md, MOM_domain, field, tstamp, tile_c
   integer,      optional, intent(in)    :: tile_count !< PEs per tile (default: 1)
   real,         optional, intent(in)    :: fill_value !< Missing data fill value
 
-  call mpp_write(IO_handle%unit, field_md, MOM_domain%mpp_domain, field, tstamp=tstamp, &
-                   tile_count=tile_count, default_data=fill_value)
 end subroutine write_field_2d
-
-!> Write a 1d field to an output file.
-subroutine write_field_1d(IO_handle, field_md, field, tstamp)
+module subroutine write_field_1d(IO_handle, field_md, field, tstamp)
   type(file_type),        intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),        intent(in)    :: field_md   !< Field type with metadata
   real, dimension(:),     intent(in)    :: field      !< Field to write
   real,         optional, intent(in)    :: tstamp     !< Model time of this field
 
-  call mpp_write(IO_handle%unit, field_md, field, tstamp=tstamp)
 end subroutine write_field_1d
-
-!> Write a 0d field to an output file.
-subroutine write_field_0d(IO_handle, field_md, field, tstamp)
+module subroutine write_field_0d(IO_handle, field_md, field, tstamp)
   type(file_type),        intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),        intent(in)    :: field_md   !< Field type with metadata
   real,                   intent(in)    :: field      !< Field to write
   real,         optional, intent(in)    :: tstamp     !< Model time of this field
 
-  call mpp_write(IO_handle%unit, field_md, field, tstamp=tstamp)
 end subroutine write_field_0d
-
-!> Write the data for an axis
-subroutine MOM_write_axis(IO_handle, axis)
+module subroutine MOM_write_axis(IO_handle, axis)
   type(file_type), intent(in) :: IO_handle  !< Handle for a file that is open for writing
   type(axistype),  intent(in) :: axis       !< An axis type variable with information to write
 
-  call mpp_write(IO_handle%unit, axis)
-
 end subroutine MOM_write_axis
-
-!> Store information about an axis in a previously defined axistype and write this
-!! information to the file indicated by unit.
-subroutine write_metadata_axis(IO_handle, axis, name, units, longname, cartesian, sense, domain, &
+module subroutine write_metadata_axis(IO_handle, axis, name, units, longname, cartesian, sense, domain, &
                                data, edge_axis, calendar)
   type(file_type),            intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(axistype),             intent(inout) :: axis  !< The axistype where this information is stored.
@@ -1024,13 +546,8 @@ subroutine write_metadata_axis(IO_handle, axis, name, units, longname, cartesian
   logical,          optional, intent(in)    :: edge_axis !< If true, this axis marks an edge of the tracer cells
   character(len=*), optional, intent(in)    :: calendar !< The name of the calendar used with a time axis
 
-  call mpp_write_meta(IO_handle%unit, axis, name, units, longname, cartesian=cartesian, sense=sense, &
-                      domain=domain, data=data, calendar=calendar)
 end subroutine write_metadata_axis
-
-!> Store information about an output variable in a previously defined fieldtype and write this
-!! information to the file indicated by unit.
-subroutine write_metadata_field(IO_handle, field, axes, name, units, longname, &
+module subroutine write_metadata_field(IO_handle, field, axes, name, units, longname, &
                                 pack, standard_name, checksum)
   type(file_type),            intent(in)    :: IO_handle  !< Handle for a file that is open for writing
   type(fieldtype),            intent(inout) :: field !< The fieldtype where this information is stored
@@ -1046,19 +563,13 @@ subroutine write_metadata_field(IO_handle, field, axes, name, units, longname, &
                     optional, intent(in)    :: checksum !< Checksum values that can be used to verify reads.
 
 
-  call mpp_write_meta(IO_handle%unit, field, axes, name, units, longname, &
-                      pack=pack, standard_name=standard_name, checksum=checksum)
-  ! unused opt. args: min=min, max=max, fill=fill, scale=scale, add=add, &
-
 end subroutine write_metadata_field
-
-!> Write a global text attribute to a file.
-subroutine write_metadata_global(IO_handle, name, attribute)
+module subroutine write_metadata_global(IO_handle, name, attribute)
   type(file_type),            intent(in)    :: IO_handle !< Handle for a file that is open for writing
   character(len=*),           intent(in)    :: name      !< The name in the file of this global attribute
   character(len=*),           intent(in)    :: attribute !< The value of this attribute
 
-  call mpp_write_meta(IO_handle%unit, name, cval=attribute)
 end subroutine write_metadata_global
+  end interface
 
 end module MOM_io_infra

@@ -54,26 +54,17 @@ integer, parameter :: CLOCK_LOOP = MPP_CLOCK_LOOP
 !! infrastructure operation, e.g. a halo update
 integer, parameter :: CLOCK_INFRA = MPP_CLOCK_INFRA
 
-contains
 
-!> Turns on clock with handle "id"
-subroutine cpu_clock_begin(id)
+  interface
+module subroutine cpu_clock_begin(id)
   integer, intent(in) :: id !< Handle for clock
-
-  call mpp_clock_begin(id)
 
 end subroutine cpu_clock_begin
-
-!> Turns off clock with handle "id"
-subroutine cpu_clock_end(id)
+module subroutine cpu_clock_end(id)
   integer, intent(in) :: id !< Handle for clock
 
-  call mpp_clock_end(id)
-
 end subroutine cpu_clock_end
-
-!> Returns the integer handle for a named CPU clock.
-integer function cpu_clock_id(name, sync, grain)
+integer module function cpu_clock_id(name, sync, grain)
   character(len=*),  intent(in) :: name  !< The unique name of the CPU clock
   logical, optional, intent(in) :: sync !< A flag that controls whether the
                   !! PEs are synchronized before the cpu clocks start counting.
@@ -84,18 +75,8 @@ integer function cpu_clock_id(name, sync, grain)
   integer, optional, intent(in) :: grain !< The timing granularity for this clock, usually set to
                                        !! the values of CLOCK_COMPONENT, CLOCK_ROUTINE, CLOCK_LOOP, etc.
 
-  integer :: clock_flags
 
-  clock_flags = clock_flag_default
-  if (present(sync)) then
-    if (sync) then
-      clock_flags = ibset(clock_flags, 0)
-    else
-      clock_flags = ibclr(clock_flags, 0)
-    endif
-  endif
-
-  cpu_clock_id = mpp_clock_id(name, flags=clock_flags, grain=grain)
 end function cpu_clock_id
+  end interface
 
 end module MOM_cpu_clock_infra
