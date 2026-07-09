@@ -32,6 +32,24 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 include(GNUInstallDirs)
 include(FortranLib)
 include(CMakePackageConfigHelpers)
+include(CheckFortranSourceCompiles)
+
+# Mirrors ac/m4/mom6_fc_do_concurrent_local.m4: only enable the locality
+# specifiers used by src/framework/do_concurrent_compat.h's DO_LOCALITY macro
+# if the Fortran compiler actually supports them.
+check_fortran_source_compiles(
+  "program test
+   implicit none
+   integer :: a, b, i
+   do concurrent(i=1:2) local(a,b)
+   end do
+   end program test"
+  HAVE_FC_DO_CONCURRENT_LOCAL
+  SRC_EXT F90
+)
+if(HAVE_FC_DO_CONCURRENT_LOCAL)
+  add_compile_definitions(HAVE_FC_DO_CONCURRENT_LOCAL)
+endif()
 
 # Fortran compiler flags
 if(CMAKE_Fortran_COMPILER_ID MATCHES "GNU")
@@ -47,10 +65,14 @@ elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
   set(CMAKE_Fortran_FLAGS_DEBUG "-O0 -g -check uninit -check bounds -check pointers -fpe0 -check noarg_temp_created")
 elseif(CMAKE_Fortran_COMPILER_ID MATCHES "NVHPC")
   set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -r8")
-  set(CMAKE_Fortran_FLAGS_RELEASE "-O3")
-  set(CMAKE_Fortran_FLAGS_DEBUG "-O0")
+  if(NOT DEFINED CACHE{CMAKE_Fortran_FLAGS_RELEASE})
+    set(CMAKE_Fortran_FLAGS_RELEASE "-O3")
+  endif()
+  if(NOT DEFINED CACHE{CMAKE_Fortran_FLAGS_DEBUG})
+    set(CMAKE_Fortran_FLAGS_DEBUG "-O0")
+  endif()
   if(MOM6_OMPOFFLOAD)
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -Mnovect -Mnofma -mp=gpu -acc=gpu -gpu=mem:separate -stdpar=gpu")
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -Mnovect -Mnofma -mp=gpu -gpu=mem:separate -stdpar=gpu -Minline=name:flux_elem,name:flux_elem_OBC,name:ratio_max")
   endif()
 else()
   message(WARNING "Fortran compiler with ID ${CMAKE_Fortran_COMPILER_ID} will be used with CMake default options")
@@ -141,6 +163,10 @@ if(MOM6_OPENMP OR MOM6_OMPOFFLOAD)
   target_link_libraries(mom6lib PRIVATE OpenMP::OpenMP_Fortran)
 endif()
 
+if(MOM6_OMPOFFLOAD)
+  target_link_options(mom6lib PRIVATE -mp=gpu)
+endif()
+
 if(MOM6_ACCESS3)
   target_link_libraries(mom6lib
     PRIVATE Access3::nuopc_cap_share Access3::share Access3::timing Access3::cdeps-common ESMF::ESMF 
@@ -176,6 +202,7 @@ target_sources(mom6lib PRIVATE
   ${SRC}/ALE/Recon1d_PCM.F90
   ${SRC}/ALE/Recon1d_PLM_CW.F90
   ${SRC}/ALE/Recon1d_PLM_CWK.F90
+  ${SRC}/ALE/Recon1d_PLM_WLS.F90
   ${SRC}/ALE/Recon1d_PLM_hybgen.F90
   ${SRC}/ALE/Recon1d_PPM_CW.F90
   ${SRC}/ALE/Recon1d_PPM_CWK.F90
@@ -278,8 +305,10 @@ target_sources(mom6lib PRIVATE
   ${SRC}/framework/MOM_array_transform.F90
   ${SRC}/framework/MOM_checksums.F90
   ${SRC}/framework/MOM_coms.F90
+  ${SRC}/framework/MOM_ANN.F90
   ${SRC}/framework/MOM_cpu_clock.F90
   ${SRC}/framework/MOM_data_override.F90
+  ${SRC}/framework/MOM_diag_buffers.F90
   ${SRC}/framework/MOM_diag_mediator.F90
   ${SRC}/framework/MOM_diag_remap.F90
   ${SRC}/framework/MOM_document.F90
@@ -542,7 +571,7 @@ else()
 
 # executable
   add_executable(MOM6 ${CONFIG_SRC}/drivers/solo_driver/MOM_driver.F90)
-  target_link_libraries(MOM6 PRIVATE mom6lib)
+  target_link_libraries(MOM6 PRIVATE mom6lib FMS::fms_r8 GFDLGTracers::gtracers)
 
   target_include_directories(MOM6 PRIVATE 
     ${SRC}/framework 
