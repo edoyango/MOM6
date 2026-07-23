@@ -312,25 +312,31 @@ end subroutine bkgnd_mixing_init
 subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
                                   is, ie, js, je, dz, G, GV, US, CS)
 
-  type(ocean_grid_type),                       intent(in)    :: G   !< Grid structure.
-  type(verticalGrid_type),                     intent(in)    :: GV  !< Vertical grid structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: h   !< Layer thickness [H ~> m or kg m-2].
-  type(thermo_var_ptrs),                       intent(in)    :: tv  !< Thermodynamics structure.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: N2_lay !< Squared buoyancy frequency
-                                                                    !! associated with layers [T-2 ~> s-2].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(inout) :: Kd_lay !< Background diapycnal diffusivity
-                                                                    !! of each layer [H Z T-1 ~> m2 s-1].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: Kd_int !< Background diapycnal diffusivity
-                                                                    !! of each interface [H Z T-1 ~> m2 s-1].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: Kv_bkgnd !< Background vertical viscosity
-                                                                    !! at each interface [H Z T-1 ~> m2 s-1].
-  integer,                                     intent(in)    :: is  !< Starting i-index of columns to work on.
-  integer,                                     intent(in)    :: ie  !< Ending i-index of columns to work on.
-  integer,                                     intent(in)    :: js  !< Starting j-index of rows to work on.
-  integer,                                     intent(in)    :: je  !< Ending j-index of rows to work on.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: dz  !< Height change across layers [Z ~> m].
-  type(unit_scale_type),                       intent(in)    :: US  !< A dimensional unit scaling type.
-  type(bkgnd_mixing_cs),                       pointer       :: CS  !< Control structure.
+  type(ocean_grid_type),        intent(in)    :: G   !< Grid structure.
+  type(verticalGrid_type),      intent(in)    :: GV  !< Vertical grid structure.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                intent(in)    :: h   !< Layer thickness [H ~> m or kg m-2].
+  type(thermo_var_ptrs),        intent(in)    :: tv  !< Thermodynamics structure.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                intent(in)    :: N2_lay !< Squared buoyancy frequency
+                                                     !! associated with layers [T-2 ~> s-2].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                intent(inout) :: Kd_lay !< Background diapycnal diffusivity
+                                                     !! of each layer [H Z T-1 ~> m2 s-1].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
+                                intent(inout) :: Kd_int !< Background diapycnal diffusivity
+                                                     !! of each interface [H Z T-1 ~> m2 s-1].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
+                                intent(inout) :: Kv_bkgnd !< Background vertical viscosity
+                                                     !! at each interface [H Z T-1 ~> m2 s-1].
+  integer,                      intent(in)    :: is  !< Starting i-index of columns to work on.
+  integer,                      intent(in)    :: ie  !< Ending i-index of columns to work on.
+  integer,                      intent(in)    :: js  !< Starting j-index of rows to work on.
+  integer,                      intent(in)    :: je  !< Ending j-index of rows to work on.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                intent(in)    :: dz  !< Height change across layers [Z ~> m].
+  type(unit_scale_type),        intent(in)    :: US  !< A dimensional unit scaling type.
+  type(bkgnd_mixing_cs),        pointer       :: CS  !< Control structure.
 
   ! local variables
   real, dimension(SZK_(GV)+1) :: depth_int  !< Distance from surface of the interfaces [m].
@@ -374,7 +380,8 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
       enddo
 
       call CVMix_init_bkgnd(max_nlev=nz, &
-                            zw = depth_int(:), &  !< Interface depths relative to surface in m, positive.
+                            ! Interface depths relative to the surface in m, positive.
+                            zw = depth_int(:), &
                             bl1 = US%Z2_T_to_m2_s*CS%Bryan_Lewis_c1, &
                             bl2 = US%Z2_T_to_m2_s*CS%Bryan_Lewis_c2, &
                             bl3 = US%m_to_Z*CS%Bryan_Lewis_c3, &

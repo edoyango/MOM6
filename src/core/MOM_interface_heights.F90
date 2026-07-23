@@ -677,9 +677,10 @@ end subroutine find_rho_bottom_1d
 subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js, je, &
                               niblock, njblock, Rho_bot, h_bot, k_bot)
 
+  integer,                  intent(in)  :: is   !< Starting i-index of columns to work on
+  integer,                  intent(in)  :: ie   !< Ending i-index of columns to work on
   integer,                  intent(in)  :: js   !< Starting j-index of rows to work on
   integer,                  intent(in)  :: je   !< Ending j-index of rows to work on
-  integer, intent(in) :: is, ie
   integer,                  intent(in)  :: niblock !< Size of the i-block [nondim].
   integer,                  intent(in)  :: njblock !< Size of the j-block [nondim].
   type(ocean_grid_type),    intent(in)  :: G    !< The ocean's grid structure
@@ -694,32 +695,37 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
   real, dimension(niblock,njblock,SZK_(GV)+1), &
                             intent(in)  :: pres_int !< Pressure at each interface [R L2 T-2 ~> Pa]
   real, dimension(niblock,njblock), &
-                            intent(in)  :: dz_avg !< The vertical distance over which to average [Z ~> m]
+                            intent(in)  :: dz_avg !< The vertical distance over which to
+                                                !! average [Z ~> m]
   real, dimension(SZI_(G),SZJ_(G)), &
                             intent(out) :: Rho_bot !< Near-bottom density [R ~> kg m-3].
   real, dimension(SZI_(G),SZJ_(G)), &
-                            intent(out) :: h_bot !< Bottom boundary layer thickness [H ~> m or kg m-2]
+                            intent(out) :: h_bot !< Bottom boundary layer thickness
+                                                !! [H ~> m or kg m-2]
   integer, dimension(SZI_(G),SZJ_(G)), &
                             intent(out) :: k_bot !< Bottom boundary layer top layer index
   ! Local variables
-  real :: hb(niblock,njblock)         ! Running sum of the thickness in the bottom boundary layer [H ~> m or kg m-2]
-  real :: SpV_h_bot(niblock,njblock)  ! Running sum of the specific volume times thickness in the bottom
-                                      ! boundary layer [H R-1 ~> m4 kg-1 or m]
-  real :: dz_bbl_rem(niblock,njblock) ! Vertical extent of the boundary layer that has yet to be accounted
-                                      ! for [Z ~> m]
-  real :: h_bbl_frac(niblock,njblock) ! Thickness of the fractional layer that makes up the top of the
-                                      ! boundary layer [H ~> m or kg m-2]
-  real :: T_bbl(niblock,njblock)      ! Temperature of the fractional layer that makes up the top of the
-                                      ! boundary layer [C ~> degC]
-  real :: S_bbl(niblock,njblock)      ! Salinity of the fractional layer that makes up the top of the
-                                      ! boundary layer [S ~> ppt]
+  real :: hb(niblock,njblock)         ! Running sum of the thickness in the bottom boundary
+                                      ! layer [H ~> m or kg m-2]
+  real :: SpV_h_bot(niblock,njblock)  ! Running sum of the specific volume times thickness in
+                                      ! the bottom boundary layer [H R-1 ~> m4 kg-1 or m]
+  real :: dz_bbl_rem(niblock,njblock) ! Vertical extent of the boundary layer that has yet to
+                                      ! be accounted for [Z ~> m]
+  real :: h_bbl_frac(niblock,njblock) ! Thickness of the fractional layer that makes up the
+                                      ! top of the boundary layer [H ~> m or kg m-2]
+  real :: T_bbl(niblock,njblock)      ! Temperature of the fractional layer that makes up the
+                                      ! top of the boundary layer [C ~> degC]
+  real :: S_bbl(niblock,njblock)      ! Salinity of the fractional layer that makes up the
+                                      ! top of the boundary layer [S ~> ppt]
   real :: P_bbl(niblock,njblock)      ! Pressure the top of the boundary layer [R L2 T-2 ~> Pa]
-  real :: dp(niblock,njblock)         ! Pressure change across the fractional layer that makes up the top
-                                      ! of the boundary layer [R L2 T-2 ~> Pa]
-  real :: SpV_bbl(niblock,njblock)    ! In situ specific volume of the fractional layer that makes up the
-                                      ! top of the boundary layer [R-1 ~> m3 kg-1]
-  real :: frac_in                     ! The fraction of a layer that is within the bottom boundary layer [nondim]
-  logical :: do_i(niblock,njblock), do_any
+  real :: dp(niblock,njblock)         ! Pressure change across the fractional layer that makes
+                                      ! up the top of the boundary layer [R L2 T-2 ~> Pa]
+  real :: SpV_bbl(niblock,njblock)    ! In situ specific volume of the fractional layer that
+                                      ! makes up the top of the boundary layer [R-1 ~> m3 kg-1]
+  real :: frac_in                     ! The fraction of a layer that is within the bottom
+                                      ! boundary layer [nondim]
+  logical :: do_i(niblock,njblock)    ! True for columns still within the boundary layer
+  logical :: do_any                   ! True if any column is still within the boundary layer
   logical :: use_EOS
   integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
   integer :: i, j, k, nz, ii, jj
@@ -903,7 +909,8 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
   endif
 
   !$omp target exit data &
-    !$omp   map(release: hb, SpV_h_bot, dz_bbl_rem, h_bbl_frac, T_bbl, S_bbl, P_bbl, dp, SpV_bbl, do_i)
+    !$omp   map(release: hb, SpV_h_bot, dz_bbl_rem, h_bbl_frac, T_bbl, S_bbl, P_bbl, dp, &
+    !$omp     SpV_bbl, do_i)
 
 end subroutine find_rho_bottom_2d
 
