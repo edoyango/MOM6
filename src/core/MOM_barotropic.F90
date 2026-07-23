@@ -1887,7 +1887,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       "btstep: number of barotropic step (nstep+nfilter) is 0")
   if ( CS%bt_limit_integral_transport .and.  nstep-nfilter<=0 ) call MOM_error(FATAL, &
       "btstep: barotropic filter steps too large (nstep-nfilter) is 0")
-
+!@start noport
   ! Set up the normalized weights for the filtered velocity.
   sum_wt_vel = 0.0 ; sum_wt_eta = 0.0 ; sum_wt_accel = 0.0 ; sum_wt_trans = 0.0
   allocate(wt_vel(nstep+nfilter)) ; allocate(wt_eta(nstep+nfilter))
@@ -1950,7 +1950,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     I_sum_wt_vel = 1.0 ; I_sum_wt_eta = 1.0 ; I_sum_wt_accel = 1.0 ; I_sum_wt_trans = 1.0
   endif
   !$omp target enter data map(to: wt_vel, wt_eta, wt_accel, wt_trans, wt_accel2)
-
+!@end noport
   ! March the barotropic solver through all of its time steps.
   call btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL_v, eta_IC, &
                 eta_PF_1, d_eta_PF, eta_src, dyn_coef_eta, uhbtav, vhbtav, u_accel_bt, v_accel_bt, &
@@ -2745,7 +2745,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     if (CS%integral_OBCs) &
       call create_group_pass(CS%pass_eta_ubt, uhbt_int, vhbt_int, CS%BT_Domain)
   endif
-
+  !@start noport
   ! The following loop contains all of the time steps.
   isv = is ; iev = ie ; jsv = js ; jev = je
   do n=1,nstep+nfilter
@@ -2761,7 +2761,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       isv = isv+stencil ; iev = iev-stencil
       jsv = jsv+stencil ; jev = jev-stencil
     endif
-
+  !@end noport
     ! Store the previous velocities for time-filtered transports and OBCs.
     do concurrent (j=jsv:jev, I=isv-2:iev+1)
       ubt_prev(I,j) = ubt(I,j)
@@ -2800,9 +2800,9 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         eta_PF(i,j) = eta_PF_1(i,j) + wt_end*d_eta_PF(i,j)
       enddo
     endif
-
+    !@start noport
     v_first = (MOD(n+G%first_direction,2)==1)
-
+    !@end noport
     ! Determine the pressure force accelerations due to the updated eta anomalies.
     if (CS%BT_project_velocity) then
       call btloop_find_PF(PFu, PFv, isv, iev, jsv, jev, eta, eta_PF, &
@@ -3027,7 +3027,9 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
     ! Issue warnings if there are unphysical values of the sea surface height
     ! or total water column mass.
+    !@start noport
     eta_is_submerged = .false.
+    !@end noport
     if (GV%Boussinesq) then
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
@@ -6177,6 +6179,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
   allocate(CS%IareaT_OBCmask(isdw:iedw,jsdw:jedw), source=0.0)
   ALLOC_(CS%OBCmask_u(CS%isdw-1:CS%iedw,CS%jsdw:CS%jedw)) ; CS%OBCmask_u(:,:) = 0.0
   ALLOC_(CS%OBCmask_v(CS%isdw:CS%iedw,CS%jsdw-1:CS%jedw)) ; CS%OBCmask_v(:,:) = 0.0
+  !@start noport ! mapped at end of this routine
   do j=G%jsd,G%jed ; do i=G%isd,G%ied
     CS%IareaT(i,j) = G%IareaT(i,j)
     CS%bathyT(i,j) = G%bathyT(i,j)
@@ -6572,7 +6575,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
         'Outer v velocity at OBC points', 'm', conversion=US%L_T_to_m_s)
     endif
   endif
-
+  !@end noport
   !$omp target update to (CS)
 
   ! CS%dtbt calculated here by set_dtbt is only used when dtbt is not reset during the run, i.e. DTBT_RESET_PERIOD<0.
@@ -6599,6 +6602,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
       .NOT.query_initialized(CS%vbtav,"vbtav",restart_CS)) then
     !$omp target update to(h)
     call btcalc(h, G, GV, CS, may_use_default=.true.)
+    !@start noport ! mapped at end of this routine
     CS%ubtav(:,:) = 0.0 ; CS%vbtav(:,:) = 0.0
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%ubtav(I,j) = CS%ubtav(I,j) + CS%frhatu(I,j,k) * u(I,j,k)
@@ -6606,6 +6610,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%vbtav(i,J) = CS%vbtav(i,J) + CS%frhatv(i,J,k) * v(i,J,k)
     enddo ; enddo ; enddo
+    !@end noport
   endif
 
   if (CS%gradual_BT_ICs) then
@@ -6619,6 +6624,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
 
   if (.not.CS%nonlin_stress) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
+    !@start noport ! mapped at end of this routine
     do j=js,je ; do I=is-1,ie
       htot = max(G%meanSL(i+1,j) + G%bathyT(i+1,j), 0.0) + max(G%meanSL(i,j) + G%bathyT(i,j), 0.0)
       if (G%OBCmaskCu(I,j) * htot > 0.) then
@@ -6635,6 +6641,7 @@ subroutine barotropic_init(u, v, h, Time, G, GV, US, param_file, diag, CS, &
         CS%IDatv(i,J) = 0.
       endif
     enddo ; enddo
+    !@end noport ! mapped at end of this routine
   endif
 
   call find_face_areas(Datu, Datv, G, GV, US, CS, MS, 1)
