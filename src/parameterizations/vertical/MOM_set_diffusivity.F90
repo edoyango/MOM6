@@ -272,7 +272,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                              intent(out)   :: Kd_int !< Diapycnal diffusivity at each interface
                                                    !! [H Z T-1 ~> m2 s-1 or kg m-1 s-1].
-  type(set_diffusivity_CS),  pointer       :: CS   !< Module control structure.
+  type(set_diffusivity_CS),  intent(inout) :: CS   !< Module control structure.
   type(vbf_CS),           pointer          :: VBF  !< A diagnostic control structure for vertical buoyancy fluxes
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                    optional, intent(out)   :: Kd_lay !< Diapycnal diffusivity of each layer
@@ -359,9 +359,6 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("set_diffusivity(), MOM_set_diffusivity.F90")
-
-  if (.not.associated(CS)) call MOM_error(FATAL,"set_diffusivity: "//&
-         "Module must be initialized before it is used.")
 
   if (.not.CS%initialized) call MOM_error(FATAL,"set_diffusivity: "//&
          "Module must be initialized before it is used.")
@@ -992,7 +989,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                     intent(in)    :: dz   !< Height change across layers [Z ~> m]
   real,                             intent(in)    :: dt   !< Time increment [T ~> s].
-  type(set_diffusivity_CS),         pointer       :: CS   !< Diffusivity control structure
+  type(set_diffusivity_CS),         intent(in)    :: CS   !< Diffusivity control structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: TKE_to_Kd !< The conversion rate
                                                           !! between the TKE dissipated within a layer
                                                           !! and the diapycnal diffusivity within that
@@ -1276,7 +1273,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   type(forcing),            intent(in)  :: fluxes !< A structure of thermodynamic surface fluxes
   integer,                  intent(in)  :: js   !< Starting j-index of rows to work on
   integer,                  intent(in)  :: je   !< Ending j-index of rows to work on
-  type(set_diffusivity_CS), pointer     :: CS   !< Diffusivity control structure
+  type(set_diffusivity_CS), intent(in)  :: CS   !< Diffusivity control structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                             intent(out) :: dRho_int !< Change in locally referenced potential density
                                                 !! across each interface [R ~> kg m-3].
@@ -1533,7 +1530,7 @@ subroutine double_diffusion(tv, h, T_f, S_f, j, G, GV, US, CS, Kd_T_dd, Kd_S_dd)
                             intent(in)  :: S_f !< Layer salinities with values in massless
                                                !! layers filled vertically by diffusion [S ~> ppt].
   integer,                  intent(in)  :: j   !< Meridional index upon which to work.
-  type(set_diffusivity_CS), pointer     :: CS  !< Module control structure.
+  type(set_diffusivity_CS), intent(in)  :: CS  !< Module control structure.
   real, dimension(SZI_(G),SZK_(GV)+1),       &
                             intent(out) :: Kd_T_dd !< Interface double diffusion diapycnal
                                                !! diffusivity for temp [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
@@ -1635,7 +1632,7 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, TKE_t
                                                           !! layer, or -1 without a bulk mixed layer
   real, dimension(SZI_(G),SZJ_(G)), intent(in)    :: rho_bot !< In situ density averaged over a near-bottom
                                                           !! region [R ~> kg m-3]
-  type(set_diffusivity_CS),         pointer       :: CS   !< Diffusivity control structure
+  type(set_diffusivity_CS),         intent(in)    :: CS   !< Diffusivity control structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: Kd_lay !< The diapycnal diffusivity in layers,
                                                             !! [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: Kd_int !< The diapycnal diffusivity at interfaces,
@@ -1894,7 +1891,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, is, ie, js, je, d
                                                      !! region [R ~> kg m-3]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                             intent(inout) :: Kd_int !< Interface net diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
-  type(set_diffusivity_CS), pointer       :: CS !< Diffusivity control structure
+  type(set_diffusivity_CS), intent(in)    :: CS !< Diffusivity control structure
   real, dimension(:,:,:),   pointer       :: Kd_BBL !< Interface BBL diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                   optional, intent(inout) :: Kd_lay !< Layer net diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
@@ -2065,7 +2062,7 @@ subroutine add_MLrad_diffusivity(dz, fluxes, tv, j, Kd_int, G, GV, US, CS, TKE_t
   integer,                          intent(in)    :: j      !< The j-index to work on
   real, dimension(SZI_(G),SZK_(GV)+1), intent(inout) :: Kd_int !< The diapycnal diffusivity at interfaces
                                                             !! [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
-  type(set_diffusivity_CS),         pointer       :: CS     !< Diffusivity control structure
+  type(set_diffusivity_CS),         intent(in)    :: CS     !< Diffusivity control structure
   real, dimension(SZI_(G),SZK_(GV)), intent(in)   :: TKE_to_Kd !< The conversion rate between the TKE
                                                             !! TKE dissipated within  a layer and the
                                                             !! diapycnal diffusivity witin that layer,
@@ -2223,7 +2220,7 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
   type(forcing),            intent(in)    :: fluxes !< A structure of thermodynamic surface fluxes
   type(vertvisc_type),      intent(inout) :: visc !< Structure containing vertical viscosities, bottom
                                                   !! boundary layer properties and related fields.
-  type(set_diffusivity_CS), pointer       :: CS   !< Diffusivity control structure
+  type(set_diffusivity_CS), intent(in)    :: CS   !< Diffusivity control structure
   type(ocean_OBC_type),     pointer       :: OBC  !< Open boundaries control structure.
 
   ! This subroutine calculates several properties related to bottom
@@ -2263,8 +2260,6 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  if (.not.associated(CS)) call MOM_error(FATAL,"set_BBL_TKE: "//&
-         "Module must be initialized before it is used.")
 
   if (.not.CS%initialized) call MOM_error(FATAL,"set_BBL_TKE: "//&
          "Module must be initialized before it is used.")
@@ -2428,7 +2423,7 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
   integer, dimension(SZI_(G),SZJ_(G)), intent(in) :: kb !< Index of lightest layer denser than the buffer
                                                        !! layer, or -1 without a bulk mixed layer.
   type(unit_scale_type),            intent(in)   :: US !< A dimensional unit scaling type
-  type(set_diffusivity_CS),         pointer      :: CS !< Control structure returned by previous
+  type(set_diffusivity_CS),         intent(in)   :: CS !< Control structure returned by previous
                                                        !! call to diabatic_entrain_init.
   integer,                          intent(in)   :: is !< Starting i-index to work on.
   integer,                          intent(in)   :: ie !< Ending i-index to work on.
