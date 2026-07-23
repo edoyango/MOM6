@@ -691,9 +691,9 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
                             intent(in)  :: h    !< Layer thicknesses [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                             intent(in)  :: dz   !< Height change across layers [Z ~> m]
-  real, dimension(is:ie,js:je,SZK_(GV)+1), &
+  real, dimension(niblock,njblock,SZK_(GV)+1), &
                             intent(in)  :: pres_int !< Pressure at each interface [R L2 T-2 ~> Pa]
-  real, dimension(is:ie,js:je), &
+  real, dimension(niblock,njblock), &
                             intent(in)  :: dz_avg !< The vertical distance over which to average [Z ~> m]
   real, dimension(SZI_(G),SZJ_(G)), &
                             intent(out) :: Rho_bot !< Near-bottom density [R ~> kg m-3].
@@ -740,7 +740,7 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
     do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
       jj = j-js+1 ; ii = i-is+1
       hb(ii,jj) = 0.0 ; h_bot(i,j) = 0.0 ; k_bot(i,j) = nz
-      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(i,j))
+      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(ii,jj))
       do_i(ii,jj) = .true.
       if (G%mask2dT(i,j) <= 0.0) then
         h_bbl_frac(ii,jj) = 0.0
@@ -807,7 +807,7 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
     do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
       jj = j-js+1 ; ii = i-is+1
       hb(ii,jj) = 0.0 ; SpV_h_bot(ii,jj) = 0.0 ; h_bot(i,j) = 0.0 ; k_bot(i,j) = nz
-      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(i,j))
+      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(ii,jj))
       do_i(ii,jj) = .true.
       if (G%mask2dT(i,j) <= 0.0) then
         ! Set acceptable values for calling the equation of state over land.
@@ -848,7 +848,7 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
             ! specific volume of the portion that is within the BBL.
             T_bbl(ii,jj) = tv%T(i,j,k) ; S_bbl(ii,jj) = tv%S(i,j,k)
             dp(ii,jj) = frac_in * (GV%g_Earth*GV%H_to_RZ * h(i,j,k))
-            P_bbl(ii,jj) = pres_int(i,j,K) + (1.0-frac_in) * (GV%g_Earth*GV%H_to_RZ * h(i,j,k))
+            P_bbl(ii,jj) = pres_int(ii,jj,K) + (1.0-frac_in) * (GV%g_Earth*GV%H_to_RZ * h(i,j,k))
           else
             SpV_bbl(ii,jj) = tv%SpV_avg(i,j,k)
           endif
@@ -872,7 +872,7 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, is,ie, js,
       if (use_EOS) then
         T_bbl(ii,jj) = tv%T(i,j,1) ; S_bbl(ii,jj) = tv%S(i,j,1)
         dp(ii,jj) = 0.0
-        P_bbl(ii,jj) = pres_int(i,j,1)
+        P_bbl(ii,jj) = pres_int(ii,jj,1)
       else
         SpV_bbl(ii,jj) = tv%SpV_avg(i,j,1)
       endif
