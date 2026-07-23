@@ -1469,7 +1469,8 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
     dz_BBL_avg(i,j) = max(h_amp(i,j), CS%dz_BBL_avg_min)
   enddo
 
-  call find_rho_bottom(G, GV, US, tv, h, dz, pres, dz_BBL_avg, is,ie,js, je, Rho_bot, h_bot, k_bot)
+  call find_rho_bottom(G, GV, US, tv, h, dz, pres, dz_BBL_avg, is,ie,js, je, &
+                       niblock, njblock, Rho_bot, h_bot, k_bot)
 
   !$omp target exit data &
   !$omp   map(from: dRho_int, N2_int, N2_lay, N2_bot, Rho_bot, h_bot, k_bot) &
