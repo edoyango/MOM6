@@ -1288,10 +1288,13 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
     Temp_int,  &  ! temperature at each interface [C ~> degC]
     Salin_int, &  ! salinity at each interface [S ~> ppt]
     drho_bot,  &  ! A density difference [R ~> kg m-3]
-    h_amp,     &  ! The topographic roughness amplitude [Z ~> m].
     dz_BBL_avg, & ! The distance over which to average to find the near-bottom density [Z ~> m]
     hb,        &  ! The thickness of the bottom layer [H ~> m or kg m-2]
     z_from_bot    ! The height above the bottom [Z ~> m]
+  ! h_amp spans the full i-memory extent because tidal_mixing_h_amp writes into it
+  ! with global i-indices through a dummy argument that is declared SZI_(G).
+  real, dimension(SZI_(G),js:je) :: &
+    h_amp         ! The topographic roughness amplitude [Z ~> m].
 
   real :: dz_int    ! Vertical distance associated with an interface [Z ~> m]
   real :: G_Rho0    ! Gravitational acceleration, perhaps divided by Boussinesq reference density,
