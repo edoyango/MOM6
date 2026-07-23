@@ -180,6 +180,9 @@ type, public :: set_diffusivity_CS ; private
                               !! to set the bottom-drag generated diffusivity when
                               !! USE_LOTW_BBL_DIFFUSIVITY is false.
 
+  integer :: niblock          !< The i block size used in array calculations [nondim].
+  integer :: njblock          !< The j block size used in array calculations [nondim].
+
   character(len=200) :: inputdir !< The directory in which input files are found
   type(user_change_diff_CS), pointer :: user_change_diff_CSp => NULL() !< Control structure for a child module
   type(Kappa_shear_CS),      pointer :: kappaShear_CSp       => NULL() !< Control structure for a child module
@@ -345,13 +348,13 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   real      :: kappa_dt_fill ! diffusivity times a timestep used to fill massless layers [H Z ~> m2 or kg m-1]
 
-  integer :: TILE_SIZE_X, TILE_SIZE_Y, jstart, jend, istart, iend
+  integer :: niblock !< i block size for array calculations [nondim].
+  integer :: njblock !< j block size for array calculations [nondim].
+  integer :: jstart, jend, istart, iend
 
   is  = G%isc ; ie  = G%iec ; js  = G%jsc ; je  = G%jec ; nz = GV%ke
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
-  TILE_SIZE_X = ie-is+1 !32
-  TILE_SIZE_Y = je-js+1 !4
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("set_diffusivity(), MOM_set_diffusivity.F90")
 
@@ -360,6 +363,10 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
   if (.not.CS%initialized) call MOM_error(FATAL,"set_diffusivity: "//&
          "Module must be initialized before it is used.")
+
+  niblock = CS%niblock ; njblock = CS%njblock
+  if (niblock == 0) niblock = ie-is+1
+  if (njblock == 0) njblock = je-js+1
 
   if (CS%answer_date < 20190101) then
     ! These hard-coded dimensional parameters are being replaced.
@@ -503,15 +510,16 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   ! be an appropriate place to add a depth-dependent parameterization or another explicit
   ! parameterization of Kd.
 
-  do jstart = js, je, TILE_SIZE_Y ; do istart = is, ie, TILE_SIZE_X
-    jend = min(je, jstart + TILE_SIZE_Y - 1)
-    iend = min(ie, istart + TILE_SIZE_X - 1)
+  do jstart = js, je, njblock ; do istart = is, ie, niblock
+    jend = min(je, jstart + njblock - 1)
+    iend = min(ie, istart + niblock - 1)
 
     call thickness_to_dz(h, tv, dz, G, GV, US, is=istart, ie=iend, js=jstart, je=jend, do_offload=.true.)
     !$omp target update from(dz)  if (CS%ML_radiation .or. CS%use_tidal_mixing .or. associated(dd%Kd_Work) .or. CS%use_LOTW_BBL_diffusivity)
 
     ! Set up variables related to the stratification.
-    call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, dz, G, GV, US, CS, &
+    call find_N2(h, tv, T_f, S_f, fluxes, istart, iend, jstart, jend, niblock, njblock, &
+                dz, G, GV, US, CS, &
                 dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot)
 
     ! Add background mixing
@@ -612,8 +620,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 
     ! Calculate conversion ratios from TKE to layer diffusivities.
     if (TKE_to_Kd_used) then
-      call find_TKE_to_Kd(h, tv, dRho_int, N2_lay, istart, iend, jstart, jend, dt, G, GV, US, CS, &
-                          TKE_to_Kd, maxTKE, kb)
+      call find_TKE_to_Kd(h, tv, dRho_int, N2_lay, istart, iend, jstart, jend, niblock, njblock, &
+                          dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
       if (associated(dd%maxTKE)) then ; do concurrent (k=1:nz, j=jstart:jend, i=istart:iend)
         dd%maxTKE(i,j,k) = maxTKE(i,j,k)
       enddo ; endif
@@ -955,8 +963,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
 end subroutine set_diffusivity
 
 !> Convert turbulent kinetic energy to diffusivity
-subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, dt, G, GV, US, CS, &
-                          TKE_to_Kd, maxTKE, kb)
+subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njblock, &
+                          dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
   type(ocean_grid_type),            intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),          intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),            intent(in)    :: US   !< A dimensional unit scaling type
@@ -973,6 +981,8 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, dt, G, GV, US
   integer,                          intent(in)    :: ie   !< Ending i-index to work on
   integer,                          intent(in)    :: js   !< Starting j-index to work on
   integer,                          intent(in)    :: je   !< Ending j-index to work on
+  integer,                          intent(in)    :: niblock !< Size of the i-block [nondim].
+  integer,                          intent(in)    :: njblock !< Size of the j-block [nondim].
   real,                             intent(in)    :: dt   !< Time increment [T ~> s].
   type(set_diffusivity_CS),         pointer       :: CS   !< Diffusivity control structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: TKE_to_Kd !< The conversion rate
@@ -1225,7 +1235,8 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, dt, G, GV, US
 end subroutine find_TKE_to_Kd
 
 !> Calculate Brunt-Vaisala frequency, N^2.
-subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, dz, G, GV, US, CS, dRho_int, &
+subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
+                   dz, G, GV, US, CS, dRho_int, &
                    N2_lay, N2_int, N2_bot, Rho_bot, h_bot, k_bot)
   type(ocean_grid_type),    intent(in)  :: G    !< The ocean's grid structure
   type(verticalGrid_type),  intent(in)  :: GV   !< The ocean's vertical grid structure
@@ -1256,6 +1267,8 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, dz, G, GV, US, CS, d
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: h_bot !< Bottom boundary layer thickness [H ~> m or kg m-2].
   integer, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: k_bot !< Bottom boundary layer top layer index.
   integer, intent(in) :: is, ie
+  integer,                  intent(in)  :: niblock !< Size of the i-block [nondim].
+  integer,                  intent(in)  :: njblock !< Size of the j-block [nondim].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                             intent(in)  :: dz   !< Height change across layers [Z ~> m]
 
@@ -2530,6 +2543,14 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
   logical :: TKE_to_Kd_used  ! If true, TKE_to_Kd and maxTKE need to be calculated.
   integer :: is, ie, js, je
   integer :: isd, ied, jsd, jed
+#ifdef __NVCOMPILER_OPENMP_GPU
+  integer, parameter :: default_niblock = 0 !< Default i block size for array calculations [nondim].
+  integer, parameter :: default_njblock = 0 !< Default j block size for array calculations [nondim].
+#else
+  ! These were found to give best performance in limited tests.
+  integer, parameter :: default_niblock = 32 !< Default i block size for array calculations [nondim].
+  integer, parameter :: default_njblock = 4  !< Default j block size for array calculations [nondim].
+#endif
 
   if (associated(CS)) then
     call MOM_error(WARNING, "diabatic_entrain_init called with an associated "// &
@@ -2575,6 +2596,21 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
                "generated diffusivity when USE_LOTW_BBL_DIFFUSIVITY is false.", &
                default=default_answer_date, do_not_log=.not.GV%Boussinesq)
   if (.not.GV%Boussinesq) CS%answer_date = max(CS%answer_date, 20230701)
+
+  call get_param(param_file, mdl, "SET_DIFF_NIBLOCK", CS%niblock, &
+                 "The i-direction block size used in the diffusivity calculations. "//&
+                 "The default 0 setting is dynamic and fits the "//&
+                 "full computational i-domain length.", default=default_niblock, layoutParam=.true.)
+  call get_param(param_file, mdl, "SET_DIFF_NJBLOCK", CS%njblock, &
+                 "The j-direction block size used in the diffusivity calculations. "//&
+                 "The default 0 setting is dynamic and fits the "//&
+                 "full computational j-domain length.", default=default_njblock, layoutParam=.true.)
+  if (CS%niblock < 0) &
+    call MOM_error(FATAL, "SET_DIFF_NIBLOCK must be nonnegative; "//&
+                          "use 0 to select the default block size.")
+  if (CS%njblock < 0) &
+    call MOM_error(FATAL, "SET_DIFF_NJBLOCK must be nonnegative; "//&
+                          "use 0 to select the default block size.")
 
   ! CS%use_tidal_mixing is set to True if an internal tidal dissipation scheme is to be used.
   CS%use_tidal_mixing = tidal_mixing_init(Time, G, GV, US, param_file, &
