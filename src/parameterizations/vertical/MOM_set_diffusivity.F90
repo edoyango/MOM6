@@ -1004,14 +1004,14 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   integer, dimension(SZI_(G),SZJ_(G)), intent(inout) :: kb !< Index of lightest layer denser than the
                                                           !! buffer layer, or -1 without a bulk mixed layer.
   ! Local variables
-  ! ds_dsp1 and rho_0 span the full domain because they are passed to
-  ! set_density_ratios and to the equation of state alongside full-domain arrays.
+  ! rho_0 spans the full domain because it is written by the equation of state
+  ! alongside full-domain tv%T and tv%S slices under a halo-relative EOSdom.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
+    rho_0         ! Layer potential densities relative to surface pressure [R ~> kg m-3]
+  real, dimension(niblock,njblock,SZK_(GV)) :: &
     ds_dsp1, &    ! coordinate variable (sigma-2) difference across an
                   ! interface divided by the difference across the interface
                   ! below it [nondim]
-    rho_0         ! Layer potential densities relative to surface pressure [R ~> kg m-3]
-  real, dimension(niblock,njblock,SZK_(GV)) :: &
     dsp1_ds, &    ! inverse coordinate variable (sigma-2) difference
                   ! across an interface times the difference across the
                   ! interface above it [nondim]
@@ -1123,7 +1123,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   ! interior layer.
   do concurrent (k=2:nz-1, j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
     jj = j-js+1 ; ii = i-is+1
-    dsp1_ds(ii,jj,k) = 1.0 / ds_dsp1(i,j,k)
+    dsp1_ds(ii,jj,k) = 1.0 / ds_dsp1(ii,jj,k)
   enddo
   do concurrent (jj=1:je-js+1, ii=1:ie-is+1)
     dsp1_ds(ii,jj,nz) = 0.0
@@ -1136,13 +1136,13 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
         jj = j-js+1 ; ii = i-is+1
         htot(ii,jj) = h(i,j,kmb)
         mFkb(ii,jj) = 0.0
-        if (kb(i,j) < nz) mFkb(ii,jj) = ds_dsp1(i,j,kb(i,j)) * (h(i,j,kmb) - GV%Angstrom_H)
+        if (kb(i,j) < nz) mFkb(ii,jj) = ds_dsp1(ii,jj,kb(i,j)) * (h(i,j,kmb) - GV%Angstrom_H)
       enddo
       do k=1,kmb-1
         do concurrent (i=is:ie) DO_LOCALITY(local(ii,jj))
           jj = j-js+1 ; ii = i-is+1
           htot(ii,jj) = htot(ii,jj) + h(i,j,k)
-          mFkb(ii,jj) = mFkb(ii,jj) + ds_dsp1(i,j,k+1)*(h(i,j,k) - GV%Angstrom_H)
+          mFkb(ii,jj) = mFkb(ii,jj) + ds_dsp1(ii,jj,k+1)*(h(i,j,k) - GV%Angstrom_H)
         enddo
       enddo
     enddo
@@ -1163,7 +1163,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
       if (CS%answer_date < 20190101) then
         maxEnt(ii,jj,k) = (1.0/dsp1_ds(ii,jj,k))*(maxEnt(ii,jj,k-1) + htot(ii,jj))
       else
-        maxEnt(ii,jj,k) = ds_dsp1(i,j,k)*(maxEnt(ii,jj,k-1) + htot(ii,jj))
+        maxEnt(ii,jj,k) = ds_dsp1(ii,jj,k)*(maxEnt(ii,jj,k-1) + htot(ii,jj))
       endif
       htot(ii,jj) = htot(ii,jj) + (h(i,j,k) - GV%Angstrom_H)
     endif
@@ -2436,7 +2436,7 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
   integer,                          intent(in)   :: je !< Ending j-index to work on.
   integer,                          intent(in)   :: niblock !< Size of the i-block [nondim].
   integer,                          intent(in)   :: njblock !< Size of the j-block [nondim].
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+  real, dimension(niblock,njblock,SZK_(GV)), &
                                     intent(out) :: ds_dsp1 !< Coordinate variable (sigma-2)
                                                        !! difference across an interface divided by
                                                        !! the difference across the interface below
@@ -2461,16 +2461,16 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
   !$omp target enter data map(alloc: a, a_0, p_ref, Rcv)
 
   if (GV%Boussinesq .or. GV%Semi_Boussinesq) then
-    do concurrent (k=2:nz-1, i=is:ie, j=js:je, GV%g_prime(k+1) /= 0.0)
-      ds_dsp1(i,j,k) = GV%g_prime(k) / GV%g_prime(k+1)
+    do concurrent (k=2:nz-1, jj=1:je-js+1, ii=1:ie-is+1, GV%g_prime(k+1) /= 0.0)
+      ds_dsp1(ii,jj,k) = GV%g_prime(k) / GV%g_prime(k+1)
     enddo
   else  ! Use a mathematically equivalent form that avoids any dependency on RHO_0.
-    do concurrent (k=2:nz-1, i=is:ie, j=js:je, GV%g_prime(k+1) /= 0.0)
-      ds_dsp1(i,j,k) = (GV%Rlay(k) - GV%Rlay(k-1)) / (GV%Rlay(k+1) - GV%Rlay(k))
+    do concurrent (k=2:nz-1, jj=1:je-js+1, ii=1:ie-is+1, GV%g_prime(k+1) /= 0.0)
+      ds_dsp1(ii,jj,k) = (GV%Rlay(k) - GV%Rlay(k-1)) / (GV%Rlay(k+1) - GV%Rlay(k))
     enddo
   endif
-  do concurrent (k=2:nz-1, i=is:ie, j=js:je, GV%g_prime(k+1) == 0.0)
-    ds_dsp1(i,j,k) = 1.
+  do concurrent (k=2:nz-1, jj=1:je-js+1, ii=1:ie-is+1, GV%g_prime(k+1) == 0.0)
+    ds_dsp1(ii,jj,k) = 1.
   enddo
 
   if (CS%bulkmixedlayer) then
@@ -2502,23 +2502,23 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
       do k3=1,kmb
         a(ii,jj,k3+1) = (GV%Rlay(k) - Rcv(i,j,k3)) * I_Drho
       enddo
-      if ((present(rho_0)) .and. (a(ii,jj,kmb+1) < 2.0*eps*ds_dsp1(i,j,k))) then
+      if ((present(rho_0)) .and. (a(ii,jj,kmb+1) < 2.0*eps*ds_dsp1(ii,jj,k))) then
 !   If the buffer layer nearly matches the density of the layer below in the
 ! coordinate variable (sigma-2), use the sigma-0-based density ratio if it is
 ! greater (and stable).
         if ((rho_0(i,j,k) > rho_0(i,j,kmb)) .and. &
             (rho_0(i,j,k+1) > rho_0(i,j,k))) then
           I_Drho = 1.0 / (rho_0(i,j,k+1)-rho_0(i,j,k))
-          a_0(ii,jj,kmb+1) = min((rho_0(i,j,k)-rho_0(i,j,kmb)) * I_Drho, ds_dsp1(i,j,k))
+          a_0(ii,jj,kmb+1) = min((rho_0(i,j,k)-rho_0(i,j,kmb)) * I_Drho, ds_dsp1(ii,jj,k))
           if (a_0(ii,jj,kmb+1) > a(ii,jj,kmb+1)) then
             do k3=2,kmb
               a_0(ii,jj,k3) = a_0(ii,jj,kmb+1) + (rho_0(i,j,kmb)-rho_0(i,j,k3-1)) * I_Drho
             enddo
-            if (a(ii,jj,kmb+1) <= eps*ds_dsp1(i,j,k)) then
+            if (a(ii,jj,kmb+1) <= eps*ds_dsp1(ii,jj,k)) then
               do k3=2,kmb+1 ; a(ii,jj,k3) = a_0(ii,jj,k3) ; enddo
             else
 ! Alternative...  tmp = 0.5*(1.0 - cos(PI*(a(K2+1)/(eps*ds_dsp1(i,j,k)) - 1.0)) )
-              tmp = a(ii,jj,kmb+1)/(eps*ds_dsp1(i,j,k)) - 1.0
+              tmp = a(ii,jj,kmb+1)/(eps*ds_dsp1(ii,jj,k)) - 1.0
               do k3=2,kmb+1
                 a(ii,jj,k3) = tmp*a(ii,jj,k3) + (1.0-tmp)*a_0(ii,jj,k3)
               enddo
@@ -2527,7 +2527,7 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
         endif
       endif
 
-      ds_dsp1(i,j,k) = MAX(a(ii,jj,kmb+1),1e-5)
+      ds_dsp1(ii,jj,k) = MAX(a(ii,jj,kmb+1),1e-5)
 
       do k3=2,kmb
 !           ds_dsp1(i,j,k3) = MAX(a(i,j,k3),1e-5)
@@ -2536,7 +2536,7 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock,
         ! though they don't exist.  They will be eliminated by the upcoming
         ! call to the mixedlayer code anyway.
         ! The indexing convention is appropriate for the interfaces.
-        ds_dsp1(i,j,k3) = MAX(a(ii,jj,k3),ds_dsp1(i,j,k))
+        ds_dsp1(ii,jj,k3) = MAX(a(ii,jj,k3),ds_dsp1(ii,jj,k))
       enddo
     enddo ! Ij-loop.
   endif ! bulkmixedlayer
