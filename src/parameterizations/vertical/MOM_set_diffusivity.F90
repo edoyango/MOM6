@@ -1108,13 +1108,15 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
           if (h(i,j,k)>2.0*GV%Angstrom_H) kb(i,j) = k
         enddo
     enddo
-    call set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1, rho_0)
+    call set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock, njblock, &
+                            ds_dsp1, rho_0)
   else ! not bulkmixedlayer
     kb_min = 2 ; kmb = 0
     do concurrent (i=is:ie, j=js:je)
       kb(i,j) = 1
     enddo
-    call set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1)
+    call set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock, njblock, &
+                            ds_dsp1)
   endif
 
   ! Determine maxEnt - the maximum permitted entrainment from below by each
@@ -2414,7 +2416,8 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
 
 end subroutine set_BBL_TKE
 
-subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1, rho_0)
+subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, niblock, njblock, &
+                              ds_dsp1, rho_0)
   type(ocean_grid_type),            intent(in)   :: G  !< The ocean's grid structure.
   type(verticalGrid_type),          intent(in)   :: GV !< The ocean's vertical grid structure.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -2431,6 +2434,8 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1,
   integer,                          intent(in)   :: ie !< Ending i-index to work on.
   integer,                          intent(in)   :: js !< Starting j-index to work on.
   integer,                          intent(in)   :: je !< Ending j-index to work on.
+  integer,                          intent(in)   :: niblock !< Size of the i-block [nondim].
+  integer,                          intent(in)   :: njblock !< Size of the j-block [nondim].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                     intent(out) :: ds_dsp1 !< Coordinate variable (sigma-2)
                                                        !! difference across an interface divided by
@@ -2443,14 +2448,14 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1,
   ! Local variables
   real :: g_R0                     ! g_R0 is a rescaled version of g/Rho [L2 Z-1 R-1 T-2 ~> m4 kg-1 s-2]
   real :: eps, tmp                 ! nondimensional temporary variables [nondim]
-  real :: a(SZI_(G),SZJ_(G),SZK_(GV)), a_0(SZI_(G),SZJ_(G),SZK_(GV)) ! nondimensional temporaries [nondim]
+  real :: a(niblock,njblock,SZK_(GV)), a_0(niblock,njblock,SZK_(GV)) ! nondimensional temporaries [nondim]
   real :: p_ref(SZI_(G),SZJ_(G))   ! an array of tv%P_Ref pressures [R L2 T-2 ~> Pa]
   real :: Rcv(SZI_(G),SZJ_(G),SZK_(GV)) ! coordinate density in mixed and buffer layers [R ~> kg m-3]
   real :: I_Drho                   ! The inverse of the coordinate density difference between
                                    ! layers [R-1 ~> m3 kg-1]
 
   integer, dimension(2,2) :: EOSdom ! The computational domain for the equation of state
-  integer :: i, j, k, k3, nz, kmb
+  integer :: i, j, k, k3, nz, kmb, ii, jj
   nz = GV%ke
 
   !$omp target enter data map(alloc: a, a_0, p_ref, Rcv)
@@ -2482,7 +2487,8 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1,
     do k=1,kmb
       call calculate_density(tv%T(:,:,k), tv%S(:,:,k), p_ref, Rcv(:,:,k), tv%eqn_of_state, EOSdom)
     enddo
-    do concurrent (j=js:je, i=is:ie, kb(i,j) <= nz-1)
+    do concurrent (j=js:je, i=is:ie, kb(i,j) <= nz-1) DO_LOCALITY(local(ii,jj))
+      jj = j-js+1 ; ii = i-is+1
 !   Set up appropriately limited ratios of the reduced gravities of the
 ! interfaces above and below the buffer layer and the next denser layer.
       k = kb(i,j)
@@ -2494,34 +2500,34 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1,
       endif
       ! The indexing convention for a is appropriate for the interfaces.
       do k3=1,kmb
-        a(i,j,k3+1) = (GV%Rlay(k) - Rcv(i,j,k3)) * I_Drho
+        a(ii,jj,k3+1) = (GV%Rlay(k) - Rcv(i,j,k3)) * I_Drho
       enddo
-      if ((present(rho_0)) .and. (a(i,j,kmb+1) < 2.0*eps*ds_dsp1(i,j,k))) then
+      if ((present(rho_0)) .and. (a(ii,jj,kmb+1) < 2.0*eps*ds_dsp1(i,j,k))) then
 !   If the buffer layer nearly matches the density of the layer below in the
 ! coordinate variable (sigma-2), use the sigma-0-based density ratio if it is
 ! greater (and stable).
         if ((rho_0(i,j,k) > rho_0(i,j,kmb)) .and. &
             (rho_0(i,j,k+1) > rho_0(i,j,k))) then
           I_Drho = 1.0 / (rho_0(i,j,k+1)-rho_0(i,j,k))
-          a_0(i,j,kmb+1) = min((rho_0(i,j,k)-rho_0(i,j,kmb)) * I_Drho, ds_dsp1(i,j,k))
-          if (a_0(i,j,kmb+1) > a(i,j,kmb+1)) then
+          a_0(ii,jj,kmb+1) = min((rho_0(i,j,k)-rho_0(i,j,kmb)) * I_Drho, ds_dsp1(i,j,k))
+          if (a_0(ii,jj,kmb+1) > a(ii,jj,kmb+1)) then
             do k3=2,kmb
-              a_0(i,j,k3) = a_0(i,j,kmb+1) + (rho_0(i,j,kmb)-rho_0(i,j,k3-1)) * I_Drho
+              a_0(ii,jj,k3) = a_0(ii,jj,kmb+1) + (rho_0(i,j,kmb)-rho_0(i,j,k3-1)) * I_Drho
             enddo
-            if (a(i,j,kmb+1) <= eps*ds_dsp1(i,j,k)) then
-              do k3=2,kmb+1 ; a(i,j,k3) = a_0(i,j,k3) ; enddo
+            if (a(ii,jj,kmb+1) <= eps*ds_dsp1(i,j,k)) then
+              do k3=2,kmb+1 ; a(ii,jj,k3) = a_0(ii,jj,k3) ; enddo
             else
 ! Alternative...  tmp = 0.5*(1.0 - cos(PI*(a(K2+1)/(eps*ds_dsp1(i,j,k)) - 1.0)) )
-              tmp = a(i,j,kmb+1)/(eps*ds_dsp1(i,j,k)) - 1.0
+              tmp = a(ii,jj,kmb+1)/(eps*ds_dsp1(i,j,k)) - 1.0
               do k3=2,kmb+1
-                a(i,j,k3) = tmp*a(i,j,k3) + (1.0-tmp)*a_0(i,j,k3)
+                a(ii,jj,k3) = tmp*a(ii,jj,k3) + (1.0-tmp)*a_0(ii,jj,k3)
               enddo
             endif
           endif
         endif
       endif
 
-      ds_dsp1(i,j,k) = MAX(a(i,j,kmb+1),1e-5)
+      ds_dsp1(i,j,k) = MAX(a(ii,jj,kmb+1),1e-5)
 
       do k3=2,kmb
 !           ds_dsp1(i,j,k3) = MAX(a(i,j,k3),1e-5)
@@ -2530,7 +2536,7 @@ subroutine set_density_ratios(h, tv, kb, G, GV, US, CS, is, ie, js, je, ds_dsp1,
         ! though they don't exist.  They will be eliminated by the upcoming
         ! call to the mixedlayer code anyway.
         ! The indexing convention is appropriate for the interfaces.
-        ds_dsp1(i,j,k3) = MAX(a(i,j,k3),ds_dsp1(i,j,k))
+        ds_dsp1(i,j,k3) = MAX(a(ii,jj,k3),ds_dsp1(i,j,k))
       enddo
     enddo ! Ij-loop.
   endif ! bulkmixedlayer
