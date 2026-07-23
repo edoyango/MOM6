@@ -1004,25 +1004,31 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   integer, dimension(SZI_(G),SZJ_(G)), intent(inout) :: kb !< Index of lightest layer denser than the
                                                           !! buffer layer, or -1 without a bulk mixed layer.
   ! Local variables
+  ! ds_dsp1 and rho_0 span the full domain because they are passed to
+  ! set_density_ratios and to the equation of state alongside full-domain arrays.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
     ds_dsp1, &    ! coordinate variable (sigma-2) difference across an
                   ! interface divided by the difference across the interface
                   ! below it [nondim]
+    rho_0         ! Layer potential densities relative to surface pressure [R ~> kg m-3]
+  real, dimension(niblock,njblock,SZK_(GV)) :: &
     dsp1_ds, &    ! inverse coordinate variable (sigma-2) difference
                   ! across an interface times the difference across the
                   ! interface above it [nondim]
-    rho_0,   &    ! Layer potential densities relative to surface pressure [R ~> kg m-3]
     maxEnt        ! maxEnt is the maximum value of entrainment from below (with
                   ! compensating entrainment from above to keep the layer
                   ! density from changing) that will not deplete all of the
                   ! layers above or below a layer within a timestep [H ~> m or kg m-2].
+  ! p_ref, Rcv_kmb and p_0 span the full domain because they are passed to the
+  ! equation of state alongside full-domain tv%T and tv%S slices.
   real, dimension(SZI_(G),SZJ_(G)) :: &
-    htot,    &    ! total thickness above or below a layer, or the
-                  ! integrated thickness in the BBL [H ~> m or kg m-2].
-    mFkb,    &    ! total thickness in the mixed and buffer layers times ds_dsp1 [H ~> m or kg m-2]
     p_ref,   &    ! array of tv%P_Ref pressures [R L2 T-2 ~> Pa]
     Rcv_kmb, &    ! coordinate density in the lowest buffer layer [R ~> kg m-3]
     p_0           ! An array of 0 pressures [R L2 T-2 ~> Pa]
+  real, dimension(niblock,njblock) :: &
+    htot,    &    ! total thickness above or below a layer, or the
+                  ! integrated thickness in the BBL [H ~> m or kg m-2].
+    mFkb          ! total thickness in the mixed and buffer layers times ds_dsp1 [H ~> m or kg m-2]
 
   real :: dh_max      ! maximum amount of entrainment a layer could undergo before
                       ! entraining all fluid in the layers above or below [H ~> m or kg m-2]
@@ -1036,10 +1042,10 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   real :: I_dt        ! 1/dt [T-1 ~> s-1]
   real :: dz_neglect  ! A negligibly small height change [Z ~> m]
   real :: hN2pO2      ! h (N^2 + Omega^2), in [Z T-2 ~> m s-2].
-  logical :: do_i(SZI_(G),SZJ_(G))
+  logical :: do_i(niblock,njblock)
 
   integer, dimension(2,2) :: EOSdom ! The computational domain for the equation of state
-  integer :: i, j, k, nz, i_rem, kmb, kb_min
+  integer :: i, j, k, nz, i_rem, kmb, kb_min, ii, jj
 
   !$omp target enter data map(alloc: htot, mFkb, p_ref, Rcv_kmb, p_0, do_i, ds_dsp1, dsp1_ds, &
   !$omp   rho_0, maxEnt)
@@ -1113,69 +1119,78 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
 
   ! Determine maxEnt - the maximum permitted entrainment from below by each
   ! interior layer.
-  do concurrent (k=2:nz-1, j=js:je, i=is:ie)
-    dsp1_ds(i,j,k) = 1.0 / ds_dsp1(i,j,k)
+  do concurrent (k=2:nz-1, j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
+    jj = j-js+1 ; ii = i-is+1
+    dsp1_ds(ii,jj,k) = 1.0 / ds_dsp1(i,j,k)
   enddo
-  do concurrent (j=js:je, i=is:ie)
-    dsp1_ds(i,j,nz) = 0.0
+  do concurrent (jj=1:je-js+1, ii=1:ie-is+1)
+    dsp1_ds(ii,jj,nz) = 0.0
   enddo
 
   if (CS%bulkmixedlayer) then
     kmb = GV%nk_rho_varies
     do concurrent (j=js:je)
-      do concurrent (i=is:ie)
-        htot(i,j) = h(i,j,kmb)
-        mFkb(i,j) = 0.0
-        if (kb(i,j) < nz) mFkb(i,j) = ds_dsp1(i,j,kb(i,j)) * (h(i,j,kmb) - GV%Angstrom_H)
+      do concurrent (i=is:ie) DO_LOCALITY(local(ii,jj))
+        jj = j-js+1 ; ii = i-is+1
+        htot(ii,jj) = h(i,j,kmb)
+        mFkb(ii,jj) = 0.0
+        if (kb(i,j) < nz) mFkb(ii,jj) = ds_dsp1(i,j,kb(i,j)) * (h(i,j,kmb) - GV%Angstrom_H)
       enddo
       do k=1,kmb-1
-        do concurrent (i=is:ie)
-          htot(i,j) = htot(i,j) + h(i,j,k)
-          mFkb(i,j) = mFkb(i,j) + ds_dsp1(i,j,k+1)*(h(i,j,k) - GV%Angstrom_H)
+        do concurrent (i=is:ie) DO_LOCALITY(local(ii,jj))
+          jj = j-js+1 ; ii = i-is+1
+          htot(ii,jj) = htot(ii,jj) + h(i,j,k)
+          mFkb(ii,jj) = mFkb(ii,jj) + ds_dsp1(i,j,k+1)*(h(i,j,k) - GV%Angstrom_H)
         enddo
       enddo
     enddo
   else
-    do concurrent (j=js:je, i=is:ie)
-      maxEnt(i,j,1) = 0.0 ; htot(i,j) = h(i,j,1) - GV%Angstrom_H
+    do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
+      jj = j-js+1 ; ii = i-is+1
+      maxEnt(ii,jj,1) = 0.0 ; htot(ii,jj) = h(i,j,1) - GV%Angstrom_H
     enddo
   endif
   !$omp target
   do k=kb_min,nz-1
-    !$omp loop collapse(2)
+    !$omp loop collapse(2) private(ii,jj)
     do j=js,je ; do i=is,ie
+    jj = j-js+1 ; ii = i-is+1
     if (k == kb(i,j)) then
-      maxEnt(i,j,kb(i,j)) = mFkb(i,j)
+      maxEnt(ii,jj,kb(i,j)) = mFkb(ii,jj)
     elseif (k > kb(i,j)) then
       if (CS%answer_date < 20190101) then
-        maxEnt(i,j,k) = (1.0/dsp1_ds(i,j,k))*(maxEnt(i,j,k-1) + htot(i,j))
+        maxEnt(ii,jj,k) = (1.0/dsp1_ds(ii,jj,k))*(maxEnt(ii,jj,k-1) + htot(ii,jj))
       else
-        maxEnt(i,j,k) = ds_dsp1(i,j,k)*(maxEnt(i,j,k-1) + htot(i,j))
+        maxEnt(ii,jj,k) = ds_dsp1(i,j,k)*(maxEnt(ii,jj,k-1) + htot(ii,jj))
       endif
-      htot(i,j) = htot(i,j) + (h(i,j,k) - GV%Angstrom_H)
+      htot(ii,jj) = htot(ii,jj) + (h(i,j,k) - GV%Angstrom_H)
     endif
   enddo ; enddo ; enddo
   !$omp end target
 
   !$omp target
-  !$omp loop collapse(2)
+  !$omp loop collapse(2) private(ii,jj)
   do j=js,je ; do i=is,ie
-    htot(i,j) = h(i,j,nz) - GV%Angstrom_H ; maxEnt(i,j,nz) = 0.0
-    do_i(i,j) = (G%mask2dT(i,j) > 0.0)
+    jj = j-js+1 ; ii = i-is+1
+    htot(ii,jj) = h(i,j,nz) - GV%Angstrom_H ; maxEnt(ii,jj,nz) = 0.0
+    do_i(ii,jj) = (G%mask2dT(i,j) > 0.0)
   enddo ; enddo
   do k=nz-1,kb_min,-1
 #ifndef __NVCOMPILER_OPENMP_GPU
     i_rem = 0
 #endif
-    !$omp loop collapse(2)
-    do j=js,je ; do i=is,ie ; if (do_i(i,j)) then
-      if (k<kb(i,j)) then ; do_i(i,j) = .false. ; cycle ; endif
+    !$omp loop collapse(2) private(ii,jj)
+    do j=js,je ; do i=is,ie
+      jj = j-js+1 ; ii = i-is+1
+      if (do_i(ii,jj)) then
+      if (k<kb(i,j)) then ; do_i(ii,jj) = .false. ; cycle ; endif
 #ifndef __NVCOMPILER_OPENMP_GPU
       i_rem = i_rem + 1  ! Count the i-rows that are still being worked on.
 #endif
-      maxEnt(i,j,k) = MIN(maxEnt(i,j,k), dsp1_ds(i,j,k+1)*maxEnt(i,j,k+1) + htot(i,j))
-      htot(i,j) = htot(i,j) + (h(i,j,k) - GV%Angstrom_H)
-    endif ; enddo ; enddo
+      maxEnt(ii,jj,k) = MIN(maxEnt(ii,jj,k), dsp1_ds(ii,jj,k+1)*maxEnt(ii,jj,k+1) + htot(ii,jj))
+      htot(ii,jj) = htot(ii,jj) + (h(i,j,k) - GV%Angstrom_H)
+      endif
+    enddo ; enddo
 #ifndef __NVCOMPILER_OPENMP_GPU
     if (i_rem == 0) exit
 #endif
@@ -1200,8 +1215,9 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
     ! should perhaps be revisited.
     maxTKE(i,j,k) = 0.0 ; TKE_to_Kd(i,j,k) = 0.0
   enddo ; enddo ; enddo
-  !$omp loop collapse(3) private(dh_max, dRho_lay)
+  !$omp loop collapse(3) private(dh_max, dRho_lay, ii, jj)
   do k=kb_min,nz-1 ; do j=js,je ; do i=is,ie
+    jj = j-js+1 ; ii = i-is+1
     if (k<kb(i,j)) then
       maxTKE(i,j,k) = 0.0
       TKE_to_Kd(i,j,k) = 0.0
@@ -1211,7 +1227,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
       !              G_IRho0*(h(i,j,k) + dh_max) / (G_Rho0*dRho_lay)
       !  maxTKE(i,j,k) = GV%g_Earth_Z_T2 * dRho_lay * kappa_max
       ! dRho_int should already be non-negative, so the max is redundant?
-      dh_max = maxEnt(i,j,k) * (1.0 + dsp1_ds(i,j,k))
+      dh_max = maxEnt(ii,jj,k) * (1.0 + dsp1_ds(ii,jj,k))
       dRho_lay = 0.5 * max(dRho_int(i,j,K) + dRho_int(i,j,K+1), 0.0)
 
       ! TKE_to_Kd should be rho_InSitu / G_Earth * (delta rho_InSitu)
@@ -1219,14 +1235,14 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
       ! mixing by a factor of N^2 / (N^2 + Omega^2), as proposed by Melet et al., 2013?
       if (allocated(tv%SpV_avg)) then
         maxTKE(i,j,k) = I_dt * ((GV%H_to_RZ * grav * tv%SpV_avg(i,j,k)**2) * &
-            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(i,j,k)*dRho_int(i,j,K), 0.0))) * &
-             ((h(i,j,k) + dh_max) * maxEnt(i,j,k))
+            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(ii,jj,k)*dRho_int(i,j,K), 0.0))) * &
+             ((h(i,j,k) + dh_max) * maxEnt(ii,jj,k))
         TKE_to_Kd(i,j,k) = 1.0 / (grav * tv%SpV_avg(i,j,k) * dRho_lay + &
                                   CS%omega**2 * (dz(i,j,k) + dz_neglect))
       else
         maxTKE(i,j,k) = I_dt * (G_IRho0 * &
-            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(i,j,k)*dRho_int(i,j,K), 0.0))) * &
-             ((h(i,j,k) + dh_max) * maxEnt(i,j,k))
+            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(ii,jj,k)*dRho_int(i,j,K), 0.0))) * &
+             ((h(i,j,k) + dh_max) * maxEnt(ii,jj,k))
         TKE_to_Kd(i,j,k) = 1.0 / (G_Rho0 * dRho_lay + CS%omega**2 * (dz(i,j,k) + dz_neglect))
       endif
     endif
