@@ -320,9 +320,15 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     prof_Froude_2d, & !< vertical profile for Froude drag [Z-1 ~> m-1]
     prof_slope_2d   !< vertical profile for critical slopes [Z-1 ~> m-1]
 
+  ! dRho_int is only a hand-off buffer between find_N2 and find_TKE_to_Kd and is never
+  ! indexed here, so it is block-sized. These bounds resolve CS%niblock/njblock the same
+  ! way the executable resolver below does; the two must stay in step.
+  real, dimension(merge(G%iec-G%isc+1, CS%niblock, CS%niblock==0), &
+                  merge(G%jec-G%jsc+1, CS%njblock, CS%njblock==0), SZK_(GV)+1) :: &
+    dRho_int      !< Locally referenced potential density difference across interfaces [R ~> kg m-3]
+
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: &
     N2_int,   &   !< squared buoyancy frequency associated at interfaces [T-2 ~> s-2]
-    dRho_int, &   !< Locally referenced potential density difference across interfaces [R ~> kg m-3]
     Kd_int_bkgnd, & !< Background interface diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
     Kv_bkgnd, &   !< Background interface viscosities [H Z T-1 ~> m2 s-1 or Pa s]
     Kd_int_2d  !< The interface diffusivities [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
@@ -970,12 +976,14 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
                           dz, dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
   type(ocean_grid_type),            intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),          intent(in)    :: GV   !< The ocean's vertical grid structure
+  integer,                          intent(in)    :: niblock !< Size of the i-block [nondim].
+  integer,                          intent(in)    :: njblock !< Size of the j-block [nondim].
   type(unit_scale_type),            intent(in)    :: US   !< A dimensional unit scaling type
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                     intent(in)    :: h    !< Layer thicknesses [H ~> m or kg m-2]
   type(thermo_var_ptrs),            intent(in)    :: tv   !< Structure containing pointers to any available
                                                           !! thermodynamic fields.
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(in) :: dRho_int !< Change in locally referenced
+  real, dimension(niblock,njblock,SZK_(GV)+1), intent(in) :: dRho_int !< Change in locally referenced
                                                           !! potential density across each interface
                                                           !! [R ~> kg m-3].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: N2_lay !< The squared buoyancy frequency
@@ -984,8 +992,6 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   integer,                          intent(in)    :: ie   !< Ending i-index to work on
   integer,                          intent(in)    :: js   !< Starting j-index to work on
   integer,                          intent(in)    :: je   !< Ending j-index to work on
-  integer,                          intent(in)    :: niblock !< Size of the i-block [nondim].
-  integer,                          intent(in)    :: njblock !< Size of the j-block [nondim].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                     intent(in)    :: dz   !< Height change across layers [Z ~> m]
   real,                             intent(in)    :: dt   !< Time increment [T ~> s].
@@ -1227,20 +1233,20 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
       !  maxTKE(i,j,k) = GV%g_Earth_Z_T2 * dRho_lay * kappa_max
       ! dRho_int should already be non-negative, so the max is redundant?
       dh_max = maxEnt(ii,jj,k) * (1.0 + dsp1_ds(ii,jj,k))
-      dRho_lay = 0.5 * max(dRho_int(i,j,K) + dRho_int(i,j,K+1), 0.0)
+      dRho_lay = 0.5 * max(dRho_int(ii,jj,K) + dRho_int(ii,jj,K+1), 0.0)
 
       ! TKE_to_Kd should be rho_InSitu / G_Earth * (delta rho_InSitu)
       ! The omega^2 term in TKE_to_Kd is due to a rescaling of the efficiency of turbulent
       ! mixing by a factor of N^2 / (N^2 + Omega^2), as proposed by Melet et al., 2013?
       if (allocated(tv%SpV_avg)) then
         maxTKE(i,j,k) = I_dt * ((GV%H_to_RZ * grav * tv%SpV_avg(i,j,k)**2) * &
-            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(ii,jj,k)*dRho_int(i,j,K), 0.0))) * &
+            (0.5*max(dRho_int(ii,jj,K+1) + dsp1_ds(ii,jj,k)*dRho_int(ii,jj,K), 0.0))) * &
              ((h(i,j,k) + dh_max) * maxEnt(ii,jj,k))
         TKE_to_Kd(i,j,k) = 1.0 / (grav * tv%SpV_avg(i,j,k) * dRho_lay + &
                                   CS%omega**2 * (dz(i,j,k) + dz_neglect))
       else
         maxTKE(i,j,k) = I_dt * (G_IRho0 * &
-            (0.5*max(dRho_int(i,j,K+1) + dsp1_ds(ii,jj,k)*dRho_int(i,j,K), 0.0))) * &
+            (0.5*max(dRho_int(ii,jj,K+1) + dsp1_ds(ii,jj,k)*dRho_int(ii,jj,K), 0.0))) * &
              ((h(i,j,k) + dh_max) * maxEnt(ii,jj,k))
         TKE_to_Kd(i,j,k) = 1.0 / (G_Rho0 * dRho_lay + CS%omega**2 * (dz(i,j,k) + dz_neglect))
       endif
@@ -1259,6 +1265,8 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
                    N2_lay, N2_int, N2_bot, Rho_bot, h_bot, k_bot)
   type(ocean_grid_type),    intent(in)  :: G    !< The ocean's grid structure
   type(verticalGrid_type),  intent(in)  :: GV   !< The ocean's vertical grid structure
+  integer,                  intent(in)  :: niblock !< Size of the i-block [nondim].
+  integer,                  intent(in)  :: njblock !< Size of the j-block [nondim].
   type(unit_scale_type),    intent(in)  :: US   !< A dimensional unit scaling type
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                             intent(in)  :: h    !< Layer thicknesses [H ~> m or kg m-2]
@@ -1274,7 +1282,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   integer,                  intent(in)  :: js   !< Starting j-index of rows to work on
   integer,                  intent(in)  :: je   !< Ending j-index of rows to work on
   type(set_diffusivity_CS), intent(in)  :: CS   !< Diffusivity control structure
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
+  real, dimension(niblock,njblock,SZK_(GV)+1), &
                             intent(out) :: dRho_int !< Change in locally referenced potential density
                                                 !! across each interface [R ~> kg m-3].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
@@ -1286,8 +1294,6 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: h_bot !< Bottom boundary layer thickness [H ~> m or kg m-2].
   integer, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: k_bot !< Bottom boundary layer top layer index.
   integer, intent(in) :: is, ie
-  integer,                  intent(in)  :: niblock !< Size of the i-block [nondim].
-  integer,                  intent(in)  :: njblock !< Size of the j-block [nondim].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                             intent(in)  :: dz   !< Height change across layers [Z ~> m]
 
@@ -1340,7 +1346,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   ! Find the (limited) density jump across each interface.
   do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
     jj = j-js+1 ; ii = i-is+1
-    dRho_int(i,j,1) = 0.0 ; dRho_int(i,j,nz+1) = 0.0
+    dRho_int(ii,jj,1) = 0.0 ; dRho_int(ii,jj,nz+1) = 0.0
     dRho_int_unfilt(ii,jj,1) = 0.0 ; dRho_int_unfilt(ii,jj,nz+1) = 0.0
   enddo
 
@@ -1367,29 +1373,31 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
                                     dRho_dT(:,:,K), dRho_dS(:,:,K), tv%eqn_of_state, EOSdom)
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
         jj = j-js+1 ; ii = i-is+1
-        dRho_int(i,j,K) = max(dRho_dT(ii,jj,K)*(T_f(i,j,k) - T_f(i,j,k-1)) + &
+        dRho_int(ii,jj,K) = max(dRho_dT(ii,jj,K)*(T_f(i,j,k) - T_f(i,j,k-1)) + &
                               dRho_dS(ii,jj,K)*(S_f(i,j,k) - S_f(i,j,k-1)), 0.0)
         dRho_int_unfilt(ii,jj,K) = max(dRho_dT(ii,jj,K)*(tv%T(i,j,k) - tv%T(i,j,k-1)) + &
                                        dRho_dS(ii,jj,K)*(tv%S(i,j,k) - tv%S(i,j,k-1)), 0.0)
       enddo
     enddo
   else
-    do concurrent (K=2:nz, j=js:je, i=is:ie)
-      dRho_int(i,j,K) = GV%Rlay(k) - GV%Rlay(k-1)
+    do concurrent (K=2:nz, jj=1:je-js+1, ii=1:ie-is+1)
+      dRho_int(ii,jj,K) = GV%Rlay(k) - GV%Rlay(k-1)
     enddo
   endif
 
   ! Set the buoyancy frequencies.
-  do concurrent (k=1:nz, j=js:je, i=is:ie)
-    N2_lay(i,j,k) = G_Rho0 * 0.5*(dRho_int(i,j,K) + dRho_int(i,j,K+1)) / &
+  do concurrent (k=1:nz, j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
+    jj = j-js+1 ; ii = i-is+1
+    N2_lay(i,j,k) = G_Rho0 * 0.5*(dRho_int(ii,jj,K) + dRho_int(ii,jj,K+1)) / &
                     (h(i,j,k) + H_neglect)
   enddo
   do concurrent (j=js:je, i=is:ie)
     N2_int(i,j,1) = 0.0
     N2_int(i,j,nz+1) = 0.0
   enddo
-  do concurrent (K=2:nz, j=js:je, i=is:ie)
-    N2_int(i,j,K) = G_Rho0 * dRho_int(i,j,K) / &
+  do concurrent (K=2:nz, j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
+    jj = j-js+1 ; ii = i-is+1
+    N2_int(i,j,K) = G_Rho0 * dRho_int(ii,jj,K) / &
                     (0.5*(h(i,j,k-1) + h(i,j,k) + H_neglect))
   enddo
 
@@ -1423,13 +1431,13 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
       z_from_bot(ii,jj) = z_from_bot(ii,jj) + dz_int ! middle of the layer above
 
       hb(ii,jj) = hb(ii,jj) + 0.5*(h(i,j,k) + h(i,j,k-1))
-      drho_bot(ii,jj) = drho_bot(ii,jj) + dRho_int(i,j,K)
+      drho_bot(ii,jj) = drho_bot(ii,jj) + dRho_int(ii,jj,K)
 
       if (z_from_bot(ii,jj) > h_amp(i,jj)) then
         if (k>2) then
           ! Always include at least one full layer.
           hb(ii,jj) = hb(ii,jj) + 0.5*(h(i,j,k-1) + h(i,j,k-2))
-          drho_bot(ii,jj) = drho_bot(ii,jj) + dRho_int(i,j,K-1)
+          drho_bot(ii,jj) = drho_bot(ii,jj) + dRho_int(ii,jj,K-1)
         endif
         do_i(ii,jj) = .false.
 #ifndef __NVCOMPILER_OPENMP_GPU
@@ -1488,7 +1496,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   if (associated(tv%eqn_of_state)) then
     do concurrent (K=1:nz+1, j=js:je, i=is:ie) DO_LOCALITY(local(ii,jj))
       jj = j-js+1 ; ii = i-is+1
-      dRho_int(i,j,K) = dRho_int_unfilt(ii,jj,K)
+      dRho_int(ii,jj,K) = dRho_int_unfilt(ii,jj,K)
     enddo
   endif
 
