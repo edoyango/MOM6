@@ -486,6 +486,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   !$omp   map(to: T_f, S_f, tv, tv%T, tv%S, CS, CS%bkgnd_mixing_csp, visc, visc%Kd_shear) &
   !$omp   map(alloc: dRho_int, N2_lay, N2_int, N2_bot, rho_bot, h_bot, k_bot, Kd_lay_bkgnd, &
   !$omp     Kd_int_bkgnd, Kv_bkgnd, Kd_lay_2d, Kd_int_2d, kb, maxTKE, TKE_to_Kd, dz)
+  !$omp target enter data if(associated(fluxes%p_surf)) &
+  !$omp   map(to: fluxes, fluxes%p_surf)
 
   ! Smooth the properties through massless layers.
   if (use_EOS) then
@@ -846,6 +848,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
   !$omp     k_bot, Kd_lay_bkgnd, Kd_int_bkgnd, Kv_bkgnd, CS, CS%bkgnd_mixing_csp, Kd_lay_2d, &
   !$omp     Kd_int_2d, kb, maxTKE, TKE_to_Kd, visc, visc%Kd_shear, dz) &
   !$omp   map(from: Kd_int)
+  !$omp target exit data if(associated(fluxes%p_surf)) &
+  !$omp   map(release: fluxes, fluxes%p_surf)
 
   if (CS%debug) then
     if (present(Kd_lay)) call hchksum(Kd_lay, "Kd_lay", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
@@ -1465,9 +1469,9 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, is, ie, js, je, niblock, njblock, &
   call find_rho_bottom(G, GV, US, tv, h, dz, pres, dz_BBL_avg, is,ie,js, je, Rho_bot, h_bot, k_bot)
 
   !$omp target exit data &
-  !$omp   map(from: dRho_int, N2_int, N2_lay, dz_BBL_avg, N2_bot, Rho_bot, h_bot, k_bot) &
+  !$omp   map(from: dRho_int, N2_int, N2_lay, N2_bot, Rho_bot, h_bot, k_bot) &
   !$omp   map(release: dRho_dT, dRho_dS, Temp_Int, Salin_Int, h_amp, dRho_int_unfilt, drho_bot, &
-  !$omp     hb, z_from_bot, do_i, CS, pres, dz)
+  !$omp     hb, z_from_bot, do_i, CS, pres, dz, dz_BBL_avg)
 
 end subroutine find_N2
 
