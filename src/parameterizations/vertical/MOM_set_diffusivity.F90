@@ -625,7 +625,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     ! Calculate conversion ratios from TKE to layer diffusivities.
     if (TKE_to_Kd_used) then
       call find_TKE_to_Kd(h, tv, dRho_int, N2_lay, istart, iend, jstart, jend, niblock, njblock, &
-                          dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
+                          dz, dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
       if (associated(dd%maxTKE)) then ; do concurrent (k=1:nz, j=jstart:jend, i=istart:iend)
         dd%maxTKE(i,j,k) = maxTKE(i,j,k)
       enddo ; endif
@@ -970,7 +970,7 @@ end subroutine set_diffusivity
 
 !> Convert turbulent kinetic energy to diffusivity
 subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njblock, &
-                          dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
+                          dz, dt, G, GV, US, CS, TKE_to_Kd, maxTKE, kb)
   type(ocean_grid_type),            intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),          intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),            intent(in)    :: US   !< A dimensional unit scaling type
@@ -989,6 +989,8 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   integer,                          intent(in)    :: je   !< Ending j-index to work on
   integer,                          intent(in)    :: niblock !< Size of the i-block [nondim].
   integer,                          intent(in)    :: njblock !< Size of the j-block [nondim].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                    intent(in)    :: dz   !< Height change across layers [Z ~> m]
   real,                             intent(in)    :: dt   !< Time increment [T ~> s].
   type(set_diffusivity_CS),         pointer       :: CS   !< Diffusivity control structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: TKE_to_Kd !< The conversion rate
@@ -1010,7 +1012,6 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
                   ! across an interface times the difference across the
                   ! interface above it [nondim]
     rho_0,   &    ! Layer potential densities relative to surface pressure [R ~> kg m-3]
-    dz,      &    ! Height change across layers [Z ~> m]
     maxEnt        ! maxEnt is the maximum value of entrainment from below (with
                   ! compensating entrainment from above to keep the layer
                   ! density from changing) that will not deplete all of the
@@ -1041,7 +1042,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   integer :: i, j, k, nz, i_rem, kmb, kb_min
 
   !$omp target enter data map(alloc: htot, mFkb, p_ref, Rcv_kmb, p_0, do_i, ds_dsp1, dsp1_ds, &
-  !$omp   rho_0, dz, maxEnt)
+  !$omp   rho_0, maxEnt)
 
   nz = GV%ke
   I_dt      = 1.0 / dt
@@ -1054,9 +1055,6 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   else
     G_IRho0 = GV%H_to_Z*G_Rho0
   endif
-
-  ! Find the vertical distances across layers.
-  call thickness_to_dz(h, tv, dz, G, GV, US, is=is, ie=ie, js=js, je=je, do_offload=.true.)
 
   ! Simple but coordinate-independent estimate of Kd/TKE
   if (CS%simple_TKE_to_Kd) then
@@ -1236,7 +1234,7 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, is, ie, js, je, niblock, njbl
   !$omp end target
 
   !$omp target exit data map(release: htot, mFkb, p_ref, Rcv_kmb, p_0, do_i, ds_dsp1, dsp1_ds, &
-  !$omp   rho_0, dz, maxEnt)
+  !$omp   rho_0, maxEnt)
 
 end subroutine find_TKE_to_Kd
 
