@@ -1335,7 +1335,7 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, &
     pres               ! pressure at each interface [R L2 T-2 ~> Pa]
   real, dimension(nii,njj,SZK_(GV)+1) :: &
     dRho_int_unfilt   ! unfiltered density differences across interfaces [R ~> kg m-3]
-  real, dimension(nii,njj,SZK_(GV)+1) :: &
+  real, dimension(nii,njj) :: &
     dRho_dT,         & ! partial derivative of density wrt temp [R C-1 ~> kg m-3 degC-1]
     dRho_dS            ! partial derivative of density wrt saln [R S-1 ~> kg m-3 ppt-1]
   real, dimension(nii,njj) :: &
@@ -1403,13 +1403,13 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, &
         Salin_Int(ii,jj) = 0.5 * (S_f(i,j,k) + S_f(i,j,k-1))
       enddo
       call calculate_density_derivs(Temp_int, Salin_int, pres(:,:,K), &
-                                    dRho_dT(:,:,K), dRho_dS(:,:,K), tv%eqn_of_state, EOSdom)
+                                    dRho_dT, dRho_dS, tv%eqn_of_state, EOSdom)
       do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
         j = jsb+jj-1 ; i = isb+ii-1
-        dRho_int(ii,jj,K) = max(dRho_dT(ii,jj,K)*(T_f(i,j,k) - T_f(i,j,k-1)) + &
-                              dRho_dS(ii,jj,K)*(S_f(i,j,k) - S_f(i,j,k-1)), 0.0)
-        dRho_int_unfilt(ii,jj,K) = max(dRho_dT(ii,jj,K)*(tv%T(i,j,k) - tv%T(i,j,k-1)) + &
-                                       dRho_dS(ii,jj,K)*(tv%S(i,j,k) - tv%S(i,j,k-1)), 0.0)
+        dRho_int(ii,jj,K) = max(dRho_dT(ii,jj)*(T_f(i,j,k) - T_f(i,j,k-1)) + &
+                              dRho_dS(ii,jj)*(S_f(i,j,k) - S_f(i,j,k-1)), 0.0)
+        dRho_int_unfilt(ii,jj,K) = max(dRho_dT(ii,jj)*(tv%T(i,j,k) - tv%T(i,j,k-1)) + &
+                                       dRho_dS(ii,jj)*(tv%S(i,j,k) - tv%S(i,j,k-1)), 0.0)
       enddo
     enddo
   else
