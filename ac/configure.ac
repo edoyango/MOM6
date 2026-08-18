@@ -186,6 +186,12 @@ AS_IF(
 # Do concurrent configuration
 MOM6_FC_DO_CONCURRENT_LOCAL
 
+# Detect if parentheses are honored in floating point arithmetic
+MOM6_FC_FAST_RINT
+AS_IF([test -n "$FAST_RINT_FCFLAGS"],
+  [FCFLAGS="$FCFLAGS $FAST_RINT_FCFLAGS"]
+)
+
 
 # OpenMP configuration
 
