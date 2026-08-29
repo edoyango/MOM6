@@ -171,7 +171,9 @@ sites switched to `exp_repro_inline(...)`. This is the mechanism expected to be 
 advertised at the static level: `exp_repro` relocation count → 0, STACK → 0, REG down
 to 90/80. But wall time only dropped 0.690→0.636s (**13% of the 0.690→0.271s gap to
 B0**). **This was the finding that triggered re-profiling instead of continuing down
-the call-mechanism path** (E1 `-gpu=lto` was never run, given what followed).
+the call-mechanism path** (E1 `-gpu=lto` was not run at the time, given what followed —
+it was run later, on the E8 branch, at explicit request; see §8.4, and it does not
+change this recommendation).
 
 ### E6 — E5a + E7 combined
 Cherry-picked E5a's commit then E7's commit onto a fresh branch off baseline. No
@@ -625,6 +627,117 @@ out to be genuinely occupancy-bound rather than latency-hidden.
 
 ---
 
+## 8.4 E1 revisited: `-gpu=lto` cannot be linked at all, on either installed nvhpc version
+
+§4's note that "E1 was never run" was a deliberate deprioritization, not a real answer —
+E7 already closed the whole gap, so there was nothing left for LTO to fix. Asked
+directly whether it helps anyway (tested on `exp-repro/e14-e8-plus-lto`, branched off
+E8 so the comparison is against the fastest already-safe configuration, not baseline),
+the honest answer turned out to be that the question is moot: **`-gpu=lto` cannot
+produce a linked executable for this program at all**, on nvhpc 26.5 (CUDA 13.2) or
+26.3 (CUDA 13.1) — a hard toolchain limitation, not a performance result.
+
+**What was tried, in order:**
+
+1. `-gpu=mem:separate,lto,keepltoir` added to `FCFLAGS`, `-gpu=lto,rdc` added to
+   `LDFLAGS`. Every `.F90` in MOM6 (and FMS, once required — see next point) compiles
+   cleanly under these flags; `-Minfo` confirms LTO IR generation throughout. The
+   failure is entirely at the link step.
+2. First link attempt (FMS built without LTO): `nvlink info: requested LTO but
+   .../libFMS.a:interpolator.o not built for LTO so doing partial LTO`, then
+   `nvlink fatal: unexpected object after cudadevrt`. Every object touched by device
+   linking must carry matching LTO IR — confirmed by rebuilding FMS with the identical
+   `-gpu=mem:separate,lto,keepltoir` addition to `FMS_FCFLAGS`, which itself succeeds
+   (`libFMS.a` assembles with no errors).
+3. With both FMS and MOM6 fully LTO-compiled, the link fails differently:
+   ```
+   ptxas info    : Disabling default position-independent-code(pic) compilation mode
+                   as program requires more resources than allowed.
+   nvlink fatal   : expected libcudadevrt object
+   pgacclnk: child process exit status 2: .../compilers/bin/tools/nvdd
+   ```
+   This exact pair of messages recurs, byte-for-byte, in every subsequent attempt below
+   — the "resources than allowed" info line always fires first, and the nvlink fatal
+   always follows it.
+
+**Systematically ruled out** (each confirmed applied, not just attempted):
+
+- **Register cap, either direction.** nvfortran auto-injects `-maxrregcount 128` onto
+  its internal `nvlink` invocation whenever LTO + OpenMP-target-GPU are both active
+  (`acc1rc:354`: `$if($NEEDCUDALTO,-lto $if($expr($TGTOMP & $TGTGPU),-maxrregcount
+  128))`) — hardcoded, not reachable via the public `-gpu=maxregcount:N` flag (that
+  flag threads into a completely different internal variable, `MAXREGCOUNT`, used only
+  for OpenACC codegen, `acc1rc:377/562`). The raw passthrough `-Wnvlink,-maxrregcount=N`
+  does reach it, confirmed by nvlink's own `warning: incompatible redefinition for
+  option 'maxrregcount', the last value of this option was used` — i.e., our override
+  demonstrably took effect. Tried both directions (64, lower than the auto-128; 255,
+  the plan's original E1b value, higher) — **identical crash either way**. Register
+  pressure is not the trigger.
+- **Explicit PIC control.** `-Xptxas --position-independent-code=false` (matching what
+  the automatic fallback does anyway, but deliberately instead of via the fallback
+  path) — no observable effect. A `-v` dump of the actual assembled `acclnk`/`nvdd`
+  invocation (see below) confirms `-Xptxas` never reaches the internal `ptxas` call
+  that prints the "disabling PIC" message at all — that invocation is fully internal to
+  `nvdd`, with no exposed passthrough.
+- **`-cudalib=nvtx` presence.** Dropping it removes `-lcudafor`, `-lcudafor_130`, and
+  `cuda_init_register_end.o` from the assembled host-link command (these are CUDA
+  Fortran interop artifacts nvtx linkage happens to pull in) and even removes the
+  literal `-lcudadevrt` reference from the textual link line — yet the failure message
+  is unchanged either way. This means the textual presence/absence of `-lcudadevrt` in
+  the *outer* `ld` command is irrelevant to the crash: `nvdd` manages the actual
+  `libcudadevrt.a` object internally (located via its own `-cudaroot` argument,
+  visible in the `-v` dump), entirely disconnected from what the host link line spells
+  out.
+- **Explicit `-gpu=rdc`.** RDC is already on by default for this build; making it
+  explicit changes nothing.
+
+**Traced the crash to its actual source**: `strings` on
+`.../cuda/13.2/bin/nvlink` locates both error messages (`expected libcudadevrt object`,
+`unexpected object after cudadevrt`) directly inside CUDA's own `nvlink` binary,
+surrounded by internal-state-machine strings (`should only see nvvm files when -lto`,
+`merge_elf failed`, `#define NUM_PRELINKED_OBJECTS %d`). This is `nvlink`'s own
+whole-program LTO object-merge bookkeeping failing internally — not an nvfortran
+wrapper misconfiguration, and not anything reachable from a compiler flag we control.
+
+**Confirmed the mechanism is sound at small scale**: a minimal two-file OpenMP-target
+reproducer (`mymod.F90` with an `elemental function foo` carrying `!$omp declare
+target`, calling a second private helper — structurally identical to
+`exp_repro`/`exp_remez_expm1_estrin_4`; `driver2.F90` calling it via `!$omp target
+teams distribute parallel do`) compiles and links cleanly with the identical
+`-gpu=lto,rdc` flags, and runs to the correct answer. LTO + RDC + OpenMP-target-GPU is
+not inherently broken — the failure is scale-dependent.
+
+**Version isolation**: reproduced the identical crash on nvhpc 26.3 (CUDA 13.1), via a
+fully independent from-scratch bootstrap (own `FC=mpifort`, own spack-built
+`openmpi@5.0.10`/`netcdf-fortran@4.6.2` stack, own `autoreconf`+`configure`, no
+directory or object shared with the 26.5 attempt). Not a 26.5-specific regression.
+
+**The scale threshold is far lower than "MOM6-sized"**: the 26.3 isolation run hit the
+identical `nvlink fatal: expected libcudadevrt object` crash at MOM6's own `configure`
+step, on nothing more than autoconf's own trivial FMS-linkage conftest —
+```fortran
+program main
+  use fms_mod
+  call fms_init
+end
+```
+— linking this four-line program against the (LTO-compiled) `libFMS.a` alone (~180
+translation units, no MOM6 object files involved at all) is enough to trigger it. So
+this is not a MOM6-scale problem specifically; any program linking against a
+moderately-sized library with whole-program LTO device code enabled hits the same
+wall on this toolchain family.
+
+**Conclusion**: `-gpu=lto` is non-functional for whole-program device linking at
+FMS+MOM6's scale on both installed nvhpc versions. This is a genuine, unworked-around
+toolchain limitation, not a flag we got wrong — E1 is closed as *cannot be measured*,
+not merely deprioritized. No source or shipped-configuration risk from this
+investigation: `ocean_only/build`/`shared/fms/build` were restored to the verified E8
+baseline (`bind(teams,parallel)`, no LTO) and re-confirmed `PASS: ocean.stats matches
+ocean.stats.exprepro` before concluding. This does not change the recommendation to
+ship E7.
+
+---
+
 ## 9. What each diff actually touches (verified, not assumed)
 
 Confirmed by direct `git diff exp-repro/baseline exp-repro/e7-thread-limit-only --
@@ -662,6 +775,7 @@ All in `src/MOM6`, forked from `port-set_viscous_ML-tile` @ `6e63e6778`:
 | `exp-repro/e9-inline-plus-bind` | `f1232653d` (amended from `9790dc530`, on top of `53fda9360`) | cherry-picked E5a + E8 — originally failed (non-deterministic, §8), **passes after the §8.2 order fix** |
 | `exp-repro/e10-value-plus-bind` | `84ae3ee78` (amended from `6a774e7fc`, on top of `b662bfeab`) | cherry-picked E2 + E8 — passes, no gain over E8 alone; order fix applied for consistency (no-op here, §8.2) |
 | `exp-repro/e11-inline-plus-threadlimit-plus-bind` | `09d1e68ab` (amended from `7c8617800`, on top of `4b1b04863`) | E6 + `bind` added on top — originally failed identically to E9 (§8.1), **passes after the §8.2 order fix** |
+| `exp-repro/e14-e8-plus-lto` | `809a63821` (on top of `c55fb4fc4`) | `-gpu=lto` on E8 — **cannot link at all**, see §8.4; flag-only, empty commit |
 
 `src/MOM6` is currently checked out to `exp-repro/e11-inline-plus-threadlimit-plus-bind`
 (the last branch built while verifying §8.2's fix); the **recommended fix to actually
