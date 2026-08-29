@@ -2502,7 +2502,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
           endif
         endif
 
-        !$omp target
+        !$omp target teams thread_limit(128)
         do k=nkml+1,nz
 #ifndef __NVCOMPILER_OPENMP_GPU
           do_any = .false.
@@ -2579,7 +2579,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
             endif
           enddo ; enddo
         enddo
-        !$omp end target
+        !$omp end target teams
       endif
 
       if (do_any) then
@@ -2854,7 +2854,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
         endif
 
         ! do remaining iterations
-        !$omp target
+        !$omp target teams thread_limit(128)
         do k=nkml+1,nz
 ! no tracking of early exit on GPU
 #ifndef __NVCOMPILER_OPENMP_GPU
@@ -2934,7 +2934,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
           enddo ; enddo
 
         enddo
-        !$omp end target
+        !$omp end target teams
       endif
 
       if (do_any) then
