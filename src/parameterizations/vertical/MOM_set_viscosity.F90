@@ -25,7 +25,9 @@ use MOM_forcing_type,  only : forcing, mech_forcing, find_ustar
 use MOM_grid,          only : ocean_grid_type
 use MOM_hor_index,     only : hor_index_type
 use MOM_interface_heights, only : thickness_to_dz
-use MOM_intrinsic_functions, only : cuberoot, exp_repro
+use MOM_intrinsic_functions, only : cuberoot
+use MOM_exp_data_n128, only : ndiv, idiv_scale_lookup, idiv_residual_lookup
+use, intrinsic :: iso_fortran_env, only : int32, int64
 use MOM_io,            only : slasher, MOM_read_data, vardesc, var_desc
 use MOM_kappa_shear,   only : kappa_shear_is_used, kappa_shear_at_vertex
 use MOM_open_boundary, only : ocean_OBC_type, OBC_segment_type, OBC_NONE, OBC_DIRECTION_E
@@ -2054,6 +2056,114 @@ pure function set_u_at_v(u, h, G, GV, i, j, k, mask2dCu, OBC)
 
 end function set_u_at_v
 
+!> Reproducible exponential function, manually inlined and flattened from
+!! MOM_intrinsic_functions:exp_repro() / MOM_exp:exp_repro()+
+!! exp_remez_expm1_estrin_4()+fast_rint() (E5: performance experiment testing
+!! whether a same-file, hand-inlined copy avoids the cross-file device call
+!! overhead measured for exp_repro() -- see the exp_repro perf plan). Not a
+!! candidate for the upstream fix: duplicates exp_repro's numerically
+!! sensitive bit-twiddling logic rather than sharing it.
+elemental function exp_repro_inline(x) result(a)
+  !$omp declare target
+  real, intent(in) :: x
+    !< Input value
+  real :: a
+    !< exp(x)
+
+  ! Local copies of MOM_exp's floating point model, restricted to the
+  ! default real kind (this build only ever calls exp_repro_inline at
+  ! default real precision, unlike the general-purpose exp_repro()).
+  real, parameter :: real_mold = 0.
+  integer, parameter :: int_kind &
+      = merge(int64, int32, storage_size(real_mold) > storage_size(0_int32))
+  integer(kind=int_kind), parameter :: int_mold = 0
+  integer, parameter :: expbit = digits(real_mold) - 1
+  integer, parameter :: signbit = storage_size(real_mold) - 1
+  integer, parameter :: expwidth = signbit - expbit
+  integer, parameter :: expbias = maxexponent(real_mold) - 1
+  integer(kind=int_kind), parameter :: pos_inf_bits &
+      = ishft(2_int_kind**expwidth - 1_int_kind, expbit)
+  integer(kind=int_kind), parameter :: neg_inf_bits &
+      = ior(pos_inf_bits, ishft(-1_int_kind, signbit))
+  real, parameter :: round_bias = 1.5 * 2_int_kind**(digits(real_mold) - 1)
+  integer(int_kind), parameter :: round_bias_bits &
+      = transfer(round_bias, int_mold)
+
+  ! ln2 estimates
+  real, parameter :: ln2 = 0.693147180559945309417232121458176568
+  real, parameter :: I_ln2 = 1.44269504088896340735992468100189214
+  real, parameter :: xmax = real(maxexponent(real_mold) + 1) * ln2
+  real, parameter :: xmin = real(minexponent(real_mold) - digits(real_mold) - 1) * ln2
+  real, parameter :: ln2_hi = 0.69314718036912381649017333984375
+  real, parameter :: ln2_lo = 1.90821492927058770002e-10
+  real, parameter :: I_ndiv = 1. / real(ndiv)
+  real, parameter :: n_ln2 = ndiv * I_ln2
+  real, parameter :: ln2_ndiv_hi = I_ndiv * ln2_hi
+  real, parameter :: ln2_ndiv_lo = I_ndiv * ln2_lo
+  integer(int_kind), parameter :: idiv_mask = int(ndiv - 1, int_kind)
+  integer, parameter :: Kmin = minexponent(real_mold) + 1
+  integer, parameter :: Kmax = maxexponent(real_mold) - 2
+  integer(kind=int_kind), parameter :: Kbias = maxexponent(real_mold) - 2
+
+  ! Remez coefficients for (exp(x) - 1) / x on [-ln2/256, ln2/256] [nondim]
+  real, parameter :: c(0:4) = [ &
+      1.0, &
+      0.4999999999999766853164828717126511037349700927734375, &
+      0.166666666666670015839457619222230277955532073974609375, &
+      4.1666679392304360740606483659576042555272579193115234375e-2, &
+      8.3333340579158539374038383584775147028267383575439453125e-3 &
+  ]
+
+  logical :: nonfinite
+  integer(kind=int_kind) :: xb
+  real :: xc
+  integer(kind=int_kind) :: K
+  real :: Z
+  integer(kind=int_kind) :: Zi
+  integer :: idiv
+  real :: r
+  real :: e, expm1_r, idiv_scale, idiv_residual
+  real :: x2, x4, p01, p23
+  integer(kind=int_kind) :: eb, j, fb
+
+  ! 1. Nonfinite handling
+  xb = transfer(x, int_mold)
+  nonfinite = iand(xb, pos_inf_bits) == pos_inf_bits
+  if (nonfinite) then
+    a = merge(0., x + x, xb == neg_inf_bits)
+    return
+  endif
+
+  ! 2. Range reduction
+  xc = min(max(x, xmin), xmax)
+  ! fast_rint(xc * n_ln2), flattened -- parentheses are essential (see
+  ! fast_rint's docs in MOM_exp.F90): they prevent the compiler from
+  ! reducing (y+round_bias)-round_bias back to y.
+  Z = (xc * n_ln2 + round_bias) - round_bias
+  Zi = transfer(Z + round_bias, int_mold) - round_bias_bits
+  idiv = iand(Zi, idiv_mask)
+  K = (Zi - int(idiv, int_kind)) / ndiv
+  r = (xc - Z * ln2_ndiv_hi) - Z * ln2_ndiv_lo
+
+  ! 3. Polynomial approximation (exp_remez_expm1_estrin_4, flattened)
+  idiv_scale = idiv_scale_lookup(idiv)
+  idiv_residual = idiv_residual_lookup(idiv)
+  x2 = r * r
+  x4 = x2 * x2
+  p01 = c(0) + c(1) * r
+  p23 = c(2) + c(3) * r
+  expm1_r = (p01 + x2 * p23) + x4 * c(4)
+  e = idiv_scale + idiv_scale * (idiv_residual + r * expm1_r)
+
+  ! 4. Unscaling
+  j = merge(Kbias, 0_int_kind, K < Kmin) + merge(-Kbias, 0_int_kind, K > Kmax)
+  eb = transfer(e, int_mold)
+  eb = eb + ishft(K + j, expbit)
+  a = transfer(eb, real_mold)
+  fb = ishft(int(expbias, int_kind) - j, expbit)
+  a = a * transfer(fb, real_mold)
+end function exp_repro_inline
+
 !> Returns the i- and j-direction block sizes to use for the viscous mixed layer solver,
 !! substituting the full computational domain extent when the configured block size is zero.
 subroutine viscous_ML_block_sizes(CS, G, niblock, njblock)
@@ -2427,7 +2537,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
                 endif
 
                 if (gHprime > 0.0) then
-                  RiBulk = CS%bulk_Ri_ML * exp_repro(-htot(II,jj) * Idecay_len_TKE(II,jj))
+                  RiBulk = CS%bulk_Ri_ML * exp_repro_inline(-htot(II,jj) * Idecay_len_TKE(II,jj))
                   if (RiBulk * Uh2 <= (htot(II,jj)**2) * gHprime) then
                     visc%nkml_visc_u(I,j) = real(k_massive(II,jj))
                     do_i(II,jj) = .false.
@@ -2780,7 +2890,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
                 endif
 
                 if (gHprime > 0.0) then
-                  RiBulk = CS%bulk_Ri_ML * exp_repro(-htot(ii,JJ) * Idecay_len_TKE(ii,JJ))
+                  RiBulk = CS%bulk_Ri_ML * exp_repro_inline(-htot(ii,JJ) * Idecay_len_TKE(ii,JJ))
                   if (RiBulk * Uh2 <= htot(ii,JJ)**2 * gHprime) then
                     visc%nkml_visc_v(i,J) = real(k_massive(ii,JJ))
                     do_i(ii,JJ) = .false.
