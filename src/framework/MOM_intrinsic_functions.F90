@@ -20,7 +20,7 @@ interface
   !! Compute exp(x) with bitwise reproducibility across platforms.
   !! Implemented in submodule MOM_exp
   elemental module function exp_repro(x) result(a)
-    real, intent(in) :: x
+    real, intent(in), value :: x
       !< Input value
     real :: a
       !< exp(x)
