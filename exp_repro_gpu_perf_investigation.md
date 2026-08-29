@@ -78,12 +78,19 @@ just not the dominant one.
 | E5a | `exp-repro/e5a-manual-inline-fn` | private same-file `exp_repro_inline()`, manually flattened | no (new function, `exp_repro` untouched) |
 | E6 | `exp-repro/e6-inline-plus-threadlimit` | E5a + E7 combined (cherry-picked) | no |
 | **E7** | `exp-repro/e7-thread-limit-only` | `teams thread_limit(128)` on the two target regions | **no** |
-| **E8** | `exp-repro/e8-bind-parallel-teams` | `target teams` + `bind(parallel,teams)` on the loop clauses, no `thread_limit` | **no** |
+| **E8** | `exp-repro/e8-bind-parallel-teams` | `target teams` + `bind(teams,parallel)` on the loop clauses, no `thread_limit` | **no** |
 | E9 | `exp-repro/e9-inline-plus-bind` | E5a + E8 combined (cherry-picked) | no |
 | E10 | `exp-repro/e10-value-plus-bind` | E2 + E8 combined (cherry-picked) | yes (E2's 1 line) |
+| E11 | `exp-repro/e11-inline-plus-threadlimit-plus-bind` | E6 (E5a+E7) with `bind(teams,parallel)` added on top, `thread_limit(128)` left in place | no |
 
 All branches fork directly from `exp-repro/baseline`; E6, E9, and E10 cherry-pick two
-prerequisite branches' commits on top of a fresh checkout of baseline.
+prerequisite branches' commits on top of a fresh checkout of baseline. E11 branches
+from E6 directly and edits the same four loop clauses E8 touches.
+
+**Branch names retain their original `bind-parallel-teams` labels for continuity, but
+their content was corrected in place (`git commit --amend`) to use `bind(teams,parallel)`
+after §8.2's finding that clause argument order is not cosmetic.** Every row in the
+tables below reflects the corrected, currently-checked-out state of each branch.
 
 ---
 
@@ -99,13 +106,16 @@ prerequisite branches' commits on top of a fresh checkout of baseline.
 | E5a (manual inline) | =`.exprepro` | **0** | 90/80 | **0** | 0.636 | 2.123 |
 | E6 (E5a+E7) | =`.exprepro` | 0 | — | — | 0.271 | 1.757 |
 | **E7 (`thread_limit(128)`)** | =`.exprepro` | 2 (unchanged, still out-of-line) | 114/130 | 8 | **0.275** | **1.766** |
-| **E8 (`bind(parallel,teams)`)** | =`.exprepro`, re-confirmed 3/3 runs | 2 (expected) | 90/96 | 8, SHARED:0 | **0.269** | **1.755** |
-| E9 (E5a+E8) | **FAIL — non-deterministic, 3/3 runs disagree with each other and with `.exprepro`** | 0 | 90/80 | 0, but **SHARED:20** | 0.862 (3× slower) | — |
+| **E8 (`bind(teams,parallel)`)** | =`.exprepro`, re-confirmed 3/3 runs | 2 (expected) | 90/96 | 8, SHARED:0 | **0.269** | **1.755** |
+| E9 (E5a+E8) | =`.exprepro`, 3/3 runs — **see §8.2, was FAIL before the order fix** | 0 | 80/78 | 0, SHARED:0 | 0.267–0.276 | 1.763 |
 | E10 (E2+E8) | =`.exprepro`, 3/3 runs | 2 (expected) | 88/90 | 0, SHARED:0 | 0.270 | 1.758 |
+| E11 (E6+bind) | =`.exprepro` — **see §8.2, was FAIL before the order fix** | 0 | 80/78 | 0, SHARED:0 | 0.271 | — |
 
 All correctness checks: **PASS**, 3/3 runs, except E6 (1 confirmation run after the
 proper cherry-pick, matching 3 earlier runs of the identical content: 0.271, 1.763; a
-later 3/3-run re-check for §8 also passed) and **E9, which fails outright — see §8**.
+later 3/3-run re-check for §8 also passed). **E9/E11 originally failed with
+`bind(parallel,teams)` (see §8/§8.1 for that record) but pass cleanly once corrected to
+`bind(teams,parallel)` — see §8.2.**
 
 ---
 
@@ -180,16 +190,19 @@ allocate registers across instead of none). Result: 0.690→0.275s median, match
 (0.271s) to within noise. This is the pattern `set_viscous_BBL` already uses correctly
 elsewhere in the same file (`!$omp target teams loop collapse(2) thread_limit(128) ...`).
 
-### E8 — `bind(parallel,teams)` (alternative to E7)
+### E8 — `bind(teams,parallel)` (alternative to E7)
 Same root fix, different mechanism: keep `target` → `target teams` (required —
 `bind` is illegal without an enclosing `teams` region, confirmed by
 `NVFORTRAN-S-1195` when tried on a bare `target`), but instead of capping team size
-with `thread_limit(128)`, add `bind(parallel,teams)` to all four `!$omp loop` clauses
+with `thread_limit(128)`, add a `bind` clause to all four `!$omp loop` clauses
 in the two `exp_repro`-calling regions. Result: matches E7's fix (0.690→0.269s median,
 slightly *faster* than E7's 0.275s) with measurably lower register pressure (90/96 vs
 E7's 114/130) — giving the compiler real information about the loop's binding lets it
 allocate more precisely than an artificial thread cap does. See §7 for the tradeoff
-that makes E7 the recommended choice anyway.
+that makes E7 the recommended choice anyway, and **§8.2 for a correction**: this branch
+originally shipped with the clause written `bind(parallel,teams)`; that ordering was
+later found to be unsafe once combined with inlining (§8/§8.1) and has been amended
+throughout to `bind(teams,parallel)`, which §8.2 confirms is safe in both regimes.
 
 ---
 
@@ -289,7 +302,16 @@ the actual root cause of the disproportionate slowdown.
 
 ---
 
-## 7. E7 vs E8: `thread_limit(128)` vs `bind(parallel,teams)`
+## 7. E7 vs E8: `thread_limit(128)` vs `bind(...)`
+
+> **Correction (see §8.2):** this section's measurements were taken with the clause
+> written `bind(parallel,teams)`, which was the original form tried. That ordering was
+> later found to be unsafe once `exp_repro` is inlined (§8/§8.1), and has since been
+> corrected to `bind(teams,parallel)` on every branch in this investigation. The
+> register counts, timings, and "no diagnostic for nonstandard syntax" observations
+> below are otherwise unaffected by the ordering — §8.2 confirms both orderings compile
+> to byte-identical kernels whenever the call stays out-of-line, which is the case
+> everywhere in this section (E7/E8 only, no inlining).
 
 Both confirmed via `ncu` to produce the identical fix (Block Size 128, Grid ~510), by
 different mechanisms:
@@ -297,11 +319,12 @@ different mechanisms:
 - **`thread_limit(128)`** is a blunt cap on the `target teams` construct: it hardcodes
   a team size without telling the compiler anything about how the `loop` construct's
   iterations should map onto it.
-- **`bind(parallel,teams)`** is a clause on the `loop` construct itself: it tells the
-  compiler the loop binds across *both* the teams and parallel levels simultaneously,
-  and the compiler derives its own block size (128 — the same value it already picks
-  correctly for the non-`exp_repro` sibling region) from that information, rather than
-  being told a fixed number.
+- **`bind(teams,parallel)`** (two comma-separated values, an nvfortran extension — see
+  below) is a clause on the `loop` construct itself: it tells the compiler the loop
+  binds across *both* the teams and parallel levels simultaneously, and the compiler
+  derives its own block size (128 — the same value it already picks correctly for the
+  non-`exp_repro` sibling region) from that information, rather than being told a fixed
+  number.
 - **`bind` requires `teams`, full stop**: tried on a bare `!$omp target` (no `teams`),
   nvfortran refuses to compile: `NVFORTRAN-S-1195 ... 'bind(teams)' can be used only
   when 'loop' region is strictly nested inside a 'teams' region.` So E8's diff still
@@ -311,25 +334,46 @@ different mechanisms:
   than an artificial thread cap does.
 - **Timing, marginally faster** with `bind`: 0.269s vs 0.275s median — plausibly
   downstream of the lower register pressure (more room for concurrent warps per SM).
-- **Portability — the real tradeoff**: `bind(parallel,teams)` is **not standard
+- **Portability — the real tradeoff**: the two-value `bind` form is **not standard
   OpenMP**. The OpenMP 5.x `bind` clause takes exactly one value (`teams`, `parallel`,
   or `thread`); nvfortran silently accepts the two-value form with **zero diagnostic**
   that it is nonstandard — no warning, no `-Minfo` note, nothing. Confirmed working on
   nvhpc 26.5; no guarantee it survives a future release or is portable to any other
   OpenMP-target compiler. `thread_limit(128)` is a standard clause already used
   correctly elsewhere in this exact file (`set_viscous_BBL`), with no such risk.
+- **A second, sharper footgun — the two values are not order-commutative, and
+  nvfortran gives zero diagnostic about that either.** §8.2 found `bind(parallel,teams)`
+  and `bind(teams,parallel)` compile to byte-identical kernels here (both orderings
+  are safe for E7/E8, since the call stays out-of-line), but the two orderings are
+  *not* equivalent once the loop body is inlined: `bind(parallel,teams)` races
+  (§8/§8.1), `bind(teams,parallel)` does not (§8.2). Nothing about the syntax, an
+  error message, or this section's own measurements would have surfaced that
+  difference — it only showed up by deliberately testing both orderings against the
+  inlined case. This compounds the portability argument below: not just an
+  undocumented extension, but one whose argument order is silently semantically
+  significant.
 
 **Recommendation: ship E7.** The gap between E7 and E8 (0.275s vs 0.269s) is smaller
 than the noise between repeated runs of either, and both already match the
 intrinsic-`exp()` reference (0.271s) — nowhere near large enough to justify the
-portability risk of an undocumented compiler-specific extension. E8 is kept on record
-as a working, faster, measured alternative in case a future workload's register
-pressure makes the difference matter more. §8 below found a second, sharper reason to
-prefer E7.
+portability risk of an undocumented compiler-specific extension, now sharpened further
+by §8.2's order-sensitivity finding. E8 is kept on record as a working, faster,
+measured alternative (now on the confirmed-safe `bind(teams,parallel)` ordering) in
+case a future workload's register pressure makes the difference matter more. §8/§8.2
+below found more to say about combining it with inlining.
 
 ---
 
-## 8. Follow-up: does combining inlining with `bind(parallel,teams)` help further?
+## 8. Follow-up: does combining inlining with `bind(...)` help further?
+
+> **This entire section (§8, §8.1) is the historical record of what was found with the
+> clause written `bind(parallel,teams)`.** §8.2 below found that reversing the argument
+> order to `bind(teams,parallel)` removes the race entirely — the two orderings are
+> *not* equivalent once the loop body is inlined, even though nvfortran accepts both
+> silently. The failing branches described below (E9, E11) have since been amended to
+> the safe ordering and now pass (see the results table in §3); the analysis here is
+> kept as-is because it correctly diagnoses *why* `bind(parallel,teams)` specifically
+> fails, which motivates §8.2's fix.
 
 Asked directly: since E8 (`bind(parallel,teams)`, `exp_repro` still out-of-line) and E6
 (full manual inline + `thread_limit(128)`) both independently match B0, does *stacking*
@@ -393,16 +437,191 @@ So the bug requires **both** ingredients: `exp_repro`'s body must be physically 
 into the loop (E5a/E9), *and* the loop must carry `bind(parallel,teams)` (E8/E9) rather
 than `thread_limit` (E7/E6). Neither ingredient alone is sufficient.
 
-**Answer to "does inlining improve on `bind(parallel,teams)`?": no — it breaks it.**
-E8/E10 (bind, call left out-of-line) is the performance ceiling reachable through this
-mechanism; pushing further via manual inlining does not yield a faster *correct*
-configuration, it yields a slower, non-deterministic one. This is also a second,
-independent argument (beyond §7's portability point) for preferring **E7
-(`thread_limit(128)`) over E8** as the shipped fix: E7's safety is verified to survive
-being combined with full inlining (E6), while E8's does not — a future change that
-happens to get `exp_repro` inlined (a smarter compiler, a future manual-inlining PR)
-would silently reintroduce this exact race if `bind(parallel,teams)` were the shipped
-mechanism instead of `thread_limit`.
+**Answer to "does inlining improve on `bind(parallel,teams)`?": no — it breaks it, with
+that specific argument order.** §8.2 found the reversed order, `bind(teams,parallel)`,
+does *not* break — so this is no longer a blanket argument against combining `bind`
+with inlining, only against writing the clause with `parallel` first. It remains a
+real, independent argument (beyond §7's portability point) for preferring **E7
+(`thread_limit(128)`) over `bind`-based fixes** as the *shipped* default: `thread_limit`
+has no order to get wrong and no silent failure mode, whereas `bind` requires knowing,
+from a corpus with zero compiler diagnostics either way, which of its two argument
+orderings is safe under inlining and which is not.
+
+### 8.1 Does adding `thread_limit(128)` back rescue E9? — **E11**, no
+
+Direct follow-up: E9 (inline + `bind`) races, but E9 dropped `thread_limit(128)` when it
+switched to `bind` (that is how E8's diff is written — it *replaces* `thread_limit` with
+`bind`, on the same `target teams` line). Does the race only appear because
+`thread_limit` is *absent*? **E11** (`exp-repro/e11-inline-plus-threadlimit-plus-bind`,
+branched from `exp-repro/e6-inline-plus-threadlimit`) tests this directly: full inline
+(E5a) + `thread_limit(128)` (E7) + `bind(parallel,teams)` on all four loop clauses (E8),
+all three at once — the one combination not yet built.
+
+**No — `thread_limit(128)` is simply ignored once `bind(parallel,teams)` governs the
+loop, and the race persists identically.** `cuobjdump -res-usage` shows E11's two
+exp-bearing kernels at **REG 90/80, SHARED:20** — byte-for-byte the same register and
+shared-memory footprint as E9 (which has no `thread_limit` clause at all). The compiler
+is generating the *same kernel* regardless of whether `thread_limit(128)` is present;
+`bind`'s own team/parallel binding fully determines the launch configuration and the
+outer `thread_limit` clause becomes vestigial. Correctness-wise, E11 diverges from
+`.exprepro` at the same step 24, with the same order-of-magnitude-wrong conservation
+errors (`Me`/`Se`/`Te` ~1e-10 vs. reference ~1e-16) and the same ~3.2x slowdown
+(0.859s vs. ~0.27s) as E9. Unlike E9, three repeated runs of the E11 binary this session
+happened to hash identically (`f3abbc87...`, 3/3) — but the actual En values differ
+slightly from a saved E9 run at the same step (`0.54657408` vs. `0.54657342`), so this
+is not evidence of a different, deterministic bug; it is the same race, which is not
+guaranteed to show visible run-to-run variance on every invocation (E9's three runs
+happened to catch three different outcomes; E11's three happened to land on the same
+one). Treat "3/3 identical" as necessary, not sufficient, evidence of safety for this
+combination — the `SHARED:20` signature is the more reliable tell.
+
+This closes the combination space **for the `bind(parallel,teams)` ordering
+specifically**: there is no way to add `thread_limit(128)` alongside
+`bind(parallel,teams)` that avoids the race once `exp_repro` is inlined — the clause
+governs the launch configuration outright and `thread_limit` becomes vestigial (E11's
+kernel is byte-for-byte E9's kernel). **This is superseded by §8.2**: reversing the
+argument order to `bind(teams,parallel)` avoids the race, with or without
+`thread_limit` also present — E9 and E11 both pass once amended to that ordering.
+
+---
+
+## 8.2 The fix: argument order in `bind(...)` is not cosmetic — use `bind(teams,parallel)`
+
+Reported directly: `bind(parallel,teams)` and `bind(teams,parallel)` were observed to
+give different behavior. This is a real, confirmed effect, not a false lead — and it
+resolves §8/§8.1's race.
+
+**Method.** Two throwaway verification branches, built and tested before touching
+anything else: `exp-repro/e12-bind-teams-parallel` (E8 with all four `bind` clauses
+reversed to `bind(teams,parallel)` — the safe, out-of-line case) and
+`exp-repro/e13-inline-plus-bind-teams-parallel` (E9 with the same reversal — the racing,
+fully-inlined case). Both were `sed`-generated single-clause-order swaps, nothing else
+changed.
+
+**E12 (out-of-line call, order reversed): no difference at all.** `cuobjdump -res-usage`
+on both exp-bearing kernels shows **REG 90/96, STACK:8, SHARED:0** — byte-identical to
+E8's original `bind(parallel,teams)` fingerprint. `ocean.stats` matches `.exprepro`.
+Confirms the two orderings are genuinely equivalent whenever the loop body is a real
+out-of-line call — consistent with E8/E10's own `SHARED:0` results in §3/§8.
+
+**E13 (fully inlined call, order reversed): the race disappears.** `cuobjdump -res-usage`
+shows both exp-bearing kernels at **REG 80/78, SHARED:0** — not the `SHARED:20` E9 (same
+inlined body, `bind(parallel,teams)`) showed. Three repeated runs of the identical
+binary: **`ocean.stats` matches `.exprepro` exactly, byte-for-byte, 3/3** (not merely
+matching each other, as E11's flukily-identical-but-wrong runs did in §8.1 — these
+match the *correct* reference). Timing is back at parity with E7/E8: **0.276s** for
+`set_viscous_ML` (not E9's 3.2×-slower 0.862s).
+
+**Applied to the real branches, not just throwaway copies.** `exp-repro/e8`,
+`e9-inline-plus-bind`, `e10-value-plus-bind`, and
+`e11-inline-plus-threadlimit-plus-bind` all had their single existing commit amended
+(`git commit --amend`, at the user's request — these commits were not yet part of any
+shared/pushed history) to change every `bind(parallel,teams)` to `bind(teams,parallel)`,
+then rebuilt and re-verified individually:
+
+| Branch | Result after the order fix |
+|---|---|
+| E8 (out-of-line) | PASS, unchanged fingerprint (REG 90/96, SHARED:0) — order-independent, as E12 predicted |
+| E9 (full inline) | **PASS** (was FAIL) — REG 80/78, SHARED:0, 0.267s, matches `.exprepro` |
+| E10 (VALUE attr, out-of-line) | PASS, unchanged (REG 88/90, SHARED:0) — order-independent, as expected for an out-of-line call |
+| E11 (full inline + `thread_limit`) | **PASS** (was FAIL) — REG 80/78, SHARED:0, 0.271s; reduces to the same kernel as E9, `thread_limit` still vestigial per §8.1 |
+
+The throwaway `e12`/`e13` branches were deleted once their content was folded into the
+real branches above (no information lost — the fingerprints and run counts are recorded
+here).
+
+**Why this happens**: not established beyond the empirical signature. `bind`'s two
+arguments name the two levels (`teams`, `parallel`) the loop binds across; nvfortran's
+own PTX-generation path apparently treats `bind(parallel,teams)` and
+`bind(teams,parallel)` as syntactically-accepted but code-generation-distinct once
+there is a large inlined body to place — one routes part of it through team-shared
+memory (`SHARED:20`, racy), the other does not (`SHARED:0`, safe). This is exactly the
+kind of undocumented-extension behavior an OpenMP standard clause would never exhibit,
+since standard `bind` takes only one value and has no "order" to get wrong.
+
+**Revised guidance for this codebase**: standardize on `bind(teams,parallel)` (teams
+first) for any future use of this nvfortran extension in a GPU-offloaded loop —
+confirmed safe whether or not the loop body ends up inlined, with no measured downside
+relative to `bind(parallel,teams)` in the out-of-line case. `bind(parallel,teams)`
+(parallel first) is only safe as long as nothing in the loop body is ever inlined, now
+or by a future compiler/optimization change — a guarantee that is easy to silently
+break and impossible to detect from the source alone.
+
+**A pre-existing, unrelated usage worth flagging, not modifying**:
+`src/ALE/MOM_ALE.F90:1575` (`ALE_PLM_edge_values`, predates this whole investigation,
+already shipped on `exp-repro/baseline` and upstream) uses `bind(parallel,teams)` to fix
+a different bug (illegal memory accesses on V100s) around calls to `PLM_slope_wa` /
+`PLM_monotonized_slope` / `PLM_extrapolate_slope`. Its own comment states these calls
+currently run "with team sizes of 1 because the functions aren't visible at compile
+time" — i.e., they are *not* inlined today, which by E12's finding means this usage is
+currently safe regardless of argument order. But that same comment suggests `-Minline`
+as a possible future speedup for that exact code path — if anyone acts on it, this
+finding says that change would need `bind(teams,parallel)`, not `bind(parallel,teams)`,
+to stay correct. Out of scope for this investigation's branches (different file,
+different bug, no inlining currently present), so left untouched here — flagged for
+whoever next touches that routine.
+
+---
+
+## 8.3 Now that `bind(teams,parallel)` is safe under inlining: does inlining help?
+
+With §8.2's fix landed, E9 (fully inlined + `bind(teams,parallel)`) is a legitimately
+correct configuration for the first time, alongside E8 (out-of-line + same `bind`
+clause). Both match `.exprepro` and both measure ~0.27s at the `(Ocean set_viscous_ML)`
+routine-grain clock. Direct `ncu --set full -k "regex:...F1L..." --launch-skip 5
+--launch-count 4` profiling of the two exp-bearing kernels in each binary (identical
+skip depth, so the same simulated timestep/state in both) gives a real, per-kernel
+answer:
+
+| Metric | E8 u-half (REG 90) | E9 u-half (REG 80) | E8 v-half (REG 96) | E9 v-half (REG 78) |
+|---|---|---|---|---|
+| Registers/thread | 90 | 80 | 96 | 78 |
+| Block Limit (Registers) | 5 blocks/SM | 6 blocks/SM | 5 blocks/SM | 6 blocks/SM |
+| Theoretical Occupancy | 41.67% | 50.00% | 41.67% | 50.00% |
+| Achieved Occupancy | 36.61% | 43.87% | 37.22% | 44.42% |
+| Compute (SM) Throughput | 63.25% | 65.74% | 70.74% | 74.45% |
+| Duration (avg of 2 launches) | 205.55 µs (127–284) | 198.90 µs (119–279) | 288.02 µs (285–291) | 273.68 µs (271–277) |
+| `SHARED` (static, cuobjdump) | 0 | 0 | 0 | 0 |
+
+**Yes, inlining does measurably help at the kernel level.** Removing the out-of-line
+call frees up 10–18 registers per thread, which raises the register-limited block
+count from 5 to 6 blocks/SM — a real, compiler-determined occupancy gain (41.67% →
+50% theoretical, ~37% → ~44% achieved on both kernels), not a measurement artifact.
+Compute throughput rises correspondingly (+2.5pp u-half, +3.7pp v-half), and the
+tighter, more directly comparable v-half kernel shows a consistent ~5% shorter
+duration (288.02 → 273.68 µs). The u-half kernel's wider per-launch range (driven by
+the `do_i` early-exit mask varying how many columns are still active at a given `k`,
+not by configuration) makes its particular average less precise, but it moves in the
+same direction.
+
+**No, it does not survive to the routine-grain wall clock.** Five back-to-back
+`mom6test` runs of each binary, interleaved as closely as the build/run cycle allows:
+
+```
+E8 (out-of-line):  0.269508  0.274554  0.274568  0.265684  0.269147   (mean 0.2707)
+E9 (fully inlined): 0.273934  0.269525  0.271259  0.267423  0.262154   (mean 0.2688)
+```
+
+E9 averages ~0.7% faster, but both sets span a ~4.5%-of-mean range on their own —
+this laptop GPU has no clock-lock (per the original plan's throttling note), and the
+`(Ocean set_viscous_ML)` clock also includes host-side launch overhead and
+intervening halo/MPI work between the ~20 kernel launches per call that ncu's
+per-kernel view doesn't. A real, compiler-verified ~3–5% per-kernel gain, multiplied
+by a few hundred microseconds per launch, does not clear the noise floor of a
+routine-level timer on this hardware.
+
+**Conclusion**: inlining is not "no better than out-of-line" in any absolute sense —
+it measurably raises occupancy and modestly shortens kernel duration, now that
+§8.2's `bind(teams,parallel)` ordering makes it safe to combine with `bind` at all.
+But it buys nothing detectable at the granularity this whole investigation gates on
+(`(Ocean set_viscous_ML)`, `ocean.stats`), and it re-adds the complexity/maintenance
+cost of a manually-flattened `exp_repro_inline` duplicate (§4/E5a) plus a dependency
+on the non-standard, order-sensitive `bind` extension (§7, §8.2). **This does not
+change the recommendation to ship E7** (`thread_limit(128)`, `exp_repro` untouched,
+still out-of-line, standard OpenMP clause) — E9's kernel-level occupancy gain is real
+but not worth either of those costs at this problem size. It would be worth
+revisiting if a future, larger problem size or a different kernel in this file turns
+out to be genuinely occupancy-bound rather than latency-hidden.
 
 ---
 
@@ -439,12 +658,15 @@ All in `src/MOM6`, forked from `port-set_viscous_ML-tile` @ `6e63e6778`:
 | `exp-repro/e5a-manual-inline-fn` | `53fda9360` | |
 | `exp-repro/e6-inline-plus-threadlimit` | `4b1b04863` (on top of `493bb28ae`) | cherry-picked E5a + E7 |
 | `exp-repro/e7-thread-limit-only` | `6244a6edf` | **recommended fix** |
-| `exp-repro/e8-bind-parallel-teams` | `3cd1f94c3` | measured alternative |
-| `exp-repro/e9-inline-plus-bind` | `9790dc530` (on top of `53fda9360`) | cherry-picked E5a + E8 — **fails: non-deterministic, see §8** |
-| `exp-repro/e10-value-plus-bind` | `6a774e7fc` (on top of `b662bfeab`) | cherry-picked E2 + E8 — passes, no gain over E8 alone |
+| `exp-repro/e8-bind-parallel-teams` | `c55fb4fc4` (amended from `3cd1f94c3`) | measured alternative; `bind` clause corrected to `bind(teams,parallel)`, see §8.2 |
+| `exp-repro/e9-inline-plus-bind` | `f1232653d` (amended from `9790dc530`, on top of `53fda9360`) | cherry-picked E5a + E8 — originally failed (non-deterministic, §8), **passes after the §8.2 order fix** |
+| `exp-repro/e10-value-plus-bind` | `84ae3ee78` (amended from `6a774e7fc`, on top of `b662bfeab`) | cherry-picked E2 + E8 — passes, no gain over E8 alone; order fix applied for consistency (no-op here, §8.2) |
+| `exp-repro/e11-inline-plus-threadlimit-plus-bind` | `09d1e68ab` (amended from `7c8617800`, on top of `4b1b04863`) | E6 + `bind` added on top — originally failed identically to E9 (§8.1), **passes after the §8.2 order fix** |
 
-`src/MOM6` is currently checked out to `exp-repro/e7-thread-limit-only`, built, and
-verified. A durable note on the underlying `!$omp target` block-size-1 launch bug, and
-on the inline+`bind(parallel,teams)` race found in §8, is saved to project memory
-(`mom6-omp-target-block-size-1-launch-bug.md`) for future GPU-porting sessions on this
-codebase.
+`src/MOM6` is currently checked out to `exp-repro/e11-inline-plus-threadlimit-plus-bind`
+(the last branch built while verifying §8.2's fix); the **recommended fix to actually
+ship remains `exp-repro/e7-thread-limit-only`** (`6244a6edf`, untouched by any of this).
+A durable note on the underlying `!$omp target` block-size-1 launch bug, the
+inline+`bind(parallel,teams)` race found in §8/§8.1, and the argument-order fix found in
+§8.2, is saved to project memory (`mom6-omp-target-block-size-1-launch-bug.md`) for
+future GPU-porting sessions on this codebase.
