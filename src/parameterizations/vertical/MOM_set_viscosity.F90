@@ -2427,7 +2427,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
                 endif
 
                 if (gHprime > 0.0) then
-                  RiBulk = CS%bulk_Ri_ML * exp_repro(-htot(II,jj) * Idecay_len_TKE(II,jj))
+                  RiBulk = CS%bulk_Ri_ML * exp(-htot(II,jj) * Idecay_len_TKE(II,jj))
                   if (RiBulk * Uh2 <= (htot(II,jj)**2) * gHprime) then
                     visc%nkml_visc_u(I,j) = real(k_massive(II,jj))
                     do_i(II,jj) = .false.
@@ -2780,7 +2780,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
                 endif
 
                 if (gHprime > 0.0) then
-                  RiBulk = CS%bulk_Ri_ML * exp_repro(-htot(ii,JJ) * Idecay_len_TKE(ii,JJ))
+                  RiBulk = CS%bulk_Ri_ML * exp(-htot(ii,JJ) * Idecay_len_TKE(ii,JJ))
                   if (RiBulk * Uh2 <= htot(ii,JJ)**2 * gHprime) then
                     visc%nkml_visc_v(i,J) = real(k_massive(ii,JJ))
                     do_i(ii,JJ) = .false.
