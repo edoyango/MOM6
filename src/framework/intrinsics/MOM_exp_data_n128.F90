@@ -85,5 +85,5 @@ real, parameter :: idiv_residual_lookup(0:ndiv-1) = [ &
  -5.54506561863942674e-17, -5.14900974545773279e-17,  5.33680587851415070e-17,  3.49897866119297325e-17, &
   4.57849152770600949e-17, -5.24193457539389921e-17,  2.04142788975783032e-17,  4.12484284860648776e-18  &
 ]
-
+!$omp declare target (idiv_scale_lookup,idiv_residual_lookup)
 end module MOM_exp_data_n128

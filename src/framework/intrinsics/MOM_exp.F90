@@ -144,7 +144,7 @@ module procedure exp_repro
     ! Bias added to K to compensate for exponent K beyond {-1022,..,+1023}.
   integer(kind=int_kind) :: fb
     ! Bit representation 2**j, the K exponent rescale
-
+  !$omp declare target
   ! 1. Nonfinite handling
   ! ---------------------
   ! Nonfinites must be handled first to prevent their appearance in
