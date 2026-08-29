@@ -79,9 +79,11 @@ just not the dominant one.
 | E6 | `exp-repro/e6-inline-plus-threadlimit` | E5a + E7 combined (cherry-picked) | no |
 | **E7** | `exp-repro/e7-thread-limit-only` | `teams thread_limit(128)` on the two target regions | **no** |
 | **E8** | `exp-repro/e8-bind-parallel-teams` | `target teams` + `bind(parallel,teams)` on the loop clauses, no `thread_limit` | **no** |
+| E9 | `exp-repro/e9-inline-plus-bind` | E5a + E8 combined (cherry-picked) | no |
+| E10 | `exp-repro/e10-value-plus-bind` | E2 + E8 combined (cherry-picked) | yes (E2's 1 line) |
 
-All branches fork directly from `exp-repro/baseline`; E6 cherry-picks E5a's and E7's
-commits on top of a fresh checkout of baseline.
+All branches fork directly from `exp-repro/baseline`; E6, E9, and E10 cherry-pick two
+prerequisite branches' commits on top of a fresh checkout of baseline.
 
 ---
 
@@ -97,10 +99,13 @@ commits on top of a fresh checkout of baseline.
 | E5a (manual inline) | =`.exprepro` | **0** | 90/80 | **0** | 0.636 | 2.123 |
 | E6 (E5a+E7) | =`.exprepro` | 0 | — | — | 0.271 | 1.757 |
 | **E7 (`thread_limit(128)`)** | =`.exprepro` | 2 (unchanged, still out-of-line) | 114/130 | 8 | **0.275** | **1.766** |
-| **E8 (`bind(parallel,teams)`)** | =`.exprepro` (expected — `exp_repro` unmodified; not re-fingerprinted) | 2 (expected) | **90/96** | 8 | **0.269** | **1.755** |
+| **E8 (`bind(parallel,teams)`)** | =`.exprepro`, re-confirmed 3/3 runs | 2 (expected) | 90/96 | 8, SHARED:0 | **0.269** | **1.755** |
+| E9 (E5a+E8) | **FAIL — non-deterministic, 3/3 runs disagree with each other and with `.exprepro`** | 0 | 90/80 | 0, but **SHARED:20** | 0.862 (3× slower) | — |
+| E10 (E2+E8) | =`.exprepro`, 3/3 runs | 2 (expected) | 88/90 | 0, SHARED:0 | 0.270 | 1.758 |
 
 All correctness checks: **PASS**, 3/3 runs, except E6 (1 confirmation run after the
-proper cherry-pick, matching 3 earlier runs of the identical content: 0.271, 1.763).
+proper cherry-pick, matching 3 earlier runs of the identical content: 0.271, 1.763; a
+later 3/3-run re-check for §8 also passed) and **E9, which fails outright — see §8**.
 
 ---
 
@@ -319,11 +324,89 @@ than the noise between repeated runs of either, and both already match the
 intrinsic-`exp()` reference (0.271s) — nowhere near large enough to justify the
 portability risk of an undocumented compiler-specific extension. E8 is kept on record
 as a working, faster, measured alternative in case a future workload's register
-pressure makes the difference matter more.
+pressure makes the difference matter more. §8 below found a second, sharper reason to
+prefer E7.
 
 ---
 
-## 8. What each diff actually touches (verified, not assumed)
+## 8. Follow-up: does combining inlining with `bind(parallel,teams)` help further?
+
+Asked directly: since E8 (`bind(parallel,teams)`, `exp_repro` still out-of-line) and E6
+(full manual inline + `thread_limit(128)`) both independently match B0, does *stacking*
+manual inlining on top of `bind(parallel,teams)` buy anything more? Two more branches
+were built to answer this, both cherry-picked onto a fresh checkout of
+`exp-repro/baseline`, and each re-run 3× to check not just a single `ocean.stats` match
+but run-to-run determinism of the same binary:
+
+- **E9** (`exp-repro/e9-inline-plus-bind`): E5a's `exp_repro_inline` cherry-picked, then
+  E8's `bind(parallel,teams)` commit on top.
+- **E10** (`exp-repro/e10-value-plus-bind`): E2's `VALUE` attribute (still an
+  out-of-line call, just by-value) cherry-picked, then the same E8 commit on top.
+
+**E10 passes cleanly**: `ocean.stats` matches `.exprepro` on all 3/3 runs, `exp_repro`
+relocation count unchanged at 2 (still out-of-line), REG drops slightly further than E8
+alone (88/90 vs E8's 90/96 — consistent with E2's by-value marshalling savings stacking
+on top of `bind`'s savings), SHARED:0, timing indistinguishable from E8 alone
+(0.270s/1.758s vs E8's 0.269s/1.755s). **Conclusion: partial call-mechanism changes
+(VALUE attribute) combine safely with `bind(parallel,teams)`, with no measurable
+additional benefit beyond `bind` alone.**
+
+**E9 fails outright — not a rounding difference, a real, reproducible bug.** The very
+first `mom6test` run already disagreed with `.exprepro` starting at step 24 (En differs
+at the 4th significant digit — `0.546574` vs `0.546815` — and the mass/salt/heat
+conservation errors `Me`/`Se`/`Te` are six orders of magnitude worse than reference,
+`~1e-10` vs `~1e-16`, not the ~11th-digit roundoff seen in the benign B0/`.base`
+mismatch in §4). Suspecting a fluke, the identical binary was re-run three more times
+with no rebuild: **three different `sha256`s, three different `ocean.stats`, all
+different from each other and from `.exprepro`** —
+
+```
+run1: cb4b4c63d22b4c7e532fb752ad6bda8a387248055e4dc74e5acdab986debe5d3  En(step24)=0.54657433...
+run2: 9124763d47a122c5e728c96635d25d4e3f6f419193063a46cff4649d3c7f0292  En(step24)=0.54657397...
+run3: bcd43d9c2d8cc77e6cb564ffdaaed38b0b553f695cceeb33c4d762e6f85a4379  En(step24)=0.54656911...
+```
+
+This is a genuine, **runtime** data race, not a compile-time miscompilation — a
+miscompilation would produce the same wrong answer every run. `cuobjdump -res-usage`
+on the E9 binary pinpointed the mechanism: **`SHARED:20` bytes on exactly the two
+`exp_repro`-bearing kernels** (`F1L2505_12_` REG:90 SHARED:20, `F1L2857_16_` REG:80
+SHARED:20) — every other kernel in the file, in every other experiment measured in this
+whole investigation (B1, E2, E3, E5a, E6, E7, E8, E10), reports `SHARED:0`. Something in
+the fully-inlined function body is being placed in team-shared memory once
+`bind(parallel,teams)` is also present, and multiple threads within a team appear to
+race on it — exactly reproducing the observed non-determinism. E9 is also **~3.2×
+slower** than E6/E7/E8/E10 (0.862s vs ~0.27s), consistent with the extra shared-memory
+traffic/serialization: this combination is a double loss, not a trade-off.
+
+Two isolation checks pin the trigger down precisely:
+
+- **`bind(parallel,teams)` alone (E8, E10) is solid**: out-of-line calls, whether
+  by-reference (E8) or by-value (E10), never show `SHARED>0` and never show
+  non-determinism (3/3 identical runs each).
+- **Full inlining alone (E5a) or full inlining + `thread_limit` (E6) is solid**: E6 was
+  re-run 3× for this follow-up specifically (not just the original single confirmation
+  run) — `ocean.stats` matches `.exprepro` bit-for-bit on all three, `SHARED:0` on both
+  exp-bearing kernels (REG:96/96, higher than E9's 90/80 — no shared-memory shortcut was
+  taken).
+
+So the bug requires **both** ingredients: `exp_repro`'s body must be physically inlined
+into the loop (E5a/E9), *and* the loop must carry `bind(parallel,teams)` (E8/E9) rather
+than `thread_limit` (E7/E6). Neither ingredient alone is sufficient.
+
+**Answer to "does inlining improve on `bind(parallel,teams)`?": no — it breaks it.**
+E8/E10 (bind, call left out-of-line) is the performance ceiling reachable through this
+mechanism; pushing further via manual inlining does not yield a faster *correct*
+configuration, it yields a slower, non-deterministic one. This is also a second,
+independent argument (beyond §7's portability point) for preferring **E7
+(`thread_limit(128)`) over E8** as the shipped fix: E7's safety is verified to survive
+being combined with full inlining (E6), while E8's does not — a future change that
+happens to get `exp_repro` inlined (a smarter compiler, a future manual-inlining PR)
+would silently reintroduce this exact race if `bind(parallel,teams)` were the shipped
+mechanism instead of `thread_limit`.
+
+---
+
+## 9. What each diff actually touches (verified, not assumed)
 
 Confirmed by direct `git diff exp-repro/baseline exp-repro/e7-thread-limit-only --
 .` and the equivalent for E8, across the **entire repo**, not just the one file:
@@ -342,7 +425,7 @@ a problem that was not the actual bottleneck.
 
 ---
 
-## 9. Branch/commit reference
+## 10. Branch/commit reference
 
 All in `src/MOM6`, forked from `port-set_viscous_ML-tile` @ `6e63e6778`:
 
@@ -357,8 +440,11 @@ All in `src/MOM6`, forked from `port-set_viscous_ML-tile` @ `6e63e6778`:
 | `exp-repro/e6-inline-plus-threadlimit` | `4b1b04863` (on top of `493bb28ae`) | cherry-picked E5a + E7 |
 | `exp-repro/e7-thread-limit-only` | `6244a6edf` | **recommended fix** |
 | `exp-repro/e8-bind-parallel-teams` | `3cd1f94c3` | measured alternative |
+| `exp-repro/e9-inline-plus-bind` | `9790dc530` (on top of `53fda9360`) | cherry-picked E5a + E8 — **fails: non-deterministic, see §8** |
+| `exp-repro/e10-value-plus-bind` | `6a774e7fc` (on top of `b662bfeab`) | cherry-picked E2 + E8 — passes, no gain over E8 alone |
 
 `src/MOM6` is currently checked out to `exp-repro/e7-thread-limit-only`, built, and
-verified. A durable note on the underlying `!$omp target` block-size-1 launch bug is
-saved to project memory (`mom6-omp-target-block-size-1-launch-bug.md`) for future
-GPU-porting sessions on this codebase.
+verified. A durable note on the underlying `!$omp target` block-size-1 launch bug, and
+on the inline+`bind(parallel,teams)` race found in §8, is saved to project memory
+(`mom6-omp-target-block-size-1-launch-bug.md`) for future GPU-porting sessions on this
+codebase.
