@@ -700,12 +700,13 @@ whole-program LTO object-merge bookkeeping failing internally — not an nvfortr
 wrapper misconfiguration, and not anything reachable from a compiler flag we control.
 
 **Confirmed the mechanism is sound at small scale**: a minimal two-file OpenMP-target
-reproducer (`mymod.F90` with an `elemental function foo` carrying `!$omp declare
-target`, calling a second private helper — structurally identical to
-`exp_repro`/`exp_remez_expm1_estrin_4`; `driver2.F90` calling it via `!$omp target
-teams distribute parallel do`) compiles and links cleanly with the identical
-`-gpu=lto,rdc` flags, and runs to the correct answer. LTO + RDC + OpenMP-target-GPU is
-not inherently broken — the failure is scale-dependent.
+reproducer, checked in at `exp_repro_lto_mre/` (`mymod.F90` with an `elemental
+function foo` carrying `!$omp declare target`, calling a second private helper —
+structurally identical to `exp_repro`/`exp_remez_expm1_estrin_4`; `driver2.F90` calling
+it via `!$omp target teams distribute parallel do`) compiles and links cleanly with the
+identical `-gpu=lto,rdc` flags, and runs to the correct answer (build/run commands in
+`driver2.F90`'s header comment). LTO + RDC + OpenMP-target-GPU is not inherently
+broken — the failure is scale-dependent.
 
 **Version isolation**: reproduced the identical crash on nvhpc 26.3 (CUDA 13.1), via a
 fully independent from-scratch bootstrap (own `FC=mpifort`, own spack-built
