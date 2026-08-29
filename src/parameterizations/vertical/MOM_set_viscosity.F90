@@ -2502,13 +2502,13 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
           endif
         endif
 
-        !$omp target
+        !$omp target teams
         do k=nkml+1,nz
 #ifndef __NVCOMPILER_OPENMP_GPU
           do_any = .false.
 #endif
 
-          !$omp loop collapse(2) &
+          !$omp loop collapse(2) bind(teams,parallel) &
           !$omp   private(jj,II,hlay,I_2hlay,v_at_u,Uh2,T_lay,S_lay,gHprime,RiBulk)
           do j=jstart,jend ; do I=istart,iend
             jj=j-jstart+1 ; II=I-istart+1
@@ -2560,7 +2560,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
           if (.not.do_any) exit ! All columns are done.
 #endif
 
-          !$omp loop collapse(2) private(jj,II)
+          !$omp loop collapse(2) bind(teams,parallel) private(jj,II)
           do j=jstart,jend ; do I=istart,iend
             jj=j-jstart+1 ; II=I-istart+1
             if (do_i(II,jj)) then
@@ -2579,7 +2579,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
             endif
           enddo ; enddo
         enddo
-        !$omp end target
+        !$omp end target teams
       endif
 
       if (do_any) then
@@ -2854,14 +2854,14 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
         endif
 
         ! do remaining iterations
-        !$omp target
+        !$omp target teams
         do k=nkml+1,nz
 ! no tracking of early exit on GPU
 #ifndef __NVCOMPILER_OPENMP_GPU
           do_any = .false.
 #endif
 
-          !$omp loop collapse(2) &
+          !$omp loop collapse(2) bind(teams,parallel) &
           !$omp   private(JJ,ii,hlay,I_2hlay,u_at_v,Uh2,T_lay,S_lay,gHprime,RiBulk)
           do J=jstart,jend ; do i=istart,iend
             JJ=J-jstart+1 ; ii=i-istart+1
@@ -2914,7 +2914,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
 #ifndef __NVCOMPILER_OPENMP_GPU
           if (.not.do_any) exit ! All columns are done.
 #endif
-          !$omp loop collapse(2) private(ii,JJ)
+          !$omp loop collapse(2) bind(teams,parallel) private(ii,JJ)
           do J=jstart,jend ; do i=istart,iend
             JJ=J-jstart+1 ; ii=i-istart+1
             if (do_i(ii,JJ)) then
@@ -2934,7 +2934,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, niblock,
           enddo ; enddo
 
         enddo
-        !$omp end target
+        !$omp end target teams
       endif
 
       if (do_any) then
