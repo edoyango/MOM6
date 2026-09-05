@@ -846,14 +846,16 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(taux_bot)) then
-    do j=G%jsc,G%jec ; do I=Isq,Ieq
+    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
       taux_bot(I,j) = GV%H_to_RZ * (u(I,j,nz) * CS%a_u(I,j,nz+1))
-    enddo ; enddo
+    enddo
 
     if (allocated(visc%Ray_u)) then
-      do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
-        taux_bot(I,j) = taux_bot(I,j) + GV%H_to_RZ * (visc%Ray_u(I,j,k) * u(I,j,k))
-      enddo ; enddo ; enddo
+      do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+        do k=1,nz
+          taux_bot(I,j) = taux_bot(I,j) + GV%H_to_RZ * (visc%Ray_u(I,j,k) * u(I,j,k))
+        enddo
+      enddo
     endif
   endif
 
@@ -1038,14 +1040,16 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(tauy_bot)) then
-    do J=Jsq,Jeq ; do i=is,ie
+    do concurrent (J=Jsq:Jeq, i=is:ie)
       tauy_bot(i,J) = GV%H_to_RZ * (v(i,J,nz) * CS%a_v(i,J,nz+1))
-    enddo ; enddo
+    enddo
 
     if (allocated(visc%Ray_v)) then
-      do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
-        tauy_bot(i,J) = tauy_bot(i,J) + GV%H_to_RZ * (visc%Ray_v(i,J,k)*v(i,J,k))
-      enddo ; enddo ; enddo
+      do concurrent (J=Jsq:Jeq, i=is:ie)
+        do k=1,nz
+          tauy_bot(i,J) = tauy_bot(i,J) + GV%H_to_RZ * (visc%Ray_v(i,J,k)*v(i,J,k))
+        enddo
+      enddo
     endif
   endif
 
