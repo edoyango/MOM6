@@ -672,9 +672,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%du_dt_visc_gl90)) then
-    do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
+    do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
       ADp%du_dt_visc_gl90(I,j,k) = u(I,j,k)
-    enddo ; enddo ; enddo
+    enddo
   endif
 
   if (associated(ADp%du_dt_str)) then
@@ -836,12 +836,14 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%du_dt_visc)) then
-    do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
-      ADp%du_dt_visc(I,j,k) = (u(I,j,k) - ADp%du_dt_visc(I,j,k)) * Idt
+    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+      do k=1,nz
+        ADp%du_dt_visc(I,j,k) = (u(I,j,k) - ADp%du_dt_visc(I,j,k)) * Idt
 
-      if (abs(ADp%du_dt_visc(I,j,k)) < accel_underflow) &
-        ADp%du_dt_visc(I,j,k) = 0.0
-    enddo ; enddo ; enddo
+        if (abs(ADp%du_dt_visc(I,j,k)) < accel_underflow) &
+          ADp%du_dt_visc(I,j,k) = 0.0
+      enddo
+    enddo
   endif
 
   if (allocated(visc%taux_shelf)) then
@@ -893,9 +895,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%dv_dt_visc)) then
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
+    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie)
       ADp%dv_dt_visc(i,J,k) = v(i,J,k)
-    enddo ; enddo ; enddo
+    enddo
   endif
 
   if (associated(ADp%dv_dt_visc_gl90)) then
@@ -1037,10 +1039,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%dv_dt_visc)) then
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
-      ADp%dv_dt_visc(i,J,k) = (v(i,J,k) - ADp%dv_dt_visc(i,J,k))*Idt
-      if (abs(ADp%dv_dt_visc(i,J,k)) < accel_underflow) ADp%dv_dt_visc(i,J,k) = 0.0
-    enddo ; enddo ; enddo
+    do concurrent (J=Jsq:Jeq, i=is:ie)
+      do k=1,nz
+        ADp%dv_dt_visc(i,J,k) = (v(i,J,k) - ADp%dv_dt_visc(i,J,k))*Idt
+        if (abs(ADp%dv_dt_visc(i,J,k)) < accel_underflow) ADp%dv_dt_visc(i,J,k) = 0.0
+      enddo
+    enddo
   endif
 
   if (allocated(visc%tauy_shelf)) then
