@@ -2581,10 +2581,10 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     do_any_write = .false.
     trunc_any = .false.
 
-    do j=js,je ; do I=Isq,Ieq
+    do concurrent (j=js:je, I=Isq:Ieq)
       dowrite(I,j) = .false.
       vel_report(I,j) = 3.0e8 * US%m_s_to_L_T
-    enddo ; enddo
+    enddo
 
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
@@ -2601,9 +2601,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       endif
     enddo ; enddo ; enddo
 
-    do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
+    do concurrent (j=js:je, I=Isq:Ieq, dowrite(I,j))
       u_old(I,j,:) = u(I,j,:)
-    endif ; enddo ; enddo
+    enddo
 
     if (trunc_any) then
       do k=1,nz ; do j=js,je ; do I=Isq,Ieq
@@ -2646,10 +2646,10 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     trunc_any = .false.
 
 
-    do J=Jsq,Jeq ; do i=is,ie
+    do concurrent (J=Jsq:Jeq, i=is:ie)
       dowrite(i,J) = .false.
       vel_report(i,J) = 3.0e8 * US%m_s_to_L_T
-    enddo ; enddo
+    enddo
 
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
@@ -2666,9 +2666,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       endif
     enddo ; enddo ; enddo
 
-    do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
+    do concurrent (J=Jsq:Jeq, i=is:ie, dowrite(i,J))
       v_old(i,J,:) = v(i,J,:)
-    endif ; enddo ; enddo
+    enddo
 
     if (trunc_any) then
       do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
