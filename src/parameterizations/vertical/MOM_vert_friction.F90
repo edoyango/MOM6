@@ -557,7 +557,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   type(accel_diag_ptrs), intent(inout)   :: ADp    !< Accelerations in the momentum
                                                    !! equations for diagnostics
   type(cont_diag_ptrs),  intent(inout)   :: CDp    !< Continuity equation terms
-  type(vertvisc_CS),     pointer         :: CS     !< Vertical viscosity control structure
+  type(vertvisc_CS)                      :: CS     !< Vertical viscosity control structure
   real, dimension(SZIB_(G),SZJ_(G)), &
                    optional, intent(out) :: taux_bot !< Zonal bottom stress from ocean to
                                                      !! rock [R L Z T-2 ~> Pa]
@@ -615,9 +615,6 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, n
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = GV%ke
-
-  if (.not.associated(CS)) call MOM_error(FATAL,"MOM_vert_friction(visc): "// &
-         "Module must be initialized before it is used.")
 
   if (.not.CS%initialized) call MOM_error(FATAL,"MOM_vert_friction(visc): "// &
          "Module must be initialized before it is used.")
@@ -1175,7 +1172,7 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
                                               !! viscosity is applied in the meridional direction [nondim]
   real,                  intent(in)    :: dt  !< Time increment [T ~> s]
   type(unit_scale_type), intent(in)    :: US  !< A dimensional unit scaling type
-  type(vertvisc_CS),     pointer       :: CS  !< Vertical viscosity control structure
+  type(vertvisc_CS)                    :: CS  !< Vertical viscosity control structure
 
   ! Local variables
 
@@ -1193,9 +1190,6 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   integer :: i, j, k, is, ie, Isq, Ieq, Jsq, Jeq, nz
   is = G%isc ; ie = G%iec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB ; nz = GV%ke
-
-  if (.not.associated(CS)) call MOM_error(FATAL,"MOM_vert_friction(visc): "// &
-         "Module must be initialized before it is used.")
 
   if (.not.CS%initialized) call MOM_error(FATAL,"MOM_vert_friction(remnant): "// &
          "Module must be initialized before it is used.")
@@ -2567,7 +2561,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   type(mech_forcing),      intent(in)    :: forces !< A structure with the driving mechanical forces
   type(vertvisc_type),     intent(in)    :: visc   !< Viscosities and bottom drag
   real,                    intent(in)    :: dt     !< Time increment [T ~> s]
-  type(vertvisc_CS),       pointer       :: CS     !< Vertical viscosity control structure
+  type(vertvisc_CS)                      :: CS     !< Vertical viscosity control structure
 
   ! Local variables
   real :: CFL              ! The local CFL number [nondim]
@@ -2731,7 +2725,7 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
   type(accel_diag_ptrs),   intent(inout) :: ADp    !< Acceleration diagnostic pointers
   type(directories),       intent(in)    :: dirs   !< Relevant directory paths
   integer, target,         intent(inout) :: ntrunc !< Number of velocity truncations
-  type(vertvisc_CS),       pointer       :: CS     !< Vertical viscosity control structure
+  type(vertvisc_CS),       intent(inout) :: CS     !< Vertical viscosity control structure
   logical, optional,       intent(in)    :: fpmix  !< Nonlocal momentum mixing
 
   ! Local variables
@@ -2747,13 +2741,6 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
   character(len=40)  :: mdl = "MOM_vert_friction" ! This module's name.
   character(len=40)  :: thickness_units
   real :: Kv_mks ! KVML in MKS [m2 s-1]
-
-  if (associated(CS)) then
-    call MOM_error(WARNING, "vertvisc_init called with an associated "// &
-                            "control structure.")
-    return
-  endif
-  allocate(CS)
 
   CS%initialized = .true.
 
