@@ -687,17 +687,20 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
   if (CS%direct_stress) then
+    !$omp target teams distribute parallel do collapse(2) &
+    !$omp   private(zDS, stress, k, h_a, hfr) &
+    !$omp   map(to: forces, forces%taux, G, G%mask2dCu)
     do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
       surface_stress(I,j) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%taux(I,j)
-      do k=1,nz
+      do k=1,nz ; if (zDS < Hmix) then
         h_a = 0.5 * (h(i,j,k) + h(i+1,j,k)) + h_neglect
         hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
         u(I,j,k) = u(I,j,k) + I_Hmix * hfr * stress
         if (associated(ADp%du_dt_str)) ADp%du_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
-        zDS = zDS + h_a ; if (zDS >= Hmix) exit
-      enddo
+        zDS = zDS + h_a
+      endif ; enddo
     endif ; enddo ; enddo
   else
     do j=G%jsc,G%jec ; do I=Isq,Ieq
