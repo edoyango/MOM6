@@ -687,10 +687,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
   if (CS%direct_stress) then
-    !$omp target teams distribute parallel do collapse(2) &
-    !$omp   private(zDS, stress, k, h_a, hfr) &
-    !$omp   map(to: forces, forces%taux, G, G%mask2dCu)
-    do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
+    !$omp target enter data map(to: forces, forces%taux, G, G%mask2dCu)
+    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq, G%mask2dCu(I,j) > 0.0)
       surface_stress(I,j) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%taux(I,j)
@@ -701,7 +699,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         if (associated(ADp%du_dt_str)) ADp%du_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
         zDS = zDS + h_a
       endif ; enddo
-    endif ; enddo ; enddo
+    enddo
+    !$omp target exit data map(delete: forces, forces%taux, G, G%mask2dCu)
   else
     do j=G%jsc,G%jec ; do I=Isq,Ieq
       surface_stress(I,j) = dt_Rho0 * (G%mask2dCu(I,j)*forces%taux(I,j))
@@ -734,6 +733,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! c1(k) is -c'_(k - 1)
   ! and the right-hand-side is destructively updated to be d'_k
 
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
+  !$omp   map(to: CS, CS%h_u, CS%a_u, visc, visc%Ray_u, G, G%mask2dCu)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -912,24 +914,29 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
   if (CS%direct_stress) then
-    do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
+    !$omp target enter data map(to: forces, forces%tauy, G, G%mask2dCv)
+    do concurrent (J=Jsq:Jeq, i=is:ie, G%mask2dCv(i,J) > 0.0)
       surface_stress(i,J) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%tauy(i,J)
-      do k=1,nz
+      do k=1,nz ; if (zDS < Hmix) then
         h_a = 0.5 * (h(i,J,k) + h(i,J+1,k)) + h_neglect
         hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
         v(i,J,k) = v(i,J,k) + I_Hmix * hfr * stress
         if (associated(ADp%dv_dt_str)) ADp%dv_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
-        zDS = zDS + h_a ; if (zDS >= Hmix) exit
-      enddo
-    endif ; enddo ; enddo
+        zDS = zDS + h_a
+      endif ; enddo
+    enddo
+    !$omp target exit data map(delete: forces, forces%tauy, G, G%mask2dCv)
   else
     do J=Jsq,Jeq ; do i=is,ie
       surface_stress(i,J) = dt_Rho0 * (G%mask2dCv(i,J) * forces%tauy(i,J))
     enddo ; enddo
   endif
 
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
+  !$omp   map(to: CS, CS%h_v, CS%a_v, visc, visc%Ray_v, G, G%mask2dCv)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
