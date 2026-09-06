@@ -1742,6 +1742,16 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   ! Now work on v-points.
 
+  !$omp target enter data map(to: CS, CS%a_v, CS%h_v)
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, &
+  !$omp           h_harm, h_arith, h_delta, dz_arith, zh, zcol, zcol_p1, &
+  !$omp           z_clear, z2, botfn, z2_wt, &
+  !$omp           hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl, h_ml, &
+  !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
+  !$omp           Ztop_min, I_HTbl, topfn) &
+  !$omp   map(to: G, G%mask2dCv, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_v, visc%bbl_thick_v, &
+  !$omp          visc%nkml_visc_v, forces, Ustar_2d, GV, US, tv)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -2037,6 +2047,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       enddo
     endif
   endif ; enddo ; enddo
+  !$omp target exit data map(from: CS%a_v, CS%h_v)
+  !$omp target exit data map(delete: CS)
 
   if (CS%debug) then
     call uvchksum("vertvisc_coef h_[uv]", CS%h_u, CS%h_v, G%HI, haloshift=0, &
