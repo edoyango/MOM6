@@ -439,6 +439,7 @@ end subroutine vertFPmix
 !! a_cpl_gl90 = nu / h = f^2 * alpha / h
 
 subroutine find_coupling_coef_gl90(a_cpl_gl90, hvel, i, j, z_i, G, GV, CS, VarMix, work_on_u)
+  !$omp declare target
   type(ocean_grid_type), intent(in) :: G        !< Grid structure.
   type(verticalGrid_type), intent(in) :: GV     !< Vertical grid structure.
   real, dimension(SZK_(GV)), intent(in) :: hvel !< Distance between interfaces
@@ -1421,6 +1422,20 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   ! First do u-points
 
+  !   NOTE: the private automatic arrays below (hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl)
+  ! live on the per-thread device stack, which ROCm defaults to only 1024 bytes.  Overflowing
+  ! it corrupts results silently and non-deterministically, with no fault or warning, so runs
+  ! of this region need LIBOMPTARGET_STACK_SIZE raised well above that default.
+  !$omp target enter data map(to: CS, CS%a_u, CS%h_u)
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, &
+  !$omp           h_harm, h_arith, h_delta, dz_arith, zh, zcol, zcol_p1, &
+  !$omp           z_clear, z2, botfn, z2_wt, &
+  !$omp           hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl, h_ml, &
+  !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
+  !$omp           Ztop_min, I_HTbl, topfn) &
+  !$omp   map(to: G, G%mask2dCu, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, &
+  !$omp          visc%nkml_visc_u, forces, Ustar_2d, GV, US, tv)
   do j=js,je ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1722,6 +1737,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       enddo
     endif
   endif ; enddo ; enddo
+  !$omp target exit data map(from: CS%a_u, CS%h_u)
+  !$omp target exit data map(delete: CS)
 
   ! Now work on v-points.
 
@@ -2060,6 +2077,7 @@ end subroutine vertvisc_coef
 !! layer thicknesses are used to calculate a_cpl near the bottom.
 subroutine find_coupling_coef(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bbl, z_i, h_ml, &
                               dt, G, GV, US, CS, visc, Ustar_2d, tv, work_on_u, OBC, shelf)
+  !$omp declare target
   type(ocean_grid_type),     intent(in)  :: G  !< Ocean grid structure
   type(verticalGrid_type),   intent(in)  :: GV !< Ocean vertical grid structure
   type(unit_scale_type),     intent(in)  :: US !< A dimensional unit scaling type
@@ -3073,7 +3091,6 @@ pure subroutine find_coupling_coef_k(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bb
     endif
   endif
 end subroutine find_coupling_coef_k
-
 
 !> Velocity components which exceed a threshold for physically reasonable values are truncated,
 !! and the running sum of the number of trunctionas within the non-symmetric memory computational
