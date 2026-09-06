@@ -679,9 +679,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%du_dt_str)) then
-    do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
+    do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
       ADp%du_dt_str(I,j,k) = 0.0
-    enddo ; enddo ; enddo
+    enddo
   endif
 
   !   One option is to have the wind stress applied as a body force
@@ -703,9 +703,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo
     !$omp target exit data map(delete: forces, forces%taux, G, G%mask2dCu)
   else
-    do j=G%jsc,G%jec ; do I=Isq,Ieq
+    !$omp target enter data map(to: forces, forces%taux, G, G%mask2dCu)
+    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
       surface_stress(I,j) = dt_Rho0 * (G%mask2dCu(I,j)*forces%taux(I,j))
-    enddo ; enddo
+    enddo
+    !$omp target exit data map(delete: forces, forces%taux, G, G%mask2dCu)
   endif
 
   ! perform forward elimination on the tridiagonal system
@@ -908,9 +910,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (associated(ADp%dv_dt_str)) then
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
+    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie)
       ADp%dv_dt_str(i,J,k) = 0.0
-    enddo ; enddo ; enddo
+    enddo
   endif
 
   !   One option is to have the wind stress applied as a body force
@@ -932,9 +934,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo
     !$omp target exit data map(delete: forces, forces%tauy, G, G%mask2dCv)
   else
-    do J=Jsq,Jeq ; do i=is,ie
+    !$omp target enter data map(to: forces, forces%tauy, G, G%mask2dCv)
+    do concurrent (J=Jsq:Jeq, i=is:ie)
       surface_stress(i,J) = dt_Rho0 * (G%mask2dCv(i,J) * forces%tauy(i,J))
-    enddo ; enddo
+    enddo
+    !$omp target exit data map(delete: forces, forces%tauy, G, G%mask2dCv)
   endif
 
   !$omp target teams distribute parallel do collapse(2) &
