@@ -1439,7 +1439,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
   !$omp   map(to: G, G%mask2dCu, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, &
-  !$omp          visc%nkml_visc_u, forces, Ustar_2d, GV, US, tv)
+  !$omp          visc%nkml_visc_u, visc%Kv_shear, forces, Ustar_2d, GV, US, tv)
   do j=js,je ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1755,7 +1755,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
   !$omp   map(to: G, G%mask2dCv, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_v, visc%bbl_thick_v, &
-  !$omp          visc%nkml_visc_v, forces, Ustar_2d, GV, US, tv)
+  !$omp          visc%nkml_visc_v, visc%Kv_shear, forces, Ustar_2d, GV, US, tv)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
