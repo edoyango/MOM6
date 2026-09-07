@@ -679,6 +679,19 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! the rest have to arrive holding what the caller passed.
   !$omp target enter data map(to: u)
 
+  !   The tendency diagnostics hanging off ADp are filled on the device from here to the
+  ! dv_dt_visc loop: du_dt_visc is seeded by the host loop just above, du_dt_visc_gl90 and
+  ! du_dt_str by the loops just below, and all of them are then carried through the solves.
+  ! They travel in both directions because the loops that seed them cover only the
+  ! computational domain, so the halo values the caller supplied have to arrive and survive.
+  !   Each is named whether or not it is associated.  Only the ones whose diagnostic is
+  ! registered ever are, and the guards in the loop bodies test exactly that; mapping an
+  ! unassociated pointer component transfers nothing and leaves associated() false on the
+  ! device, whereas leaving one unnamed gives it no defined association status at all.
+  !$omp target enter data map(to: ADp)
+  !$omp target enter data map(to: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
+  !$omp                          ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
+
   if (associated(ADp%du_dt_visc_gl90)) then
     do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
       ADp%du_dt_visc_gl90(I,j,k) = u(I,j,k)
@@ -1120,6 +1133,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   ! Ends here for the same reason u's does: the Stokes and FPmix loops below update v on the host.
   !$omp target exit data map(from: v)
+
+  ! The last device region that touches ADp is above; everything that reads these below, in
+  ! this routine and in its caller, runs on the host.
+  !$omp target exit data map(from: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
+  !$omp                            ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
+  !$omp target exit data map(release: ADp)
 
   ! When mixing down Eulerian current + Stokes drift subtract after calling solver
   if (DoStokesMixing) then
