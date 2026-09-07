@@ -701,9 +701,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! Mapping an unallocated allocatable, or an unassociated pointer, is not an error and does
   ! not put anything on the device: allocated() and associated() still read false inside the
   ! kernel, which is the same answer the guarded form produced.
-  !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, forces%tauy, &
-  !$omp                          CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, visc%Ray_u, &
-  !$omp                          visc%Ray_v, GV, US)
+  !   The derived types are mapped on their own and before anything else, so that every
+  ! component mapped below attaches to a parent that is already present and so that the solves
+  ! find the parents resident rather than mapping them for themselves.
+  !$omp target enter data map(to: G, GV, US, CS, visc, forces)
+  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, forces%taux, forces%tauy, &
+  !$omp                          CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc%Ray_u, visc%Ray_v)
   !   h is intent(in) and reaches the device only through the two direct-stress loops, so it is
   ! mapped under the same test that decides whether those loops run at all.  Left implicit it
   ! is mapped tofrom by each of them, uploading and downloading a full three-dimensional field
@@ -768,8 +771,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! and the right-hand-side is destructively updated to be d'_k
 
   !$omp target teams distribute parallel do collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, visc, G)
+  !$omp   private(b1, c1, d1, Ray, b_denom_1)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -982,8 +984,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   !$omp target teams distribute parallel do collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, visc, G)
+  !$omp   private(b1, c1, d1, Ray, b_denom_1)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
@@ -1154,9 +1155,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   if (CS%direct_stress) then
     !$omp target exit data map(release: h)
   endif
-  !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
-  !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, &
-  !$omp                              visc%Ray_u, visc%Ray_v, GV, US)
+  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, forces%taux, forces%tauy, &
+  !$omp                              CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc%Ray_u, visc%Ray_v)
+  !$omp target exit data map(release: G, GV, US, CS, visc, forces)
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
 
