@@ -50,6 +50,20 @@ public vertFPmix
 ! their mks counterparts with notation like "a velocity [Z T-1 ~> m s-1]".  If the units
 ! vary with the Boussinesq approximation, the Boussinesq variant is given first.
 
+!>  The largest number of layers that vertvisc_coef's offloaded work loops support.
+!!
+!!   Those loops give each thread a column's worth of scratch through the private clause.  Sized
+!! with SZK_(GV) those arrays are only bounded at run time, so they live on the device runtime's
+!! dynamic stack, which on ROCm 7.2.3 has fault bands that are neither monotonic in
+!! LIBOMPTARGET_STACK_SIZE nor a fixed property of the machine: they move with how much stack
+!! the kernel asks for.  benchmark_ALE, at GV%ke = 75, sits in one at the 65536 these runs use
+!! and dies with "memory access fault ... Page not present" at an address in no mapped buffer.
+!!   A compile-time bound puts them in the kernel's private segment instead, which ROCr sizes
+!! from the kernel descriptor, and the dynamic stack stops mattering: the same case is then
+!! bitwise identical at every stack size from 8192 to 131072.
+!!   Raise this and rebuild for a configuration with more layers; vertvisc_init checks it.
+integer, parameter :: NK_MAX_DEV = 128
+
 !> The control structure with parameters and memory for the MOM_vert_friction module
 type, public :: vertvisc_CS ; private
   logical :: initialized = .false. !< True if this control structure has been initialized.
@@ -1407,7 +1421,12 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   ! Local variables
 
-  real, dimension(SZK_(GV)) :: &
+  !   The ten column work arrays below are given to each thread through the private clause of
+  ! the two offloaded work loops, so they are dimensioned with the NK_MAX_DEV parameter rather
+  ! than SZK_(GV), which would leave them on the device runtime's dynamic stack and expose them
+  ! to its fault bands.  Only the leading GV%ke (or GV%ke+1) elements are ever used, and the
+  ! subroutines they are passed to still declare their dummies with SZK_(GV).
+  real, dimension(NK_MAX_DEV) :: &
     hvel, &     ! hvel is the thickness used at a velocity grid point [H ~> m or kg m-2].
     dz_harm, &  ! Harmonic mean of the vertical distances around a velocity grid point,
                 ! given by 2*(h+ * h-)/(h+ + h-) [Z ~> m].
@@ -1420,7 +1439,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     h_arith, &  ! The arithmetic mean thickness [H ~> m or kg m-2].
     h_delta, &  ! The lateral difference of thickness [H ~> m or kg m-2].
     dz_arith    ! The arithmetic mean of the vertical distances around a velocity grid point [Z ~> m]
-  real, dimension(SZK_(GV)+1) :: &
+  real, dimension(NK_MAX_DEV+1) :: &
     z_i, &      ! An estimate of each interface's height above the bottom,
                 ! normalized by the bottom boundary layer thickness [nondim]
     z_i_gl90, & ! An estimate of each interface's height above the bottom,
@@ -3498,6 +3517,10 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
 
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; nz = GV%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
+
+  if (nz > NK_MAX_DEV) call MOM_error(FATAL, "MOM_vert_friction(vertvisc_init): "//&
+         "This model has more layers than the column work arrays in vertvisc_coef hold. "//&
+         "Raise NK_MAX_DEV in MOM_vert_friction.F90 to at least NK and rebuild.")
 
   CS%diag => diag ; CS%ntrunc => ntrunc ; ntrunc = 0
 
