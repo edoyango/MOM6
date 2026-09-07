@@ -1497,7 +1497,9 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   !   The two work loops below read the same grid, forcing and viscosity state and differ only
   ! in the staggering of what they write, so all of it is mapped once for the routine.  Only
-  ! CS%a_[uv] and CS%h_[uv] are written on the device; everything else is read-only here.
+  ! CS%a_[uv], CS%h_[uv] and CS%a_[uv]_gl90 are written on the device; everything else is
+  ! read-only here.  The GL90 coupling coefficients are allocated whether or not that scheme
+  ! runs and are read back for the Kv_gl90_[uv] diagnostics, so they travel in both directions.
   !   The derived types are mapped on their own and before anything else, so that every
   ! component mapped below attaches to a parent that is already present and so that both loops
   ! find the parents resident rather than mapping them, which is what stops amdflang from
@@ -1513,7 +1515,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! twice.
   !$omp target enter data map(to: G, GV, US, CS, visc, forces, tv)
   !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
-  !$omp                          CS%a_u, CS%h_u, CS%a_v, CS%h_v, &
+  !$omp                          CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90, &
   !$omp                          visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
   !$omp                          visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz)
@@ -2139,7 +2141,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   endif ; enddo ; enddo
   !   Copy the coupling coefficients and thicknesses back before the checksums and diagnostics
   ! below read them on the host, and only then discard the rest of the mapping.
-  !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v)
+  !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90)
   !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                              visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
