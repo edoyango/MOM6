@@ -684,6 +684,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo
   endif
 
+  !   surface_stress is a scratch array that is filled and then consumed entirely on the device,
+  ! first at u-points and then at v-points, so it is given device storage for the span that
+  ! covers both and never travels in either direction.  map(alloc:) leaves the columns under
+  ! land undefined, which is safe because the loops that fill it and the solves that read it
+  ! are gated on the same G%mask2dC[uv] test.
+  !$omp target enter data map(alloc: surface_stress)
+
   !   One option is to have the wind stress applied as a body force
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
@@ -991,6 +998,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       endif
     enddo
   endif ; enddo ; enddo
+
+  ! Nothing on the host reads surface_stress, so it is discarded without a copy back.
+  !$omp target exit data map(delete: surface_stress)
 
   ! compute vertical velocity tendency that arises from GL90 viscosity;
   ! follow tridiagonal solve method as above; to avoid corrupting v,
