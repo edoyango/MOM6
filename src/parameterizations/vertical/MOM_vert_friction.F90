@@ -1485,11 +1485,15 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! present by then, so they cost a reference count rather than a transfer, but dropping them
   ! makes amdflang give every component reference in the body its own implicit tofrom mapping,
   ! which silently copies arrays such as CS%a_[uv]_gl90 back on every call.
+  !   u, v, h and dz are intent(in) here, so they are mapped to the device and never copied
+  ! back.  Left implicit they would each be mapped tofrom by the loop that reads them, which
+  ! downloads four arrays this routine cannot have modified, and uploads h and dz twice
+  ! because both loops read them.
   !$omp target enter data map(to: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                          CS, CS%a_u, CS%h_u, CS%a_v, CS%h_v, &
   !$omp                          visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                          forces, GV, US, tv)
+  !$omp                          forces, GV, US, tv, u, v, h, dz)
   ! Kv_shear is only associated when a shear mixing scheme is running, and find_coupling_coef_k
   ! tests it before use, so it is mapped under the same test.
   if (associated(visc%Kv_shear)) then
@@ -2126,7 +2130,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp target exit data map(delete: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                              CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                              forces, GV, US, tv)
+  !$omp                              forces, GV, US, tv, u, v, h, dz)
 
   if (CS%debug) then
     call uvchksum("vertvisc_coef h_[uv]", CS%h_u, CS%h_v, G%HI, haloshift=0, &
