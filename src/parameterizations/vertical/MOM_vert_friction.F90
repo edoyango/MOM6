@@ -3227,7 +3227,15 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   ! is the else branch of a [uv]_trunc_file test whose other branch updates the same velocity
   ! on the host, so a routine-scope mapping of u or v would copy a stale device copy back over
   ! the host's work whenever only one of the two files is set.
-  !$omp target enter data map(to: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
+  !   The pair is skipped entirely when both files are set, because then neither kernel runs
+  ! and none of this would be read.  That is not a hypothetical: ocean_only/benchmark sets
+  ! both U_TRUNC_FILE and V_TRUNC_FILE, so it takes the reporting path throughout and would
+  ! otherwise ship two 3-D arrays per call for kernels it never launches.  The two
+  ! configurations cover disjoint halves of this routine -- benchmark reaches only the host
+  ! reporting path, double_gyre only the two kernels -- so neither alone validates it.
+  if ((len_trim(CS%u_trunc_file) == 0) .or. (len_trim(CS%v_trunc_file) == 0)) then
+    !$omp target enter data map(to: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
+  endif
 
   if (len_trim(CS%u_trunc_file) > 0) then
     do_any_write = .false.
@@ -3366,8 +3374,12 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
 
-  ! Nothing mapped here is written on the device, so there is nothing to copy back.
-  !$omp target exit data map(release: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
+  ! Nothing mapped here is written on the device, so there is nothing to copy back.  The test
+  ! must match the one on the enter data above exactly.
+  if ((len_trim(CS%u_trunc_file) == 0) .or. (len_trim(CS%v_trunc_file) == 0)) then
+    !$omp target exit data map(release: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, &
+    !$omp                               CS%h_u, CS%h_v)
+  endif
 
 end subroutine vertvisc_limit_vel
 
