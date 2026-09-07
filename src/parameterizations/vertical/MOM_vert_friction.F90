@@ -698,6 +698,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   if (allocated(visc%Ray_v)) then
     !$omp target enter data map(to: visc%Ray_v)
   endif
+  !   h is intent(in) and reaches the device only through the two direct-stress loops, so it is
+  ! mapped under the same test that decides whether those loops run at all.  Left implicit it
+  ! is mapped tofrom by each of them, uploading and downloading a full three-dimensional field
+  ! twice per call in order to average a pair of layer thicknesses.
+  if (CS%direct_stress) then
+    !$omp target enter data map(to: h)
+  endif
 
   !   surface_stress is a scratch array that is filled and then consumed entirely on the device,
   ! first at u-points and then at v-points, so it is given device storage for the span that
@@ -1125,6 +1132,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
   if (allocated(visc%Ray_v)) then
     !$omp target exit data map(release: visc%Ray_v)
+  endif
+  if (CS%direct_stress) then
+    !$omp target exit data map(release: h)
   endif
   !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
   !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
