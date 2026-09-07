@@ -3222,7 +3222,8 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
     !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(to: G, G%dy_Cu, G%areaT, G%IareaT, CS, CS%h_u)
+    !$omp   map(to: G, G%dy_Cu, G%areaT, G%IareaT, CS, CS%h_u) &
+    !$omp   map(tofrom: u)
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) then ; u(I,j,k) = 0.0
       elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
@@ -3291,7 +3292,8 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
     !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(to: G, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_v)
+    !$omp   map(to: G, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_v) &
+    !$omp   map(tofrom: v)
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) then ; v(i,J,k) = 0.0
       elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
