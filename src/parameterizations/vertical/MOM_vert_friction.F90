@@ -1217,12 +1217,25 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   if (.not.CS%initialized) call MOM_error(FATAL,"MOM_vert_friction(remnant): "// &
          "Module must be initialized before it is used.")
 
+  !   The two solves below read the same grid and viscosity state and each writes only its own
+  ! visc_rem array, so everything is mapped once for the routine instead of once per solve.
+  ! visc_rem_[uv] are mapped in as well as out because only the columns where G%mask2dC[uv] > 0
+  ! are written and the rest keep the values they arrived with.
+  !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, &
+  !$omp                          visc, visc_rem_u, visc_rem_v)
+  ! Ray_[uv] are only allocated when Rayleigh drag is in use, and mapping a component that is
+  ! not allocated is not meaningful, so each is mapped under the same test the kernels apply.
+  if (allocated(visc%Ray_u)) then
+    !$omp target enter data map(to: visc%Ray_u)
+  endif
+  if (allocated(visc%Ray_v)) then
+    !$omp target enter data map(to: visc%Ray_v)
+  endif
+
   ! Find the zonal viscous remnant using a modification of a standard tridagonal solver.
 
   !$omp target teams distribute parallel do collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_u, CS%a_u, visc, visc%Ray_u, G, G%mask2dCu) &
-  !$omp   map(tofrom: visc_rem_u)
+  !$omp   private(b1, c1, d1, Ray, b_denom_1)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -1253,9 +1266,7 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   ! Now find the meridional viscous remnant using the robust tridiagonal solver.
 
   !$omp target teams distribute parallel do collapse(2) &
-  !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_v, CS%a_v, visc, visc%Ray_v, G, G%mask2dCv) &
-  !$omp   map(tofrom: visc_rem_v)
+  !$omp   private(b1, c1, d1, Ray, b_denom_1)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
@@ -1282,6 +1293,19 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
       visc_rem_v(i,J,k) = visc_rem_v(i,J,k) + c1(k+1) * visc_rem_v(i,J,k+1)
     enddo
   endif ; enddo ; enddo
+
+  !   Copy the results back before anything on the host reads them, and only then discard the
+  ! rest of the mapping; a map(delete:) that reached visc_rem_[uv] first would strip the
+  ! association and lose the copy.
+  !$omp target exit data map(from: visc_rem_u, visc_rem_v)
+  if (allocated(visc%Ray_u)) then
+    !$omp target exit data map(delete: visc%Ray_u)
+  endif
+  if (allocated(visc%Ray_v)) then
+    !$omp target exit data map(delete: visc%Ray_v)
+  endif
+  !$omp target exit data map(delete: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, &
+  !$omp                              CS%a_v, visc)
 
   if (CS%debug) then
     call uvchksum("visc_rem_[uv]", visc_rem_u, visc_rem_v, G%HI, haloshift=0, &
