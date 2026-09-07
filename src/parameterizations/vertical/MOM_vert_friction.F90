@@ -684,6 +684,20 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo
   endif
 
+  !   The grid, forcing and coupling state below is read by every device region between here
+  ! and the tauy_bot loop, and written by none of them, so it is mapped once for that span
+  ! instead of once per region.  The span deliberately ends before the vertvisc_limit_vel call:
+  ! that routine's own exit data uses map(delete:), which zeroes a reference count rather than
+  ! decrementing it, so it would tear this mapping down from under us if it ran inside it.
+  !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, forces%tauy, &
+  !$omp                          CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
+  if (allocated(visc%Ray_u)) then
+    !$omp target enter data map(to: visc%Ray_u)
+  endif
+  if (allocated(visc%Ray_v)) then
+    !$omp target enter data map(to: visc%Ray_v)
+  endif
+
   !   surface_stress is a scratch array that is filled and then consumed entirely on the device,
   ! first at u-points and then at v-points, so it is given device storage for the span that
   ! covers both and never travels in either direction.  map(alloc:) leaves the columns under
@@ -695,7 +709,6 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
   if (CS%direct_stress) then
-    !$omp target enter data map(to: forces, forces%taux, G, G%mask2dCu)
     do concurrent (j=G%jsc:G%jec, I=Isq:Ieq, G%mask2dCu(I,j) > 0.0)
       surface_stress(I,j) = 0.0
       zDS = 0.0
@@ -708,13 +721,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         zDS = zDS + h_a
       endif ; enddo
     enddo
-    !$omp target exit data map(delete: forces, forces%taux, G, G%mask2dCu)
   else
-    !$omp target enter data map(to: forces, forces%taux, G, G%mask2dCu)
     do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
       surface_stress(I,j) = dt_Rho0 * (G%mask2dCu(I,j)*forces%taux(I,j))
     enddo
-    !$omp target exit data map(delete: forces, forces%taux, G, G%mask2dCu)
   endif
 
   ! perform forward elimination on the tridiagonal system
@@ -745,7 +755,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_u, CS%a_u, visc, visc%Ray_u, G, G%mask2dCu)
+  !$omp   map(to: CS, visc, G)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -926,7 +936,6 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
   if (CS%direct_stress) then
-    !$omp target enter data map(to: forces, forces%tauy, G, G%mask2dCv)
     do concurrent (J=Jsq:Jeq, i=is:ie, G%mask2dCv(i,J) > 0.0)
       surface_stress(i,J) = 0.0
       zDS = 0.0
@@ -939,18 +948,15 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         zDS = zDS + h_a
       endif ; enddo
     enddo
-    !$omp target exit data map(delete: forces, forces%tauy, G, G%mask2dCv)
   else
-    !$omp target enter data map(to: forces, forces%tauy, G, G%mask2dCv)
     do concurrent (J=Jsq:Jeq, i=is:ie)
       surface_stress(i,J) = dt_Rho0 * (G%mask2dCv(i,J) * forces%tauy(i,J))
     enddo
-    !$omp target exit data map(delete: forces, forces%tauy, G, G%mask2dCv)
   endif
 
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_v, CS%a_v, visc, visc%Ray_v, G, G%mask2dCv)
+  !$omp   map(to: CS, visc, G)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
@@ -1111,6 +1117,18 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo
     call post_data(CS%id_GLwork, KE_term, CS%diag)
   endif
+
+  ! None of this is written on the device here, so it is discarded without a copy back.  This
+  ! has to happen before vertvisc_limit_vel, whose own map(delete:) would otherwise remove
+  ! these entries outright rather than releasing one reference to them.
+  if (allocated(visc%Ray_u)) then
+    !$omp target exit data map(delete: visc%Ray_u)
+  endif
+  if (allocated(visc%Ray_v)) then
+    !$omp target exit data map(delete: visc%Ray_v)
+  endif
+  !$omp target exit data map(delete: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
+  !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
 
