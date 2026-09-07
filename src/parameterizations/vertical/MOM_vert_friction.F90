@@ -672,6 +672,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     enddo ; enddo ; enddo
   endif
 
+  !   Every device region from here to the taux_bot loop reads or writes u, and left implicit
+  ! each of them maps it tofrom, so u makes six round trips per call.  Keep it resident for
+  ! that span instead.  The pair is to on the way in and from on the way out rather than a
+  ! single tofrom, because the solve only writes the columns where G%mask2dCu is positive and
+  ! the rest have to arrive holding what the caller passed.
+  !$omp target enter data map(to: u)
+
   if (associated(ADp%du_dt_visc_gl90)) then
     do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
       ADp%du_dt_visc_gl90(I,j,k) = u(I,j,k)
@@ -875,6 +882,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (allocated(visc%taux_shelf)) then
+    !   This is the one host loop inside u's resident span that reads it, so it needs the
+    ! solve's result brought back first.  The update sits inside the guard, so it costs
+    ! nothing in a configuration without an ice shelf.
+    !$omp target update from(u)
     do j=G%jsc,G%jec ; do I=Isq,Ieq
       visc%taux_shelf(I,j) = -GV%H_to_RZ * CS%a1_shelf_u(I,j) * u(I,j,1) ! - u_shelf?
     enddo ; enddo
@@ -893,6 +904,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       enddo
     endif
   endif
+
+  !   End u's span here rather than at the routine's end: nothing below reads it on the device,
+  ! and the Stokes and FPmix loops that follow update it on the host, so a copy-back any later
+  ! would put the pre-Stokes device values back over their work.
+  !$omp target exit data map(from: u)
 
   ! When mixing down Eulerian current + Stokes drift subtract after calling solver
   if (DoStokesMixing) then
