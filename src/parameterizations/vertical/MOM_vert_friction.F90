@@ -697,14 +697,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! that is now a matter of there being nothing to gain from crossing it rather than a
   ! constraint: every exit data in this file releases rather than deletes, so a callee's
   ! teardown decrements its own reference and leaves a caller's mapping standing.
+  !   visc%Ray_[uv] are named unconditionally even though they only exist under Rayleigh drag.
+  ! Mapping an unallocated allocatable, or an unassociated pointer, is not an error and does
+  ! not put anything on the device: allocated() and associated() still read false inside the
+  ! kernel, which is the same answer the guarded form produced.
   !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, forces%tauy, &
-  !$omp                          CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
-  if (allocated(visc%Ray_u)) then
-    !$omp target enter data map(to: visc%Ray_u)
-  endif
-  if (allocated(visc%Ray_v)) then
-    !$omp target enter data map(to: visc%Ray_v)
-  endif
+  !$omp                          CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, visc%Ray_u, &
+  !$omp                          visc%Ray_v, GV, US)
   !   h is intent(in) and reaches the device only through the two direct-stress loops, so it is
   ! mapped under the same test that decides whether those loops run at all.  Left implicit it
   ! is mapped tofrom by each of them, uploading and downloading a full three-dimensional field
@@ -1152,17 +1151,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   ! None of this is written on the device here, so it is released without a copy back.
-  if (allocated(visc%Ray_u)) then
-    !$omp target exit data map(release: visc%Ray_u)
-  endif
-  if (allocated(visc%Ray_v)) then
-    !$omp target exit data map(release: visc%Ray_v)
-  endif
   if (CS%direct_stress) then
     !$omp target exit data map(release: h)
   endif
   !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
-  !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
+  !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, &
+  !$omp                              visc%Ray_u, visc%Ray_v, GV, US)
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
 
@@ -1283,16 +1277,10 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   ! visc_rem array, so everything is mapped once for the routine instead of once per solve.
   ! visc_rem_[uv] are mapped in as well as out because only the columns where G%mask2dC[uv] > 0
   ! are written and the rest keep the values they arrived with.
+  ! Ray_[uv] only exist under Rayleigh drag, and are named regardless: mapping an unallocated
+  ! allocatable transfers nothing and still leaves allocated() false inside the kernel.
   !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, &
-  !$omp                          visc, visc_rem_u, visc_rem_v)
-  ! Ray_[uv] are only allocated when Rayleigh drag is in use, and mapping a component that is
-  ! not allocated is not meaningful, so each is mapped under the same test the kernels apply.
-  if (allocated(visc%Ray_u)) then
-    !$omp target enter data map(to: visc%Ray_u)
-  endif
-  if (allocated(visc%Ray_v)) then
-    !$omp target enter data map(to: visc%Ray_v)
-  endif
+  !$omp                          visc, visc%Ray_u, visc%Ray_v, visc_rem_u, visc_rem_v)
 
   ! Find the zonal viscous remnant using a modification of a standard tridagonal solver.
 
@@ -1360,14 +1348,8 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   ! rest of the mapping.  What matters is that no exit data below names visc_rem_[uv] or
   ! storage covering them, not the order of the directives as such.
   !$omp target exit data map(from: visc_rem_u, visc_rem_v)
-  if (allocated(visc%Ray_u)) then
-    !$omp target exit data map(release: visc%Ray_u)
-  endif
-  if (allocated(visc%Ray_v)) then
-    !$omp target exit data map(release: visc%Ray_v)
-  endif
   !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, &
-  !$omp                              CS%a_v, visc)
+  !$omp                              CS%a_v, visc, visc%Ray_u, visc%Ray_v)
 
   if (CS%debug) then
     call uvchksum("visc_rem_[uv]", visc_rem_u, visc_rem_v, G%HI, haloshift=0, &
@@ -1523,16 +1505,15 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! back.  Left implicit they would each be mapped tofrom by the loop that reads them, which
   ! downloads four arrays this routine cannot have modified, and uploads h and dz twice
   ! because both loops read them.
+  !   visc%Kv_shear is only associated when a shear mixing scheme is running, and is named here
+  ! either way.  Mapping an unassociated pointer component transfers nothing and leaves
+  ! associated() false inside the kernel, which is what find_coupling_coef_k tests, so the
+  ! result is the same as not naming it and the code does not have to say so twice.
   !$omp target enter data map(to: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                          CS, CS%a_u, CS%h_u, CS%a_v, CS%h_v, &
   !$omp                          visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                          forces, GV, US, tv, u, v, h, dz)
-  ! Kv_shear is only associated when a shear mixing scheme is running, and find_coupling_coef_k
-  ! tests it before use, so it is mapped under the same test.
-  if (associated(visc%Kv_shear)) then
-    !$omp target enter data map(to: visc%Kv_shear)
-  endif
+  !$omp                          visc%Kv_shear, forces, GV, US, tv, u, v, h, dz)
 
   ! First do u-points
 
@@ -2158,10 +2139,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !   Copy the coupling coefficients and thicknesses back before the checksums and diagnostics
   ! below read them on the host, and only then discard the rest of the mapping.
   !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v)
-  if (associated(visc%Kv_shear)) then
-    !$omp target exit data map(release: visc%Kv_shear)
-  endif
   !$omp target exit data map(release: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp                              visc%Kv_shear, &
   !$omp                              CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
   !$omp                              forces, GV, US, tv, u, v, h, dz)
