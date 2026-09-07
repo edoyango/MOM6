@@ -3170,6 +3170,14 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
   H_report = 3.0 * GV%Angstrom_H
 
+  !   The grid metrics and layer thicknesses below are read but never written by the truncation
+  ! kernels, and both kernels want most of them, so they are mapped once for the routine.  The
+  ! velocities are deliberately left to the map clauses on the kernels themselves: each kernel
+  ! is the else branch of a [uv]_trunc_file test whose other branch updates the same velocity
+  ! on the host, so a routine-scope mapping of u or v would copy a stale device copy back over
+  ! the host's work whenever only one of the two files is set.
+  !$omp target enter data map(to: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
+
   if (len_trim(CS%u_trunc_file) > 0) then
     do_any_write = .false.
     trunc_any = .false.
@@ -3222,7 +3230,6 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
     !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(to: G, G%dy_Cu, G%areaT, G%IareaT, CS, CS%h_u) &
     !$omp   map(tofrom: u)
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) then ; u(I,j,k) = 0.0
@@ -3292,7 +3299,6 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
     !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(to: G, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_v) &
     !$omp   map(tofrom: v)
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) then ; v(i,J,k) = 0.0
@@ -3308,6 +3314,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     enddo ; enddo ; enddo
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
+
+  ! Nothing mapped here is written on the device, so there is nothing to copy back.
+  !$omp target exit data map(delete: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
 
 end subroutine vertvisc_limit_vel
 
