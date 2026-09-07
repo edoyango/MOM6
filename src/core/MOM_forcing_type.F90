@@ -1290,7 +1290,7 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
         U_star(i,j) = GV%Z_to_H * forces%ustar(i,j)
       enddo
     endif
-    !$omp target exit data map(delete: forces, forces%ustar)
+    !$omp target exit data map(release: forces, forces%ustar)
   elseif (allocated(tv%SpV_avg)) then
     if (tv%valid_SpV_halo < 0) call MOM_error(FATAL, &
         "find_ustar_mech called in non-Boussinesq mode with invalid values of SpV_avg.")
@@ -1306,7 +1306,7 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
         U_star(i,j) = GV%RZ_to_H * sqrt(forces%tau_mag(i,j) / tv%SpV_avg(i,j,1))
       enddo
     endif
-    !$omp target exit data map(delete: forces, forces%tau_mag, tv, tv%SpV_avg)
+    !$omp target exit data map(release: forces, forces%tau_mag, tv, tv%SpV_avg)
   else
     I_rho = GV%Z_to_H * GV%RZ_to_H
     if (Z_T_units) I_rho = GV%H_to_Z * GV%RZ_to_H ! == 1.0 / GV%Rho0
@@ -1314,7 +1314,7 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
     do concurrent (j=js:je, i=is:ie)
       U_star(i,j) = sqrt(forces%tau_mag(i,j) * I_rho)
     enddo
-    !$omp target exit data map(delete: forces, forces%tau_mag)
+    !$omp target exit data map(release: forces, forces%tau_mag)
   endif
 
 end subroutine find_ustar_mech_forcing

@@ -686,9 +686,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
 
   !   The grid, forcing and coupling state below is read by every device region between here
   ! and the tauy_bot loop, and written by none of them, so it is mapped once for that span
-  ! instead of once per region.  The span deliberately ends before the vertvisc_limit_vel call:
-  ! that routine's own exit data uses map(delete:), which zeroes a reference count rather than
-  ! decrementing it, so it would tear this mapping down from under us if it ran inside it.
+  ! instead of once per region.  The span still ends before the vertvisc_limit_vel call, but
+  ! that is now a matter of there being nothing to gain from crossing it rather than a
+  ! constraint: every exit data in this file releases rather than deletes, so a callee's
+  ! teardown decrements its own reference and leaves a caller's mapping standing.
   !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, forces%tauy, &
   !$omp                          CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
   if (allocated(visc%Ray_u)) then
@@ -1006,7 +1007,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif ; enddo ; enddo
 
   ! Nothing on the host reads surface_stress, so it is discarded without a copy back.
-  !$omp target exit data map(delete: surface_stress)
+  !$omp target exit data map(release: surface_stress)
 
   ! compute vertical velocity tendency that arises from GL90 viscosity;
   ! follow tridiagonal solve method as above; to avoid corrupting v,
@@ -1118,16 +1119,14 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     call post_data(CS%id_GLwork, KE_term, CS%diag)
   endif
 
-  ! None of this is written on the device here, so it is discarded without a copy back.  This
-  ! has to happen before vertvisc_limit_vel, whose own map(delete:) would otherwise remove
-  ! these entries outright rather than releasing one reference to them.
+  ! None of this is written on the device here, so it is released without a copy back.
   if (allocated(visc%Ray_u)) then
-    !$omp target exit data map(delete: visc%Ray_u)
+    !$omp target exit data map(release: visc%Ray_u)
   endif
   if (allocated(visc%Ray_v)) then
-    !$omp target exit data map(delete: visc%Ray_v)
+    !$omp target exit data map(release: visc%Ray_v)
   endif
-  !$omp target exit data map(delete: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
+  !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, forces, forces%taux, &
   !$omp                              forces%tauy, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc, GV, US)
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
@@ -1322,17 +1321,17 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     enddo
   endif ; enddo ; enddo
 
-  !   Copy the results back before anything on the host reads them, and only then discard the
-  ! rest of the mapping; a map(delete:) that reached visc_rem_[uv] first would strip the
-  ! association and lose the copy.
+  !   Copy the results back before anything on the host reads them, and only then release the
+  ! rest of the mapping.  What matters is that no exit data below names visc_rem_[uv] or
+  ! storage covering them, not the order of the directives as such.
   !$omp target exit data map(from: visc_rem_u, visc_rem_v)
   if (allocated(visc%Ray_u)) then
-    !$omp target exit data map(delete: visc%Ray_u)
+    !$omp target exit data map(release: visc%Ray_u)
   endif
   if (allocated(visc%Ray_v)) then
-    !$omp target exit data map(delete: visc%Ray_v)
+    !$omp target exit data map(release: visc%Ray_v)
   endif
-  !$omp target exit data map(delete: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, &
+  !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, &
   !$omp                              CS%a_v, visc)
 
   if (CS%debug) then
@@ -2125,9 +2124,9 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! below read them on the host, and only then discard the rest of the mapping.
   !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v)
   if (associated(visc%Kv_shear)) then
-    !$omp target exit data map(delete: visc%Kv_shear)
+    !$omp target exit data map(release: visc%Kv_shear)
   endif
-  !$omp target exit data map(delete: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp target exit data map(release: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                              CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
   !$omp                              forces, GV, US, tv, u, v, h, dz)
@@ -3368,7 +3367,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
   endif
 
   ! Nothing mapped here is written on the device, so there is nothing to copy back.
-  !$omp target exit data map(delete: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
+  !$omp target exit data map(release: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
 
 end subroutine vertvisc_limit_vel
 
