@@ -1450,6 +1450,10 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   call find_ustar(forces, tv, Ustar_2d, G, GV, US, halo=1)
 
+  !   Both work loops below read Ustar_2d and neither writes it, so it is mapped once here
+  ! rather than copied in again for the v-point loop.
+  !$omp target enter data map(to: Ustar_2d)
+
   ! First do u-points
 
   !   NOTE: the private automatic arrays below (hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl)
@@ -1465,7 +1469,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
   !$omp   map(to: G, G%mask2dCu, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, &
-  !$omp          visc%nkml_visc_u, visc%Kv_shear, forces, Ustar_2d, GV, US, tv)
+  !$omp          visc%nkml_visc_u, visc%Kv_shear, forces, GV, US, tv)
   do j=js,je ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1781,7 +1785,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
   !$omp   map(to: G, G%mask2dCv, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_v, visc%bbl_thick_v, &
-  !$omp          visc%nkml_visc_v, visc%Kv_shear, forces, Ustar_2d, GV, US, tv)
+  !$omp          visc%nkml_visc_v, visc%Kv_shear, forces, GV, US, tv)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -2079,6 +2083,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   endif ; enddo ; enddo
   !$omp target exit data map(from: CS%a_v, CS%h_v)
   !$omp target exit data map(delete: CS)
+  !$omp target exit data map(delete: Ustar_2d)
 
   if (CS%debug) then
     call uvchksum("vertvisc_coef h_[uv]", CS%h_u, CS%h_v, G%HI, haloshift=0, &
