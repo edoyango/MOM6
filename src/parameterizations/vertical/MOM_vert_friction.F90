@@ -1450,9 +1450,23 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
   call find_ustar(forces, tv, Ustar_2d, G, GV, US, halo=1)
 
-  !   Both work loops below read Ustar_2d and neither writes it, so it is mapped once here
-  ! rather than copied in again for the v-point loop.
-  !$omp target enter data map(to: Ustar_2d)
+  !   The two work loops below read the same grid, forcing and viscosity state and differ only
+  ! in the staggering of what they write, so all of it is mapped once for the routine.  Only
+  ! CS%a_[uv] and CS%h_[uv] are written on the device; everything else is read-only here.
+  !   The loops still name the parent derived types in a map clause of their own.  Those are
+  ! present by then, so they cost a reference count rather than a transfer, but dropping them
+  ! makes amdflang give every component reference in the body its own implicit tofrom mapping,
+  ! which silently copies arrays such as CS%a_[uv]_gl90 back on every call.
+  !$omp target enter data map(to: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp                          CS, CS%a_u, CS%h_u, CS%a_v, CS%h_v, &
+  !$omp                          visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
+  !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
+  !$omp                          forces, GV, US, tv)
+  ! Kv_shear is only associated when a shear mixing scheme is running, and find_coupling_coef_k
+  ! tests it before use, so it is mapped under the same test.
+  if (associated(visc%Kv_shear)) then
+    !$omp target enter data map(to: visc%Kv_shear)
+  endif
 
   ! First do u-points
 
@@ -1460,7 +1474,6 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! live on the per-thread device stack, which ROCm defaults to only 1024 bytes.  Overflowing
   ! it corrupts results silently and non-deterministically, with no fault or warning, so runs
   ! of this region need LIBOMPTARGET_STACK_SIZE raised well above that default.
-  !$omp target enter data map(to: CS, CS%a_u, CS%h_u)
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, &
   !$omp           h_harm, h_arith, h_delta, dz_arith, zh, zcol, zcol_p1, &
@@ -1468,8 +1481,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl, h_ml, &
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
-  !$omp   map(to: G, G%mask2dCu, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, &
-  !$omp          visc%nkml_visc_u, visc%Kv_shear, forces, GV, US, tv)
+  !$omp   map(to: G, CS, visc, forces, GV, US, tv)
   do j=js,je ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1771,12 +1783,9 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       enddo
     endif
   endif ; enddo ; enddo
-  !$omp target exit data map(from: CS%a_u, CS%h_u)
-  !$omp target exit data map(delete: CS)
 
   ! Now work on v-points.
 
-  !$omp target enter data map(to: CS, CS%a_v, CS%h_v)
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, &
   !$omp           h_harm, h_arith, h_delta, dz_arith, zh, zcol, zcol_p1, &
@@ -1784,8 +1793,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp           hvel, dz_harm, dz_vel, z_i, z_i_gl90, a_cpl, h_ml, &
   !$omp           a_cpl_gl90, a_shelf, hvel_shelf, dz_vel_shelf, do_any_shelf, &
   !$omp           Ztop_min, I_HTbl, topfn) &
-  !$omp   map(to: G, G%mask2dCv, G%bathyT, G%CoriolisBu, CS, visc, visc%Kv_bbl_v, visc%bbl_thick_v, &
-  !$omp          visc%nkml_visc_v, visc%Kv_shear, forces, GV, US, tv)
+  !$omp   map(to: G, CS, visc, forces, GV, US, tv)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -2081,9 +2089,16 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       enddo
     endif
   endif ; enddo ; enddo
-  !$omp target exit data map(from: CS%a_v, CS%h_v)
-  !$omp target exit data map(delete: CS)
-  !$omp target exit data map(delete: Ustar_2d)
+  !   Copy the coupling coefficients and thicknesses back before the checksums and diagnostics
+  ! below read them on the host, and only then discard the rest of the mapping.
+  !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v)
+  if (associated(visc%Kv_shear)) then
+    !$omp target exit data map(delete: visc%Kv_shear)
+  endif
+  !$omp target exit data map(delete: Ustar_2d, G, G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp                              CS, visc, visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
+  !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
+  !$omp                              forces, GV, US, tv)
 
   if (CS%debug) then
     call uvchksum("vertvisc_coef h_[uv]", CS%h_u, CS%h_v, G%HI, haloshift=0, &
