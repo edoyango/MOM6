@@ -938,6 +938,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif ; enddo ; enddo ; enddo
   endif
 
+  !   The v-point mirror of u's span above, and for the same reason: every device region from
+  ! here to the tauy_bot loop touches v, and each would otherwise map it tofrom on its own.
+  !$omp target enter data map(to: v)
+
   if (associated(ADp%dv_dt_visc)) then
     do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie)
       ADp%dv_dt_visc(i,J,k) = v(i,J,k)
@@ -1093,6 +1097,8 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (allocated(visc%tauy_shelf)) then
+    ! As on the u side: the one host loop inside v's span needs the solve's result first.
+    !$omp target update from(v)
     do J=Jsq,Jeq ; do i=is,ie
       visc%tauy_shelf(i,J) = -GV%H_to_RZ * CS%a1_shelf_v(i,J) * v(i,J,1) ! - v_shelf?
     enddo ; enddo
@@ -1111,6 +1117,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       enddo
     endif
   endif
+
+  ! Ends here for the same reason u's does: the Stokes and FPmix loops below update v on the host.
+  !$omp target exit data map(from: v)
 
   ! When mixing down Eulerian current + Stokes drift subtract after calling solver
   if (DoStokesMixing) then
