@@ -1537,12 +1537,23 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! nothing and leaves associated() false inside the kernel, which is what find_coupling_coef_k
   ! tests, so the result is the same as not naming it and the code does not have to say so
   ! twice.
+  !   The ice shelf components are named for a stronger reason.  Each loop tests
+  ! associated(forces%frac_shelf_u) and, if that is true, immediately writes CS%a1_shelf_u.  Both
+  ! are pointer components, so leaving them unnamed would give that test an undefined value to
+  ! branch on and put no array behind the write it guards.  Naming them makes the test read false
+  ! in a configuration without an ice shelf and costs nothing there, since mapping a disassociated
+  ! pointer transfers nothing.  visc%tbl_thick_shelf_[uv] and visc%Kv_tbl_shelf_[uv] are read on
+  ! the same branch, and find_coupling_coef reads the latter.
   !$omp target enter data map(to: G, GV, US, CS, visc, forces, tv)
   !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                          CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90, &
   !$omp                          visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
   !$omp                          visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz, &
+  !$omp                          CS%a1_shelf_u, CS%a1_shelf_v, &
+  !$omp                          forces%frac_shelf_u, forces%frac_shelf_v, &
+  !$omp                          visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
+  !$omp                          visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
   !$omp                          hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
 
   ! First do u-points
@@ -2167,11 +2178,15 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !   Copy the coupling coefficients and thicknesses back before the checksums and diagnostics
   ! below read them on the host, and only then discard the rest of the mapping.
   !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90, &
+  !$omp                            CS%a1_shelf_u, CS%a1_shelf_v, &
   !$omp                            hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
   !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                              visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                              visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz)
+  !$omp                              visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz, &
+  !$omp                              forces%frac_shelf_u, forces%frac_shelf_v, &
+  !$omp                              visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
+  !$omp                              visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v)
   !$omp target exit data map(release: G, GV, US, CS, visc, forces, tv)
 
   if (CS%debug) then
