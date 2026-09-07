@@ -3337,37 +3337,48 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       vel_report(i,J) = 3.0e8 * US%m_s_to_L_T
     enddo
 
-    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
-      if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
-      if (v(i,J,k) < 0.0) then
-        CFL = (-v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j+1))
-      else
-        CFL = (v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j))
-      endif
-      if (CFL > CS%CFL_trunc) trunc_any = .true.
-      if (CFL > CS%CFL_report) then
-        dowrite(i,J) = .true.
-        do_any_write = .true.
-        vel_report(i,J) = min(vel_report(i,J), abs(v(i,J,k)))
-      endif
-    enddo ; enddo ; enddo
+    ! As on the u-points above, k stays sequential so that the running minimum into
+    ! vel_report(i,J) and the write to dowrite(i,J) are not raced on by a column's layers.
+    !$omp target teams distribute parallel do collapse(2) private(CFL) &
+    !$omp   reduction(.or.: trunc_any, do_any_write) &
+    !$omp   map(tofrom: v, dowrite, vel_report)
+    do J=Jsq,Jeq ; do i=is,ie
+      do k=1,nz
+        if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
+        if (v(i,J,k) < 0.0) then
+          CFL = (-v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j+1))
+        else
+          CFL = (v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j))
+        endif
+        if (CFL > CS%CFL_trunc) trunc_any = .true.
+        if (CFL > CS%CFL_report) then
+          dowrite(i,J) = .true.
+          do_any_write = .true.
+          vel_report(i,J) = min(vel_report(i,J), abs(v(i,J,k)))
+        endif
+      enddo
+    enddo ; enddo
 
     do concurrent (J=Jsq:Jeq, i=is:ie, dowrite(i,J))
       v_old(i,J,:) = v(i,J,:)
     enddo
 
     if (trunc_any) then
+      ntrunc = 0
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
+      !$omp   map(tofrom: v)
       do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
         if ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
           v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
           if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
-              (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+              (CS%h_v(i,J,k) > H_report)) ntrunc = ntrunc + 1
         elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j) > CS%CFL_trunc) then
           v(i,J,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dx_Cv(i,J)))
           if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
-              (CS%h_v(i,J,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+              (CS%h_v(i,J,k) > H_report)) ntrunc = ntrunc + 1
         endif
       enddo ; enddo ; enddo
+      CS%ntrunc = CS%ntrunc + ntrunc
     endif
 
     if (do_any_write) then
