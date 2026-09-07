@@ -1221,7 +1221,8 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
 
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_u, CS%a_u, visc, visc%Ray_u, G, G%mask2dCu)
+  !$omp   map(to: CS, CS%h_u, CS%a_u, visc, visc%Ray_u, G, G%mask2dCu) &
+  !$omp   map(tofrom: visc_rem_u)
   do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_u)) Ray = visc%Ray_u(I,j,1)
@@ -1253,7 +1254,8 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
 
   !$omp target teams distribute parallel do collapse(2) &
   !$omp   private(b1, c1, d1, Ray, b_denom_1) &
-  !$omp   map(to: CS, CS%h_v, CS%a_v, visc, visc%Ray_v, G, G%mask2dCv)
+  !$omp   map(to: CS, CS%h_v, CS%a_v, visc, visc%Ray_v, G, G%mask2dCv) &
+  !$omp   map(tofrom: visc_rem_v)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     Ray = 0.
     if (allocated(visc%Ray_v)) Ray = visc%Ray_v(i,J,1)
