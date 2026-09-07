@@ -3235,21 +3235,16 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
   H_report = 3.0 * GV%Angstrom_H
 
-  !   The grid metrics and layer thicknesses below are read but never written by the truncation
-  ! kernels, and both kernels want most of them, so they are mapped once for the routine.  The
-  ! velocities are deliberately left to the map clauses on the kernels themselves: each kernel
-  ! is the else branch of a [uv]_trunc_file test whose other branch updates the same velocity
-  ! on the host, so a routine-scope mapping of u or v would copy a stale device copy back over
-  ! the host's work whenever only one of the two files is set.
-  !   The pair is skipped entirely when both files are set, because then neither kernel runs
-  ! and none of this would be read.  That is not a hypothetical: ocean_only/benchmark sets
-  ! both U_TRUNC_FILE and V_TRUNC_FILE, so it takes the reporting path throughout and would
-  ! otherwise ship two 3-D arrays per call for kernels it never launches.  The two
-  ! configurations cover disjoint halves of this routine -- benchmark reaches only the host
-  ! reporting path, double_gyre only the two kernels -- so neither alone validates it.
-  if ((len_trim(CS%u_trunc_file) == 0) .or. (len_trim(CS%v_trunc_file) == 0)) then
-    !$omp target enter data map(to: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, CS%h_u, CS%h_v)
-  endif
+  !   The grid metrics and layer thicknesses below are read but never written by the kernels in
+  ! this routine, and most of them are wanted by more than one, so they are mapped once for the
+  ! routine.  Both branches of each [uv]_trunc_file test now run kernels, so this is no longer
+  ! conditional on either file being unset.
+  !   The velocities are deliberately left to the map clauses on the kernels themselves.  The
+  ! reporting branch interleaves device and host work on the same velocity -- the CFL scan
+  ! writes u on the device, then u_old and write_u_accel read it on the host -- so each kernel
+  ! carries the velocity it touches and hands it straight back.
+  !$omp target enter data map(to: G, GV, US, CS)
+  !$omp target enter data map(to: G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS%h_u, CS%h_v)
 
   if (len_trim(CS%u_trunc_file) > 0) then
     do_any_write = .false.
@@ -3260,37 +3255,50 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       vel_report(I,j) = 3.0e8 * US%m_s_to_L_T
     enddo
 
-    do k=1,nz ; do j=js,je ; do I=Isq,Ieq
-      if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
-      if (u(I,j,k) < 0.0) then
-        CFL = (-u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i+1,j))
-      else
-        CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
-      endif
-      if (CFL > CS%CFL_trunc) trunc_any = .true.
-      if (CFL > CS%CFL_report) then
-        dowrite(I,j) = .true.
-        do_any_write = .true.
-        vel_report(I,j) = min(vel_report(I,j), abs(u(I,j,k)))
-      endif
-    enddo ; enddo ; enddo
+    !   k stays sequential inside the kernel instead of being collapsed into it: the body takes
+    ! a running minimum into vel_report(I,j) and sets dowrite(I,j), which every layer of a
+    ! column would otherwise race on.  Walking a column in layer order is also the order the
+    ! host loop visited it in, so the reported velocity is the same one.
+    !$omp target teams distribute parallel do collapse(2) private(CFL) &
+    !$omp   reduction(.or.: trunc_any, do_any_write) &
+    !$omp   map(tofrom: u, dowrite, vel_report)
+    do j=js,je ; do I=Isq,Ieq
+      do k=1,nz
+        if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
+        if (u(I,j,k) < 0.0) then
+          CFL = (-u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i+1,j))
+        else
+          CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
+        endif
+        if (CFL > CS%CFL_trunc) trunc_any = .true.
+        if (CFL > CS%CFL_report) then
+          dowrite(I,j) = .true.
+          do_any_write = .true.
+          vel_report(I,j) = min(vel_report(I,j), abs(u(I,j,k)))
+        endif
+      enddo
+    enddo ; enddo
 
     do concurrent (j=js:je, I=Isq:Ieq, dowrite(I,j))
       u_old(I,j,:) = u(I,j,:)
     enddo
 
     if (trunc_any) then
+      ntrunc = 0
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
+      !$omp   map(tofrom: u)
       do k=1,nz ; do j=js,je ; do I=Isq,Ieq
         if ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
           u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
           if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
-              (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+              (CS%h_u(I,j,k) > H_report)) ntrunc = ntrunc + 1
         elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i,j) > CS%CFL_trunc) then
           u(I,j,k) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dy_Cu(I,j)))
           if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
-              (CS%h_u(I,j,k) > H_report)) CS%ntrunc = CS%ntrunc + 1
+              (CS%h_u(I,j,k) > H_report)) ntrunc = ntrunc + 1
         endif
       enddo ; enddo ; enddo
+      CS%ntrunc = CS%ntrunc + ntrunc
     endif
 
     if (do_any_write) then
@@ -3388,12 +3396,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
 
-  ! Nothing mapped here is written on the device, so there is nothing to copy back.  The test
-  ! must match the one on the enter data above exactly.
-  if ((len_trim(CS%u_trunc_file) == 0) .or. (len_trim(CS%v_trunc_file) == 0)) then
-    !$omp target exit data map(release: G, G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS, &
-    !$omp                               CS%h_u, CS%h_v)
-  endif
+  ! Nothing mapped here is written on the device, so there is nothing to copy back.
+  !$omp target exit data map(release: G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS%h_u, CS%h_v)
+  !$omp target exit data map(release: G, GV, US, CS)
 
 end subroutine vertvisc_limit_vel
 
