@@ -1506,16 +1506,17 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! back.  Left implicit they would each be mapped tofrom by the loop that reads them, which
   ! downloads four arrays this routine cannot have modified, and uploads h and dz twice
   ! because both loops read them.
-  !   visc%Kv_shear is only associated when a shear mixing scheme is running, and is named here
-  ! either way.  Mapping an unassociated pointer component transfers nothing and leaves
-  ! associated() false inside the kernel, which is what find_coupling_coef_k tests, so the
-  ! result is the same as not naming it and the code does not have to say so twice.
+  !   visc%Kv_shear and visc%Kv_shear_Bu are only associated when a shear mixing scheme is
+  ! running, and are named here either way.  Mapping an unassociated pointer component transfers
+  ! nothing and leaves associated() false inside the kernel, which is what find_coupling_coef_k
+  ! tests, so the result is the same as not naming it and the code does not have to say so
+  ! twice.
   !$omp target enter data map(to: G, GV, US, CS, visc, forces, tv)
   !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                          CS%a_u, CS%h_u, CS%a_v, CS%h_v, &
   !$omp                          visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                          visc%Kv_shear, Ustar_2d, u, v, h, dz)
+  !$omp                          visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz)
 
   ! First do u-points
 
@@ -2142,7 +2143,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp                              visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
   !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                              visc%Kv_shear, Ustar_2d, u, v, h, dz)
+  !$omp                              visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz)
   !$omp target exit data map(release: G, GV, US, CS, visc, forces, tv)
 
   if (CS%debug) then
