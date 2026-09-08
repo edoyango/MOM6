@@ -558,27 +558,31 @@ module procedure btstep
   enddo
 
   if (.not. CS%wt_uv_bug) then
-    do j=js,je ; do I=is-1,ie ; Iwt_u_tot(I,j) = wt_u(I,j,1) ; enddo ; enddo
-    do k=2,nz ; do j=js,je ; do I=is-1,ie
+    do concurrent (j=js:je, I=is-1:ie)
+      Iwt_u_tot(I,j) = wt_u(I,j,1)
+    enddo
+    do k=2,nz ; do concurrent (j=js:je, I=is-1:ie)
       Iwt_u_tot(I,j) = Iwt_u_tot(I,j) + wt_u(I,j,k)
-    enddo ; enddo ; enddo
-    do j=js,je ; do I=is-1,ie
-      if (abs(Iwt_u_tot(I,j)) > 0.0 ) Iwt_u_tot(I,j) = G%mask2dCu(I,j) / Iwt_u_tot(I,j)
     enddo ; enddo
-    do k=1,nz ; do j=js,je ; do I=is-1,ie
+    do concurrent (j=js:je, I=is-1:ie, abs(Iwt_u_tot(I,j)) > 0.0)
+      Iwt_u_tot(I,j) = G%mask2dCu(I,j) / Iwt_u_tot(I,j)
+    enddo
+    do concurrent (k=1:nz, j=js:je, I=is-1:ie)
       wt_u(I,j,k) = wt_u(I,j,k) * Iwt_u_tot(I,j)
-    enddo ; enddo ; enddo
+    enddo
 
-    do J=js-1,je ; do i=is,ie ; Iwt_v_tot(i,J) = wt_v(i,J,1) ; enddo ; enddo
-    do k=2,nz ; do J=js-1,je ; do i=is,ie
+    do concurrent (J=js-1:je, i=is:ie)
+      Iwt_v_tot(i,J) = wt_v(i,J,1)
+    enddo
+    do k=2,nz ; do concurrent (J=js-1:je, i=is:ie)
       Iwt_v_tot(i,J) = Iwt_v_tot(i,J) + wt_v(i,J,k)
-    enddo ; enddo ; enddo
-    do J=js-1,je ; do i=is,ie
-      if (abs(Iwt_v_tot(i,J)) > 0.0 ) Iwt_v_tot(i,J) = G%mask2dCv(i,J) / Iwt_v_tot(i,J)
     enddo ; enddo
-    do k=1,nz ; do J=js-1,je ; do i=is,ie
+    do concurrent (J=js-1:je, i=is:ie, abs(Iwt_v_tot(i,J)) > 0.0)
+      Iwt_v_tot(i,J) = G%mask2dCv(i,J) / Iwt_v_tot(i,J)
+    enddo
+    do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       wt_v(i,J,k) = wt_v(i,J,k) * Iwt_v_tot(i,J)
-    enddo ; enddo ; enddo
+    enddo
   endif
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
