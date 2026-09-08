@@ -1475,7 +1475,7 @@ module subroutine BT_cont_to_face_areas(BT_cont, Datu, Datv, G, US, MS, halo)
 
   ! Local variables
 end subroutine BT_cont_to_face_areas
-module subroutine swap(a,b)
+pure module subroutine swap(a,b)
   real, intent(inout) :: a !< The first variable to be swapped [arbitrary units]
   real, intent(inout) :: b !< The second variable to be swapped [arbitrary units]
 end subroutine swap
