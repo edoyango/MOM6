@@ -518,23 +518,23 @@ module procedure btstep
 
   ! Copy input arrays into their wide-halo counterparts.
   if (interp_eta_PF) then
-    !$OMP parallel do default(shared)
-    do j=G%jsd,G%jed ; do i=G%isd,G%ied ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
+    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+      ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF_1(i,j) = eta_PF_start(i,j)
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
-    enddo ; enddo
+    enddo
   else
-    do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied) !: Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
+    do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
+      ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
     enddo
   endif
   if (integral_BT_cont) then
-    !$OMP parallel do default(shared)
-    do j=G%jsd,G%jed ; do i=G%isd,G%ied
+    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       eta_IC(i,j) = eta_in(i,j)
-    enddo ; enddo
+    enddo
   endif
 
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
