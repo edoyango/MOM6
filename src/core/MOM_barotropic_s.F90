@@ -525,11 +525,11 @@ module procedure btstep
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
     enddo ; enddo
   else
-    !$OMP parallel do default(shared)
-    do j=G%jsd,G%jed ; do i=G%isd,G%ied !: Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
+    !: Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
+    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
-    enddo ; enddo
+    enddo
   endif
   if (integral_BT_cont) then
     !$OMP parallel do default(shared)
