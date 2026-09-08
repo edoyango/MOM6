@@ -2542,25 +2542,25 @@ module procedure btstep_ubt_from_layer
   integer :: i, j, k, is, ie, js, je, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  ubt(:,:) = 0.0 ; vbt(:,:) = 0.0
+  do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+    ubt(I,j) = 0.0
+  enddo
+  do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+    vbt(i,J) = 0.0
+  enddo
 
-  !$OMP parallel do default(shared)
-  do j=js,je ; do k=1,nz ; do I=is-1,ie
-    ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
-  enddo ; enddo ; enddo
-  !$OMP parallel do default(shared)
-  do J=js-1,je ; do k=1,nz ; do i=is,ie
-    vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
-  enddo ; enddo ;  enddo
-
-  !$OMP parallel do default(shared)
-  do j=js,je ; do I=is-1,ie
+  do concurrent (j=js:je, I=is-1:ie)
+    do k=1,nz
+      ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
+    enddo
     if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-  enddo ; enddo
-  !$OMP parallel do default(shared)
-  do J=js-1,je ; do i=is,ie
+  enddo
+  do concurrent (J=js-1:je, i=is:ie)
+    do k=1,nz
+      vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
+    enddo
     if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-  enddo ; enddo
+  enddo
 
 end procedure btstep_ubt_from_layer
 module procedure btstep_layer_accel
