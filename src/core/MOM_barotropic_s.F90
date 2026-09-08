@@ -464,8 +464,7 @@ module procedure btstep
   endif
 
   ! Zero out various wide-halo arrays.
-  !$OMP parallel do default(shared)
-  do j=CS%jsdw,CS%jedw ; do i=CS%isdw,CS%iedw
+  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
     gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
     gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
     eta(i,j) = 0.0
@@ -477,20 +476,18 @@ module procedure btstep
       eta_IC(i,j) = 0.0
     endif
     if (CS%dynamic_psurf) dyn_coef_eta(i,j) = 0.0
-  enddo ; enddo
+  enddo
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
-  !$OMP parallel do default(shared)
-  do j=CS%jsdw,CS%jedw ; do I=CS%isdw-1,CS%iedw
+  do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
     Cor_ref_u(I,j) = 0.0 ; BT_force_u(I,j) = 0.0 ; ubt(I,j) = 0.0
     Datu(I,j) = 0.0 ; bt_rem_u(I,j) = 0.0 ; uhbt0(I,j) = 0.0
-  enddo ; enddo
-  !$OMP parallel do default(shared)
-  do J=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
+  enddo
+  do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
     Cor_ref_v(i,J) = 0.0 ; BT_force_v(i,J) = 0.0 ; vbt(i,J) = 0.0
     Datv(i,J) = 0.0 ; bt_rem_v(i,J) = 0.0 ; vhbt0(i,J) = 0.0
-  enddo ; enddo
+  enddo
 
   if (apply_OBCs) then
     SpV_col_avg(:,:) = 0.0
