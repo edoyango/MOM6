@@ -691,10 +691,12 @@ module procedure btstep
   ! Determine the difference between the sum of the layer fluxes and the
   ! barotropic fluxes found from the same input velocities.
   if (add_uh0) then
-    !$OMP parallel do default(shared)
-    do j=js,je ; do I=is-1,ie ; uhbt(I,j) = 0.0 ; ubt(I,j) = 0.0 ; enddo ; enddo
-    !$OMP parallel do default(shared)
-    do J=js-1,je ; do i=is,ie ; vhbt(i,J) = 0.0 ; vbt(i,J) = 0.0 ; enddo ; enddo
+    do concurrent (j=js:je, I=is-1:ie)
+      uhbt(I,j) = 0.0 ; ubt(I,j) = 0.0
+    enddo
+    do concurrent (J=js-1:je, i=is:ie)
+      vhbt(i,J) = 0.0 ; vbt(i,J) = 0.0
+    enddo
     if (CS%visc_rem_u_uh0) then
       !$OMP parallel do default(shared)
       do j=js,je ; do k=1,nz ; do I=is-1,ie
@@ -707,16 +709,22 @@ module procedure btstep
         vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
       enddo ; enddo ; enddo
     else
-      !$OMP parallel do default(shared)
-      do j=js,je ; do k=1,nz ; do I=is-1,ie
-        uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
-        ubt(I,j) = ubt(I,j) + CS%frhatu(I,j,k) * u_uh0(I,j,k)
-      enddo ; enddo ; enddo
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do k=1,nz ; do i=is,ie
-        vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
-        vbt(i,J) = vbt(i,J) + CS%frhatv(i,J,k) * v_vh0(i,J,k)
-      enddo ; enddo ; enddo
+      do concurrent (j=js:je)
+        do k=1,nz
+          do concurrent (I=is-1:ie)
+            uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
+            ubt(I,j) = ubt(I,j) + CS%frhatu(I,j,k) * u_uh0(I,j,k)
+          enddo
+        enddo
+      enddo
+      do concurrent (J=js-1:je)
+        do k=1,nz
+          do concurrent (i=is:ie)
+            vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
+            vbt(i,J) = vbt(i,J) + CS%frhatv(i,J,k) * v_vh0(i,J,k)
+          enddo
+        enddo
+      enddo
     endif
     if ((use_BT_cont .or. integral_BT_cont) .and. CS%adjust_BT_cont) then
       ! Use the additional input transports to broaden the fits
