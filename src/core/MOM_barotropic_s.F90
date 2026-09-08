@@ -2645,21 +2645,23 @@ module procedure set_dtbt
     dgeo_de = 1.0 + max(0.0, CS%G_extra - det_de)
   endif
   if (present(pbce)) then
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
       gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
-    enddo ; enddo
-    do k=1,nz ; do j=js,je ; do i=is,ie
-      gtot_E(i,j) = gtot_E(i,j) + pbce(i,j,k) * CS%frhatu(I,j,k)
-      gtot_W(i,j) = gtot_W(i,j) + pbce(i,j,k) * CS%frhatu(I-1,j,k)
-      gtot_N(i,j) = gtot_N(i,j) + pbce(i,j,k) * CS%frhatv(i,J,k)
-      gtot_S(i,j) = gtot_S(i,j) + pbce(i,j,k) * CS%frhatv(i,J-1,k)
-    enddo ; enddo ; enddo
+    enddo
+    do concurrent (j=js:je, i=is:ie)
+      do k=1,nz
+        gtot_E(i,j) = gtot_E(i,j) + pbce(i,j,k) * CS%frhatu(I,j,k)
+        gtot_W(i,j) = gtot_W(i,j) + pbce(i,j,k) * CS%frhatu(I-1,j,k)
+        gtot_N(i,j) = gtot_N(i,j) + pbce(i,j,k) * CS%frhatv(i,J,k)
+        gtot_S(i,j) = gtot_S(i,j) + pbce(i,j,k) * CS%frhatv(i,J-1,k)
+      enddo
+    enddo
   else
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       gtot_E(i,j) = gtot_est ; gtot_W(i,j) = gtot_est
       gtot_N(i,j) = gtot_est ; gtot_S(i,j) = gtot_est
-    enddo ; enddo
+    enddo
   endif
 
   min_max_dt2 = 1.0e38*US%s_to_T**2  ! A huge value for the permissible timestep squared.
