@@ -2665,6 +2665,8 @@ module procedure set_dtbt
   endif
 
   min_max_dt2 = 1.0e38*US%s_to_T**2  ! A huge value for the permissible timestep squared.
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(Idt_max2) reduction(min:min_max_dt2)
   do j=js,je ; do i=is,ie
     !   This is pretty accurate for gravity waves, but it is a conservative
     ! estimate since it ignores the stabilizing effect of the bottom drag.
