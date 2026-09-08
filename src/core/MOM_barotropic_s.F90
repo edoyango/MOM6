@@ -3687,6 +3687,7 @@ module procedure set_local_BT_cont_types
   real :: dt ! The baroclinic timestep [T ~> s] or 1.0 [nondim]
   real, parameter :: C1_3 = 1.0/3.0  ! [nondim]
   integer :: i, j, is, ie, js, je, hs
+  real :: tmp ! A temporary variable used in swapping two values [arbitrary units]
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   hs = max(halo,0)
   dt = 1.0 ; if (present(dt_baroclinic)) dt = dt_baroclinic
@@ -3745,9 +3746,17 @@ module procedure set_local_BT_cont_types
     BTCL_u(I,j)%uBT_EE = dt*uBT_EE(I,j)   ; BTCL_u(I,j)%uBT_WW = dt*uBT_WW(I,j)
     ! Check for reversed polarity in the tripolar halo regions.
     if (u_polarity(I,j) < 0.0) then
-      call swap(BTCL_u(I,j)%FA_u_EE, BTCL_u(I,j)%FA_u_WW)
-      call swap(BTCL_u(I,j)%FA_u_E0, BTCL_u(I,j)%FA_u_W0)
-      call swap(BTCL_u(I,j)%uBT_EE,  BTCL_u(I,j)%uBT_WW)
+      tmp = BTCL_u(I,j)%FA_u_EE
+      BTCL_u(I,j)%FA_u_EE = BTCL_u(I,j)%FA_u_WW
+      BTCL_u(I,j)%FA_u_WW = tmp
+
+      tmp = BTCL_u(I,j)%FA_u_E0
+      BTCL_u(I,j)%FA_u_E0 = BTCL_u(I,j)%FA_u_W0
+      BTCL_u(I,j)%FA_u_W0 = tmp
+
+      tmp = BTCL_u(I,j)%uBT_EE
+      BTCL_u(I,j)%uBT_EE = BTCL_u(I,j)%uBT_WW
+      BTCL_u(I,j)%uBT_WW = tmp
     endif
 
     BTCL_u(I,j)%uh_EE = BTCL_u(I,j)%uBT_EE * &
@@ -3768,9 +3777,17 @@ module procedure set_local_BT_cont_types
     BTCL_v(i,J)%vBT_NN = dt*vBT_NN(i,J)   ; BTCL_v(i,J)%vBT_SS = dt*vBT_SS(i,J)
     ! Check for reversed polarity in the tripolar halo regions.
     if (v_polarity(i,J) < 0.0) then
-      call swap(BTCL_v(i,J)%FA_v_NN, BTCL_v(i,J)%FA_v_SS)
-      call swap(BTCL_v(i,J)%FA_v_N0, BTCL_v(i,J)%FA_v_S0)
-      call swap(BTCL_v(i,J)%vBT_NN,  BTCL_v(i,J)%vBT_SS)
+      tmp = BTCL_v(i,J)%FA_v_NN
+      BTCL_v(i,J)%FA_v_NN = BTCL_v(i,J)%FA_v_SS
+      BTCL_v(i,J)%FA_v_SS = tmp
+
+      tmp = BTCL_v(i,J)%FA_v_N0
+      BTCL_v(i,J)%FA_v_N0 = BTCL_v(i,J)%FA_v_S0
+      BTCL_v(i,J)%FA_v_S0 = tmp
+
+      tmp = BTCL_v(i,J)%vBT_NN
+      BTCL_v(i,J)%vBT_NN = BTCL_v(i,J)%vBT_SS
+      BTCL_v(i,J)%vBT_SS = tmp
     endif
 
     BTCL_v(i,J)%vh_NN = BTCL_v(i,J)%vBT_NN * &
