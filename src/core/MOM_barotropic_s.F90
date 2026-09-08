@@ -3956,7 +3956,6 @@ module procedure find_face_areas
 
 end procedure find_face_areas
 module procedure bt_mass_source
-  real :: h_tot(SZI_(G))      ! The sum of the layer thicknesses [H ~> m or kg m-2].
   real :: eta_h(SZI_(G))      ! The free surface height determined from
   real :: d_eta               ! The difference between estimates of the total
   integer :: is, ie, js, je, nz, i, j, k
@@ -3967,9 +3966,8 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !$OMP parallel do default(shared) private(eta_h,h_tot,d_eta)
+  !$OMP parallel do default(shared) private(eta_h,d_eta)
   do j=js,je
-    do i=is,ie ; h_tot(i) = h(i,j,1) ; enddo
     if (GV%Boussinesq) then
       do i=is,ie ; eta_h(i) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H ; enddo
     else
@@ -3977,7 +3975,6 @@ module procedure bt_mass_source
     endif
     do k=2,nz ; do i=is,ie
       eta_h(i) = eta_h(i) + h(i,j,k)
-      h_tot(i) = h_tot(i) + h(i,j,k)
     enddo ; enddo
 
     if (set_cor) then
