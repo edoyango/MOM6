@@ -525,8 +525,7 @@ module procedure btstep
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
     enddo ; enddo
   else
-    !: Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
-    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied) !: Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
     enddo
@@ -2544,24 +2543,32 @@ module procedure btstep_ubt_from_layer
   integer :: i, j, k, is, ie, js, je, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
-    ubt(I,j) = 0.0
+  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+    ubt(i,j) = 0.0
   enddo
-  do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
-    vbt(i,J) = 0.0
+  do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+    vbt(i,j) = 0.0
   enddo
 
-  do concurrent (j=js:je, I=is-1:ie)
+  do concurrent (j=js:je)
     do k=1,nz
-      ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
+      do concurrent (I=is-1:ie)
+        ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
+      enddo
     enddo
-    if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+    do concurrent (I=is-1:ie)
+      if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
+    enddo
   enddo
-  do concurrent (J=js-1:je, i=is:ie)
+  do concurrent (J=js-1:je)
     do k=1,nz
-      vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
+      do concurrent (i=is:ie)
+        vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
+      enddo
     enddo
-    if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+    do concurrent (i=is:ie)
+      if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
+    enddo
   enddo
 
 end procedure btstep_ubt_from_layer
@@ -2577,13 +2584,13 @@ module procedure btstep_layer_accel
   ! Now calculate each layer's accelerations.
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     accel_layer_u(I,j,k) = (u_accel_bt(I,j) - &
-         (((pbce(i+1,j,k) - gtot_W(i+1,j)) * e_anom(i+1,j)) - &
+          (((pbce(i+1,j,k) - gtot_W(i+1,j)) * e_anom(i+1,j)) - &
           ((pbce(i,j,k) - gtot_E(i,j)) * e_anom(i,j))) * CS%IdxCu(I,j) )
     if (abs(accel_layer_u(I,j,k)) < accel_underflow) accel_layer_u(I,j,k) = 0.0
   enddo
   do concurrent (k=1:nz, J=js-1:je, i=is:ie)
     accel_layer_v(i,J,k) = (v_accel_bt(i,J) - &
-         (((pbce(i,j+1,k) - gtot_S(i,j+1)) * e_anom(i,j+1)) - &
+          (((pbce(i,j+1,k) - gtot_S(i,j+1)) * e_anom(i,j+1)) - &
           ((pbce(i,j,k) - gtot_N(i,j)) * e_anom(i,j))) * CS%IdyCv(i,J) )
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
   enddo
@@ -2642,16 +2649,18 @@ module procedure set_dtbt
     dgeo_de = 1.0 + max(0.0, CS%G_extra - det_de)
   endif
   if (present(pbce)) then
-    do concurrent (j=js:je, i=is:ie)
-      gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
-      gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
-    enddo
-    do concurrent (j=js:je, i=is:ie)
+    do concurrent (j=js:je)
+      do concurrent (i=is:ie)
+        gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
+        gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
+      enddo
       do k=1,nz
-        gtot_E(i,j) = gtot_E(i,j) + pbce(i,j,k) * CS%frhatu(I,j,k)
-        gtot_W(i,j) = gtot_W(i,j) + pbce(i,j,k) * CS%frhatu(I-1,j,k)
-        gtot_N(i,j) = gtot_N(i,j) + pbce(i,j,k) * CS%frhatv(i,J,k)
-        gtot_S(i,j) = gtot_S(i,j) + pbce(i,j,k) * CS%frhatv(i,J-1,k)
+        do concurrent (i=is:ie)
+          gtot_E(i,j) = gtot_E(i,j) + pbce(i,j,k) * CS%frhatu(I,j,k)
+          gtot_W(i,j) = gtot_W(i,j) + pbce(i,j,k) * CS%frhatu(I-1,j,k)
+          gtot_N(i,j) = gtot_N(i,j) + pbce(i,j,k) * CS%frhatv(i,J,k)
+          gtot_S(i,j) = gtot_S(i,j) + pbce(i,j,k) * CS%frhatv(i,J-1,k)
+        enddo
       enddo
     enddo
   else
@@ -3689,7 +3698,7 @@ module procedure set_local_BT_cont_types
   real :: dt ! The baroclinic timestep [T ~> s] or 1.0 [nondim]
   real, parameter :: C1_3 = 1.0/3.0  ! [nondim]
   integer :: i, j, is, ie, js, je, hs
-  real :: tmp ! A temporary variable used in swapping two values [arbitrary units]
+  real :: tmp
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   hs = max(halo,0)
   dt = 1.0 ; if (present(dt_baroclinic)) dt = dt_baroclinic
@@ -3964,7 +3973,7 @@ module procedure find_face_areas
 
 end procedure find_face_areas
 module procedure bt_mass_source
-  real :: eta_h(SZI_(G),SZJ_(G)) ! The free surface height determined from
+  real :: eta_h(SZI_(G),SZJ_(G))      ! The free surface height determined from
   real :: d_eta               ! The difference between estimates of the total
   integer :: is, ie, js, je, nz, i, j, k
   if (.not.CS%module_is_initialized) call MOM_error(FATAL, "bt_mass_source: "// &
@@ -3974,32 +3983,33 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  if (GV%Boussinesq) then
-    do concurrent (j=js:je, i=is:ie)
-      eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
+  do concurrent (j=js:je)
+    if (GV%Boussinesq) then
+      do concurrent (i=is:ie)
+        eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
+      enddo
+    else
+      do concurrent (i=is:ie)
+        eta_h(i,j) = h(i,j,1)
+      enddo
+    endif
+    do k=2,nz
+      do concurrent (i=is:ie)
+        eta_h(i,j) = eta_h(i,j) + h(i,j,k)
+      enddo
     enddo
-  else
-    do concurrent (j=js:je, i=is:ie)
-      eta_h(i,j) = h(i,j,1)
-    enddo
-  endif
-  do k=2,nz
-    do concurrent (j=js:je, i=is:ie)
-      eta_h(i,j) = eta_h(i,j) + h(i,j,k)
-    enddo
+    if (set_cor) then
+      do concurrent (i=is:ie)
+        d_eta = eta_h(i,j) - eta(i,j)
+        CS%eta_cor(i,j) = d_eta
+      enddo
+    else
+      do concurrent (i=is:ie)
+        d_eta = eta_h(i,j) - eta(i,j)
+        CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
+      enddo
+    endif
   enddo
-
-  if (set_cor) then
-    do concurrent (j=js:je, i=is:ie)
-      d_eta = eta_h(i,j) - eta(i,j)
-      CS%eta_cor(i,j) = d_eta
-    enddo
-  else
-    do concurrent (j=js:je, i=is:ie)
-      d_eta = eta_h(i,j) - eta(i,j)
-      CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
-    enddo
-  endif
 
 end procedure bt_mass_source
 module procedure barotropic_init
