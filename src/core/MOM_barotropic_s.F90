@@ -3956,7 +3956,7 @@ module procedure find_face_areas
 
 end procedure find_face_areas
 module procedure bt_mass_source
-  real :: eta_h(SZI_(G))      ! The free surface height determined from
+  real :: eta_h(SZI_(G),SZJ_(G)) ! The free surface height determined from
   real :: d_eta               ! The difference between estimates of the total
   integer :: is, ie, js, je, nz, i, j, k
   if (.not.CS%module_is_initialized) call MOM_error(FATAL, "bt_mass_source: "// &
@@ -3966,29 +3966,30 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !$OMP parallel do default(shared) private(eta_h,d_eta)
-  do j=js,je
-    if (GV%Boussinesq) then
-      do i=is,ie ; eta_h(i) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H ; enddo
-    else
-      do i=is,ie ; eta_h(i) = h(i,j,1) ; enddo
-    endif
-    do k=2,nz ; do i=is,ie
-      eta_h(i) = eta_h(i) + h(i,j,k)
+  if (GV%Boussinesq) then
+    do j=js,je ; do i=is,ie
+      eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
     enddo ; enddo
+  else
+    do j=js,je ; do i=is,ie
+      eta_h(i,j) = h(i,j,1)
+    enddo ; enddo
+  endif
+  do k=2,nz ; do j=js,je ; do i=is,ie
+    eta_h(i,j) = eta_h(i,j) + h(i,j,k)
+  enddo ; enddo ; enddo
 
-    if (set_cor) then
-      do i=is,ie
-        d_eta = eta_h(i) - eta(i,j)
-        CS%eta_cor(i,j) = d_eta
-      enddo
-    else
-      do i=is,ie
-        d_eta = eta_h(i) - eta(i,j)
-        CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
-      enddo
-    endif
-  enddo
+  if (set_cor) then
+    do j=js,je ; do i=is,ie
+      d_eta = eta_h(i,j) - eta(i,j)
+      CS%eta_cor(i,j) = d_eta
+    enddo ; enddo
+  else
+    do j=js,je ; do i=is,ie
+      d_eta = eta_h(i,j) - eta(i,j)
+      CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
+    enddo ; enddo
+  endif
 
 end procedure bt_mass_source
 module procedure barotropic_init
