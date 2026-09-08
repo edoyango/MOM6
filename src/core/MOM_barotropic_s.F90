@@ -538,8 +538,7 @@ module procedure btstep
     enddo ; enddo
   endif
 
-  !$OMP parallel do default(shared) private(visc_rem)
-  do k=1,nz ; do j=js,je ; do I=is-1,ie
+  do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
     ! The 0.5 below is just for safety.
     ! NOTE: subroundoff is a negligible value used to prevent division by zero.
@@ -550,15 +549,14 @@ module procedure btstep
     visc_rem = max(visc_rem, 1. - 0.5 * Instep / (visc_rem + subroundoff))
     visc_rem = max(visc_rem, 0.)
     wt_u(I,j,k) = CS%frhatu(I,j,k) * visc_rem
-  enddo ; enddo ; enddo
-  !$OMP parallel do default(shared) private(visc_rem)
-  do k=1,nz ; do J=js-1,je ; do i=is,ie
+  enddo
+  do concurrent (k=1:nz, J=js-1:je, i=is:ie)
     ! As above, rem must be greater than visc_rem_v and 1-Instep/visc_rem_v.
     visc_rem = min(visc_rem_v(I,j,k), 1.)
     visc_rem = max(visc_rem, 1. - 0.5 * Instep / (visc_rem + subroundoff))
     visc_rem = max(visc_rem, 0.)
     wt_v(i,J,k) = CS%frhatv(i,J,k) * visc_rem
-  enddo ; enddo ; enddo
+  enddo
 
   if (.not. CS%wt_uv_bug) then
     do j=js,je ; do I=is-1,ie ; Iwt_u_tot(I,j) = wt_u(I,j,1) ; enddo ; enddo
