@@ -3285,11 +3285,15 @@ module procedure btcalc
   if (present(h_u)) then
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%frhatu(I,j,k) = h_u(I,j,k)
+    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie ; do k=1,nz
       hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
     enddo ; enddo ; enddo
   elseif (CS%hvel_scheme == ARITHMETIC) then
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%frhatu(I,j,k) = 0.5 * (h(i+1,j,k) + h(i,j,k))
+    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie ; do k=1,nz
       hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
     enddo ; enddo ; enddo
   elseif (CS%hvel_scheme == HYBRID .or. use_default) then
@@ -3320,6 +3324,8 @@ module procedure btcalc
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%frhatu(I,j,k) = 2.0*(h(i+1,j,k) * h(i,j,k)) / &
                       ((h(i+1,j,k) + h(i,j,k)) + h_neglect)
+    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie ; do k=1,nz
       hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
     enddo ; enddo ; enddo
   endif
@@ -3363,11 +3369,15 @@ module procedure btcalc
   if (present(h_v)) then
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = h_v(i,J,k)
+    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie ; do k=1,nz
       hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
     enddo ; enddo ; enddo
   elseif (CS%hvel_scheme == ARITHMETIC) then
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = 0.5 * (h(i,j+1,k) + h(i,j,k))
+    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie ; do k=1,nz
       hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
     enddo ; enddo ; enddo
   elseif (CS%hvel_scheme == HYBRID .or. use_default) then
@@ -3396,6 +3406,8 @@ module procedure btcalc
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = 2.0*(h(i,j+1,k) * h(i,j,k)) / &
                       ((h(i,j+1,k) + h(i,j,k)) + h_neglect)
+    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie ; do k=1,nz
       hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
     enddo ; enddo ; enddo
   endif
