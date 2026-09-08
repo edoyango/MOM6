@@ -3967,28 +3967,30 @@ module procedure bt_mass_source
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
   if (GV%Boussinesq) then
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
-    enddo ; enddo
+    enddo
   else
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       eta_h(i,j) = h(i,j,1)
-    enddo ; enddo
+    enddo
   endif
-  do k=2,nz ; do j=js,je ; do i=is,ie
-    eta_h(i,j) = eta_h(i,j) + h(i,j,k)
-  enddo ; enddo ; enddo
+  do k=2,nz
+    do concurrent (j=js:je, i=is:ie)
+      eta_h(i,j) = eta_h(i,j) + h(i,j,k)
+    enddo
+  enddo
 
   if (set_cor) then
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       d_eta = eta_h(i,j) - eta(i,j)
       CS%eta_cor(i,j) = d_eta
-    enddo ; enddo
+    enddo
   else
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       d_eta = eta_h(i,j) - eta(i,j)
       CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
-    enddo ; enddo
+    enddo
   endif
 
 end procedure bt_mass_source
