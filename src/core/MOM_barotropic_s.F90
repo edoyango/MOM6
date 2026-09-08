@@ -3280,44 +3280,58 @@ module procedure btcalc
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   h_neglect = GV%H_subroundoff
 
-  do j=js,je ; do I=is-1,ie ; hatutot(I,j) = 0.0 ; enddo ; enddo
+  ! btcalc is temporarily unported (plain host Fortran, no target/do-concurrent) to isolate
+  ! whether its own device mapping is the source of the "explicit extension not allowed" abort
+  ! seen on benchmark -- see the investigation notes around this file's git history. CS%frhatu/
+  ! CS%frhatv remain device-resident from btstep's outer bracket across calls, so their freshly
+  ! computed host values are pushed back to device explicitly at the end of this routine instead.
+
+  do j=js,je ; do I=is-1,ie
+    hatutot(I,j) = 0.0
+  enddo ; enddo
 
   if (present(h_u)) then
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%frhatu(I,j,k) = h_u(I,j,k)
     enddo ; enddo ; enddo
-    do j=js,je ; do I=is-1,ie ; do k=1,nz
-      hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
-    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie
+      do k=1,nz
+        hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
+      enddo
+    enddo ; enddo
   elseif (CS%hvel_scheme == ARITHMETIC) then
     do k=1,nz ; do j=js,je ; do I=is-1,ie
       CS%frhatu(I,j,k) = 0.5 * (h(i+1,j,k) + h(i,j,k))
     enddo ; enddo ; enddo
-    do j=js,je ; do I=is-1,ie ; do k=1,nz
-      hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
-    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie
+      do k=1,nz
+        hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
+      enddo
+    enddo ; enddo
   elseif (CS%hvel_scheme == HYBRID .or. use_default) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
     do j=js,je ; do I=is-1,ie
       e_u(I,j,nz+1) = -0.5 * Z_to_H * (G%bathyT(i+1,j) + G%bathyT(i,j))
       D_shallow_u(I,j) = -Z_to_H * min(G%bathyT(i+1,j), G%bathyT(i,j))
     enddo ; enddo
-    do k=nz,1,-1 ; do j=js,je ; do I=is-1,ie
-      e_u(I,j,K) = e_u(I,j,K+1) + 0.5 * (h(i+1,j,k) + h(i,j,k))
-      h_arith = 0.5 * (h(i+1,j,k) + h(i,j,k))
-      if (e_u(I,j,K+1) >= D_shallow_u(I,j)) then
-        CS%frhatu(I,j,k) = h_arith
-      else
-        h_harm = (h(i+1,j,k) * h(i,j,k)) / (h_arith + h_neglect)
-        if (e_u(I,j,K) <= D_shallow_u(I,j)) then
-          CS%frhatu(I,j,k) = h_harm
+    do k=nz,1,-1
+      do j=js,je ; do I=is-1,ie
+        e_u(I,j,K) = e_u(I,j,K+1) + 0.5 * (h(i+1,j,k) + h(i,j,k))
+        h_arith = 0.5 * (h(i+1,j,k) + h(i,j,k))
+        if (e_u(I,j,K+1) >= D_shallow_u(I,j)) then
+          CS%frhatu(I,j,k) = h_arith
         else
-          wt_arith = (e_u(I,j,K) - D_shallow_u(I,j)) / (h_arith + h_neglect)
-          CS%frhatu(I,j,k) = wt_arith*h_arith + (1.0-wt_arith)*h_harm
+          h_harm = (h(i+1,j,k) * h(i,j,k)) / (h_arith + h_neglect)
+          if (e_u(I,j,K) <= D_shallow_u(I,j)) then
+            CS%frhatu(I,j,k) = h_harm
+          else
+            wt_arith = (e_u(I,j,K) - D_shallow_u(I,j)) / (h_arith + h_neglect)
+            CS%frhatu(I,j,k) = wt_arith*h_arith + (1.0-wt_arith)*h_harm
+          endif
         endif
-      endif
-      hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
-    enddo ; enddo ; enddo
+        hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
+      enddo ; enddo
+    enddo
   elseif (CS%hvel_scheme == HARMONIC) then
     !   Interpolates thicknesses onto u grid points with the
     ! second order accurate estimate h = 2*(h+ * h-)/(h+ + h-).
@@ -3325,9 +3339,11 @@ module procedure btcalc
       CS%frhatu(I,j,k) = 2.0*(h(i+1,j,k) * h(i,j,k)) / &
                       ((h(i+1,j,k) + h(i,j,k)) + h_neglect)
     enddo ; enddo ; enddo
-    do j=js,je ; do I=is-1,ie ; do k=1,nz
-      hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
-    enddo ; enddo ; enddo
+    do j=js,je ; do I=is-1,ie
+      do k=1,nz
+        hatutot(I,j) = hatutot(I,j) + CS%frhatu(I,j,k)
+      enddo
+    enddo ; enddo
   endif
 
   if (CS%BT_OBC%u_OBCs_on_PE) then
@@ -3359,57 +3375,69 @@ module procedure btcalc
   endif
 
   ! Determine the fractional thickness of each layer at the velocity points.
-  do j=js,je ; do I=is-1,ie ; Ihatutot(I,j) = G%mask2dCu(I,j) / (hatutot(I,j) + h_neglect) ; enddo ; enddo
+  do j=js,je ; do I=is-1,ie
+    Ihatutot(I,j) = G%mask2dCu(I,j) / (hatutot(I,j) + h_neglect)
+  enddo ; enddo
   do k=1,nz ; do j=js,je ; do I=is-1,ie
     CS%frhatu(I,j,k) = CS%frhatu(I,j,k) * Ihatutot(I,j)
   enddo ; enddo ; enddo
 
-  do J=js-1,je ; do i=is,ie ; hatvtot(i,J) = 0.0 ; enddo ; enddo
+  do J=js-1,je ; do i=is,ie
+    hatvtot(i,J) = 0.0
+  enddo ; enddo
 
   if (present(h_v)) then
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = h_v(i,J,k)
     enddo ; enddo ; enddo
-    do J=js-1,je ; do i=is,ie ; do k=1,nz
-      hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
-    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie
+      do k=1,nz
+        hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
+      enddo
+    enddo ; enddo
   elseif (CS%hvel_scheme == ARITHMETIC) then
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = 0.5 * (h(i,j+1,k) + h(i,j,k))
     enddo ; enddo ; enddo
-    do J=js-1,je ; do i=is,ie ; do k=1,nz
-      hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
-    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie
+      do k=1,nz
+        hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
+      enddo
+    enddo ; enddo
   elseif (CS%hvel_scheme == HYBRID .or. use_default) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
     do J=js-1,je ; do i=is,ie
       e_v(i,J,nz+1) = -0.5 * Z_to_H * (G%bathyT(i,j+1) + G%bathyT(i,j))
       D_shallow_v(i,J) = -Z_to_H * min(G%bathyT(i,j+1), G%bathyT(i,j))
     enddo ; enddo
-    do k=nz,1,-1 ; do J=js-1,je ; do i=is,ie
-      e_v(i,J,K) = e_v(i,J,K+1) + 0.5 * (h(i,j+1,k) + h(i,j,k))
-      h_arith = 0.5 * (h(i,j+1,k) + h(i,j,k))
-      if (e_v(i,J,K+1) >= D_shallow_v(i,J)) then
-        CS%frhatv(i,J,k) = h_arith
-      else
-        h_harm = (h(i,j+1,k) * h(i,j,k)) / (h_arith + h_neglect)
-        if (e_v(i,J,K) <= D_shallow_v(i,J)) then
-          CS%frhatv(i,J,k) = h_harm
+    do k=nz,1,-1
+      do J=js-1,je ; do i=is,ie
+        e_v(i,J,K) = e_v(i,J,K+1) + 0.5 * (h(i,j+1,k) + h(i,j,k))
+        h_arith = 0.5 * (h(i,j+1,k) + h(i,j,k))
+        if (e_v(i,J,K+1) >= D_shallow_v(i,J)) then
+          CS%frhatv(i,J,k) = h_arith
         else
-          wt_arith = (e_v(i,J,K) - D_shallow_v(i,J)) / (h_arith + h_neglect)
-          CS%frhatv(i,J,k) = wt_arith*h_arith + (1.0-wt_arith)*h_harm
+          h_harm = (h(i,j+1,k) * h(i,j,k)) / (h_arith + h_neglect)
+          if (e_v(i,J,K) <= D_shallow_v(i,J)) then
+            CS%frhatv(i,J,k) = h_harm
+          else
+            wt_arith = (e_v(i,J,K) - D_shallow_v(i,J)) / (h_arith + h_neglect)
+            CS%frhatv(i,J,k) = wt_arith*h_arith + (1.0-wt_arith)*h_harm
+          endif
         endif
-      endif
-      hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
-    enddo ; enddo ; enddo
+        hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
+      enddo ; enddo
+    enddo
   elseif (CS%hvel_scheme == HARMONIC) then
     do k=1,nz ; do J=js-1,je ; do i=is,ie
       CS%frhatv(i,J,k) = 2.0*(h(i,j+1,k) * h(i,j,k)) / &
                       ((h(i,j+1,k) + h(i,j,k)) + h_neglect)
     enddo ; enddo ; enddo
-    do J=js-1,je ; do i=is,ie ; do k=1,nz
-      hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
-    enddo ; enddo ; enddo
+    do J=js-1,je ; do i=is,ie
+      do k=1,nz
+        hatvtot(i,J) = hatvtot(i,J) + CS%frhatv(i,J,k)
+      enddo
+    enddo ; enddo
   endif
 
   if (CS%BT_OBC%v_OBCs_on_PE) then
@@ -3441,10 +3469,14 @@ module procedure btcalc
   endif
 
   ! Determine the fractional thickness of each layer at the velocity points.
-  do J=js-1,je ; do i=is,ie ; Ihatvtot(i,J) = G%mask2dCv(i,J) / (hatvtot(i,J) + h_neglect) ; enddo ; enddo
+  do J=js-1,je ; do i=is,ie
+    Ihatvtot(i,J) = G%mask2dCv(i,J) / (hatvtot(i,J) + h_neglect)
+  enddo ; enddo
   do k=1,nz ; do J=js-1,je ; do i=is,ie
     CS%frhatv(i,J,k) = CS%frhatv(i,J,k) * Ihatvtot(i,J)
   enddo ; enddo ; enddo
+
+  !$omp target update to(CS%frhatu, CS%frhatv)
 
   if (CS%debug) then
     call uvchksum("btcalc frhat[uv]", CS%frhatu, CS%frhatv, G%HI, &
