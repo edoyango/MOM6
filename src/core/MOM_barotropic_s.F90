@@ -877,14 +877,20 @@ module procedure btstep
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
   ! non-symmetric computational domain.
-  !$OMP parallel do default(shared)
-  do j=js,je ; do k=1,nz ; do I=Isq,Ieq
-    BT_force_u(I,j) = BT_force_u(I,j) + wt_u(I,j,k) * bc_accel_u(I,j,k)
-  enddo ; enddo ; enddo
-  !$OMP parallel do default(shared)
-  do J=Jsq,Jeq ; do k=1,nz ; do i=is,ie
-    BT_force_v(i,J) = BT_force_v(i,J) + wt_v(i,J,k) * bc_accel_v(i,J,k)
-  enddo ; enddo ; enddo
+  do concurrent (j=js:je)
+    do k=1,nz
+      do concurrent (I=Isq:Ieq)
+        BT_force_u(I,j) = BT_force_u(I,j) + wt_u(I,j,k) * bc_accel_u(I,j,k)
+      enddo
+    enddo
+  enddo
+  do concurrent (J=Jsq:Jeq)
+    do k=1,nz
+      do concurrent (i=is:ie)
+        BT_force_v(i,J) = BT_force_v(i,J) + wt_v(i,J,k) * bc_accel_v(i,J,k)
+      enddo
+    enddo
+  enddo
 
   if (CS%gradual_BT_ICs) then
     !$OMP parallel do default(shared)
