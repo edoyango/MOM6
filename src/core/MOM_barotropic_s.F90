@@ -2387,6 +2387,8 @@ module procedure btstep_timeloop
 end procedure btstep_timeloop
 module procedure btstep_find_Cor
   integer :: i, j
+  !$omp target enter data map(to: CS, CS%OBCmask_u, CS%OBCmask_v, q, DCor_u, DCor_v, f_4_u, f_4_v)
+
   if (CS%Sadourny) then
     do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
       f_4_v(1,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j) * q(I-1,J)
@@ -2432,6 +2434,9 @@ module procedure btstep_find_Cor
   !     f_4_u(2,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J-1) * ((q(I,J) + q(I+1,J-1)) + q(I,J-1)) * C1_3
   !   enddo ; enddo
   endif
+
+  !$omp target exit data map(from: f_4_u, f_4_v)
+  !$omp target exit data map(release: CS, CS%OBCmask_u, CS%OBCmask_v, q, DCor_u, DCor_v)
 
 end procedure btstep_find_Cor
 module procedure truncate_velocities
