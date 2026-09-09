@@ -2476,28 +2476,24 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
-  !$OMP do schedule(static)
-  do j=js_u,je_u ; do I=isv-1,iev
+  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv)
+  do concurrent (j=js_u:je_u, I=isv-1:iev)
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
                 ((eta_PF_BT(i+1,j)-eta_PF(i+1,j))*gtot_W(i+1,j))) * &
                 dgeo_de * CS%IdxCu(I,j)
-  enddo ; enddo
-  !$OMP end do nowait
+  enddo
 
-  !$OMP do schedule(static)
-  do J=jsv-1,jev ; do i=is_v,ie_v
+  do concurrent (J=jsv-1:jev, i=is_v:ie_v)
     PFv(i,J) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_N(i,j)) - &
                 ((eta_PF_BT(i,j+1)-eta_PF(i,j+1))*gtot_S(i,j+1))) * &
                 dgeo_de * CS%IdyCv(i,J)
-  enddo ; enddo
-  !$OMP end do nowait
+  enddo
+  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv)
 
   if (find_etaav .and. (abs(wt_accel2_n) > 0.0)) then
-    !$OMP do
-    do j=G%jsc,G%jec ; do i=G%isc,G%iec
+    do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
-    enddo ; enddo
-    !$OMP end do nowait
+    enddo
   endif
 
 end procedure btloop_find_PF
@@ -2541,22 +2537,18 @@ module procedure btloop_update_v
    enddo ; enddo
    !$OMP end do nowait
   else
-   !$OMP do schedule(static)
-   do J=Js_v,Je_v ; do i=is_v,ie_v
+   do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(4,i,J) * ubt(I,j+1))) + &
              ((f_4_v(2,i,J) * ubt(I,j)) + (f_4_v(3,i,J) * ubt(I-1,j+1)))) - Cor_ref_v(i,J)
-   enddo ; enddo
-   !$OMP end do nowait
+   enddo
   endif
 
-  !$OMP do schedule(static)
   ! This updates the v-velocity, except at OBC points.
-  do J=Js_v,Je_v ; do i=is_v,ie_v
+  do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
     vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
          dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
     if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-  enddo ; enddo
-  !$OMP end do nowait
+  enddo
 
   if (CS%linear_wave_drag) then
     !$OMP do schedule(static)
@@ -2565,17 +2557,15 @@ module procedure btloop_update_v
           ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
     enddo ; enddo
   else
-    !$OMP do schedule(static)
-    do J=Js_v,Je_v ; do i=is_v,ie_v
+    do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * (Cor_v(i,J) + PFv(i,J))
-    enddo ; enddo
+    enddo
   endif
 
 end procedure btloop_update_v
 module procedure btloop_update_u
   integer :: i, j
-  !$OMP do schedule(static)
-  do j=js_u,je_u ; do I=Is_u,Ie_u
+  do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
     Cor_u(I,j) = (((f_4_u(4,I,j) * vbt(i+1,J)) + (f_4_u(1,I,j) * vbt(i,J-1))) + &
                   ((f_4_u(3,I,j) * vbt(i,J)) + (f_4_u(2,I,j) * vbt(i+1,J-1)))) - &
                  Cor_ref_u(I,j)
@@ -2583,8 +2573,7 @@ module procedure btloop_update_u
     ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
          dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
     if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-  enddo ; enddo
-  !$OMP end do nowait
+  enddo
 
   if (CS%linear_wave_drag) then
     !$OMP do schedule(static)
@@ -2594,11 +2583,9 @@ module procedure btloop_update_u
     enddo ; enddo
     !$OMP end do nowait
   else
-    !$OMP do schedule(static)
-    do j=js_u,je_u ; do I=Is_u,Ie_u
+    do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * (Cor_u(I,j) + PFu(I,j))
-    enddo ; enddo
-    !$OMP end do nowait
+    enddo
   endif
 
 end procedure btloop_update_u
