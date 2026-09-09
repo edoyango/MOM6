@@ -757,14 +757,12 @@ module procedure btstep
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(dt*vbt(i,J), BTCL_v(i,J)) * Idt
       enddo ; enddo
     elseif (use_BT_cont) then
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie
+      do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(ubt(I,j), BTCL_u(I,j))
-      enddo ; enddo
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie
+      enddo
+      do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(vbt(i,J), BTCL_v(i,J))
-      enddo ; enddo
+      enddo
     else
       !$OMP parallel do default(shared)
       do j=js,je ; do I=is-1,ie
