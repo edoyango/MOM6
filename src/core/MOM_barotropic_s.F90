@@ -1033,7 +1033,6 @@ module procedure btstep
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
-  !$OMP parallel default(shared) private(u_max_cor,uint_cor,v_max_cor,vint_cor,eta_cor_max,Htot)
   !$omp target enter data map(to: CS, CS%frhatu, CS%frhatv)
   do concurrent (j=js-1:je+1, I=is-1:ie)
     av_rem_u(I,j) = 0.0
@@ -1070,13 +1069,13 @@ module procedure btstep
     !   These two loops stay on the host.  av_rem**Instep is a real power, which is
     ! evaluated as exp(Instep*log(av_rem)), and the device exp and log do not agree
     ! with the host versions to the last bit, so offloading them changes answers.
-    !$OMP do
+    !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie
       bt_rem_u(I,j) = 0.0
       if (G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0) &
         bt_rem_u(I,j) = G%mask2dCu(I,j) * (av_rem_u(I,j)**Instep)
     enddo ; enddo
-    !$OMP do
+    !$OMP parallel do default(shared)
     do J=js-1,je ; do i=is,ie
       bt_rem_v(i,J) = 0.0
       if (G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0) &
@@ -1084,7 +1083,7 @@ module procedure btstep
     enddo ; enddo
   endif
   if (CS%linear_wave_drag) then
-    !$OMP do
+    !$OMP parallel do default(shared) private(Htot)
     do j=js,je ; do I=is-1,ie ; if (G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
       if (GV%Boussinesq) &
@@ -1096,7 +1095,7 @@ module procedure btstep
         Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
       endif
     endif ; enddo ; enddo
-    !$OMP do
+    !$OMP parallel do default(shared) private(Htot)
     do J=js-1,je ; do i=is,ie ; if (G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
       if (GV%Boussinesq) &
@@ -1112,13 +1111,13 @@ module procedure btstep
 
   ! Avoid changing the velocities at OBC points due to non-OBC calculations.
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$OMP do
+    !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie ; if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
       bt_rem_u(I,j) = 1.0
     endif ; enddo ; enddo
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$OMP do
+    !$OMP parallel do default(shared)
     do J=js-1,je ; do i=is,ie ; if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
       bt_rem_v(i,J) = 1.0
     endif ; enddo ; enddo
@@ -1128,8 +1127,10 @@ module procedure btstep
   do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     eta_src(i,j) = 0.0
   enddo
+  !$omp target enter data map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
+  !$omp                          CS%IareaT, CS%bathyT, CS%eta_cor_bound)
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
-    do j=js,je ; do i=is,ie ; if (G%mask2dT(i,j) > 0.0) then
+    do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0)
       if (CS%eta_cor(i,j) > 0.0) then
         !   Limit the source (outward) correction to be a fraction the mass that
         ! can be transported out of the cell by velocities with a CFL number of CFL_cor.
@@ -1158,16 +1159,18 @@ module procedure btstep
 
         CS%eta_cor(i,j) = max(CS%eta_cor(i,j), -max(0.0,Htot))
       endif
-    endif ; enddo ; enddo
-  else ; do j=js,je ; do i=is,ie
-    if (abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j)) &
+    enddo
+  else
+    do concurrent (j=js:je, i=is:ie, abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j))
       CS%eta_cor(i,j) = sign(dt*CS%eta_cor_bound(i,j), CS%eta_cor(i,j))
-  enddo ; enddo ; endif ; endif
-  !$OMP do
-  do j=js,je ; do i=is,ie
+    enddo
+  endif ; endif
+
+  do concurrent (j=js:je, i=is:ie)
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
-  enddo ; enddo
-  !$OMP end parallel
+  enddo
+  !$omp target exit data map(from: CS%eta_cor)
+  !$omp target exit data map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
 
   if (CS%dynamic_psurf) then
     ice_is_rigid = (associated(forces%rigidity_ice_u) .and. &

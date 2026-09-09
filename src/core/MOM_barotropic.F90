@@ -1344,7 +1344,7 @@ module subroutine btcalc(h, G, GV, CS, h_u, h_v, may_use_default, OBC)
 
 
 end subroutine btcalc
-module function find_uhbt(u, BTC) result(uhbt)
+pure module function find_uhbt(u, BTC) result(uhbt)
   real, intent(in) :: u    !< The local zonal velocity [L T-1 ~> m s-1] or time integrated velocity [L ~> m]
   type(local_BT_cont_u_type), intent(in) :: BTC !< A structure containing various fields that
                            !! allow the barotropic transports to be calculated consistently
@@ -1380,7 +1380,7 @@ module function uhbt_to_ubt(uhbt, BTC) result(ubt)
 
   ! Find the value of ubt that gives uhbt.
 end function uhbt_to_ubt
-module function find_vhbt(v, BTC) result(vhbt)
+pure module function find_vhbt(v, BTC) result(vhbt)
   real, intent(in) :: v    !< The local meridional velocity [L T-1 ~> m s-1] or time integrated velocity [L ~> m]
   type(local_BT_cont_v_type), intent(in) :: BTC !< A structure containing various fields that
                            !! allow the barotropic transports to be calculated consistently
