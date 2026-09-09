@@ -3929,14 +3929,20 @@ module procedure BT_cont_to_face_areas
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   hs = 1 ; if (present(halo)) hs = max(halo,0)
 
-  do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
+  !$omp target enter data map(to: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !$omp                          BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
+  !$omp                          BT_cont%FA_v_S0, BT_cont%FA_v_SS)
+  do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
     Datu(I,j) = max(BT_cont%FA_u_EE(I,j), BT_cont%FA_u_E0(I,j), &
                     BT_cont%FA_u_W0(I,j), BT_cont%FA_u_WW(I,j))
-  enddo ; enddo
-  do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
+  enddo
+  do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
     Datv(i,J) = max(BT_cont%FA_v_NN(i,J), BT_cont%FA_v_N0(i,J), &
                     BT_cont%FA_v_S0(i,J), BT_cont%FA_v_SS(i,J))
-  enddo ; enddo
+  enddo
+  !$omp target exit data map(release: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !$omp                              BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
+  !$omp                              BT_cont%FA_v_S0, BT_cont%FA_v_SS)
 
 end procedure BT_cont_to_face_areas
 module procedure swap
