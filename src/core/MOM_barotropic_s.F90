@@ -1057,17 +1057,19 @@ module procedure btstep
   enddo
   !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv)
   if (CS%strong_drag) then
-    !$OMP do
-    do j=js,je ; do I=is-1,ie
+    !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv)
+    do concurrent (j=js:je, I=is-1:ie)
       bt_rem_u(I,j) = G%mask2dCu(I,j) * &
          ((nstep * av_rem_u(I,j)) / (1.0 + (nstep-1)*av_rem_u(I,j)))
-    enddo ; enddo
-    !$OMP do
-    do J=js-1,je ; do i=is,ie
+    enddo
+    do concurrent (J=js-1:je, i=is:ie)
       bt_rem_v(i,J) = G%mask2dCv(i,J) * &
          ((nstep * av_rem_v(i,J)) / (1.0 + (nstep-1)*av_rem_v(i,J)))
-    enddo ; enddo
+    enddo
   else
+    !   These two loops stay on the host.  av_rem**Instep is a real power, which is
+    ! evaluated as exp(Instep*log(av_rem)), and the device exp and log do not agree
+    ! with the host versions to the last bit, so offloading them changes answers.
     !$OMP do
     do j=js,je ; do I=is-1,ie
       bt_rem_u(I,j) = 0.0
