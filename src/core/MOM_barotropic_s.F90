@@ -1034,18 +1034,28 @@ module procedure btstep
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   !$OMP parallel default(shared) private(u_max_cor,uint_cor,v_max_cor,vint_cor,eta_cor_max,Htot)
-  !$OMP do
-  do j=js-1,je+1 ; do I=is-1,ie ; av_rem_u(I,j) = 0.0 ; enddo ; enddo
-  !$OMP do
-  do J=js-1,je ; do i=is-1,ie+1 ; av_rem_v(i,J) = 0.0 ; enddo ; enddo
-  !$OMP do
-  do j=js,je ; do k=1,nz ; do I=is-1,ie
-    av_rem_u(I,j) = av_rem_u(I,j) + CS%frhatu(I,j,k) * visc_rem_u(I,j,k)
-  enddo ; enddo ; enddo
-  !$OMP do
-  do J=js-1,je ; do k=1,nz ; do i=is,ie
-    av_rem_v(i,J) = av_rem_v(i,J) + CS%frhatv(i,J,k) * visc_rem_v(i,J,k)
-  enddo ; enddo ; enddo
+  !$omp target enter data map(to: CS, CS%frhatu, CS%frhatv)
+  do concurrent (j=js-1:je+1, I=is-1:ie)
+    av_rem_u(I,j) = 0.0
+  enddo
+  do concurrent (j=js:je)
+    do k=1,nz
+      do concurrent (I=is-1:ie)
+        av_rem_u(I,j) = av_rem_u(I,j) + CS%frhatu(I,j,k) * visc_rem_u(I,j,k)
+      enddo
+    enddo
+  enddo
+  do concurrent (J=js-1:je)
+    do concurrent(i=is-1:ie+1)
+      av_rem_v(i,J) = 0.0
+    enddo
+    do k=1,nz
+      do concurrent (i=is:ie)
+        av_rem_v(i,J) = av_rem_v(i,J) + CS%frhatv(i,J,k) * visc_rem_v(i,J,k)
+      enddo
+    enddo
+  enddo
+  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv)
   if (CS%strong_drag) then
     !$OMP do
     do j=js,je ; do I=is-1,ie
