@@ -807,8 +807,8 @@ module procedure btstep
 ! between the accelerations due to the average of the layer equations and the
 ! barotropic calculation.
 
-  !$OMP parallel do default(shared)
-  do j=js,je ; do I=is-1,ie ; if (G%OBCmaskCu(I,j) > 0.0) then
+  !$omp target enter data map(to: G, CS, GV, G%OBCmaskCu, CS%bathyT, CS%dy_Cu, CS%IDatu, forces%taux)
+  do concurrent (j=js:je, I=is-1:ie) ; if (G%OBCmaskCu(I,j) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
         Htot_avg = 0.5*(max(CS%bathyT(i,j)*GV%Z_to_H + eta(i,j), 0.0) + &
@@ -832,9 +832,11 @@ module procedure btstep
     BT_force_u(I,j) = forces%taux(I,j) * GV%RZ_to_H * CS%IDatu(I,j)*visc_rem_u(I,j,1)
   else
     BT_force_u(I,j) = 0.0
-  endif ; enddo ; enddo
-  !$OMP parallel do default(shared)
-  do J=js-1,je ; do i=is,ie ; if (G%OBCmaskCv(i,J) > 0.0) then
+  endif ; enddo
+  !$omp target exit data map(from: CS%IDatu)
+  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dy_Cu, forces%taux)
+  !$omp target enter data map(to: G, CS, GV, G%OBCmaskCv, CS%bathyT, CS%dx_Cv, CS%IDatv, forces%tauy)
+  do concurrent (J=js-1:je, i=is:ie) ; if (G%OBCmaskCv(i,J) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
         Htot_avg = 0.5*(max(CS%bathyT(i,j)*GV%Z_to_H + eta(i,j), 0.0) + &
@@ -858,7 +860,10 @@ module procedure btstep
     BT_force_v(i,J) = forces%tauy(i,J) * GV%RZ_to_H * CS%IDatv(i,J)*visc_rem_v(i,J,1)
   else
     BT_force_v(i,J) = 0.0
-  endif ; enddo ; enddo
+  endif ; enddo
+  !$omp target exit data map(from: CS%IDatv)
+  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dx_Cv, forces%tauy)
+
   if (associated(taux_bot) .and. associated(tauy_bot)) then
     !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie ; if (G%mask2dCu(I,j) > 0.0) then

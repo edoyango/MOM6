@@ -1354,7 +1354,7 @@ module function find_uhbt(u, BTC) result(uhbt)
   real :: uhbt !< The zonal barotropic transport [L2 H T-1 ~> m3 s-1] or time integrated transport [L2 H ~> m3]
 
 end function find_uhbt
-module function find_duhbt_du(u, BTC) result(duhbt_du)
+pure module function find_duhbt_du(u, BTC) result(duhbt_du)
   real, intent(in) :: u    !< The local zonal velocity [L T-1 ~> m s-1] or time integrated velocity [L ~> m]
   type(local_BT_cont_u_type), intent(in) :: BTC !< A structure containing various fields that
                            !! allow the barotropic transports to be calculated consistently
@@ -1389,7 +1389,7 @@ module function find_vhbt(v, BTC) result(vhbt)
   real :: vhbt !< The meridional barotropic transport [L2 H T-1 ~> m3 s-1] or time integrated transport [L2 H ~> m3]
 
 end function find_vhbt
-module function find_dvhbt_dv(v, BTC) result(dvhbt_dv)
+pure module function find_dvhbt_dv(v, BTC) result(dvhbt_dv)
   real, intent(in) :: v    !< The local meridional velocity [L T-1 ~> m s-1] or time integrated velocity [L ~> m]
   type(local_BT_cont_v_type), intent(in) :: BTC !< A structure containing various fields that
                            !! allow the barotropic transports to be calculated consistently
