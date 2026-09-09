@@ -4140,6 +4140,8 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
+  !$omp target enter data map(to: h, eta, G, G%bathyT, CS, CS%eta_cor) map(alloc: eta_h)
+
   do concurrent (j=js:je)
     if (GV%Boussinesq) then
       do concurrent (i=is:ie)
@@ -4167,6 +4169,9 @@ module procedure bt_mass_source
       enddo
     endif
   enddo
+
+  !$omp target exit data map(from: CS%eta_cor)
+  !$omp target exit data map(release: h, eta, G, G%bathyT, CS, eta_h)
 
 end procedure bt_mass_source
 module procedure barotropic_init
