@@ -2693,6 +2693,10 @@ module procedure btstep_layer_accel
   Idt = 1.0 / dt
   accel_underflow = CS%vel_underflow * Idt
 
+  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, u_accel_bt, v_accel_bt, pbce, &
+  !$omp                          gtot_E, gtot_W, gtot_N, gtot_S, e_anom) &
+  !$omp                      map(alloc: accel_layer_u, accel_layer_v)
+
   ! Now calculate each layer's accelerations.
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     accel_layer_u(I,j,k) = (u_accel_bt(I,j) - &
@@ -2706,6 +2710,10 @@ module procedure btstep_layer_accel
           ((pbce(i,j,k) - gtot_N(i,j)) * e_anom(i,j))) * CS%IdyCv(i,J) )
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
   enddo
+
+  !$omp target exit data map(from: accel_layer_u, accel_layer_v)
+  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, u_accel_bt, v_accel_bt, pbce, &
+  !$omp                              gtot_E, gtot_W, gtot_N, gtot_S, e_anom)
 
 end procedure btstep_layer_accel
 module procedure set_dtbt
