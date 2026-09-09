@@ -1837,6 +1837,8 @@ module procedure btstep_timeloop
   integer :: i, j, n, is, ie, js, je
   integer :: debug_halo ! The halo size to use for debugging checksums
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
+  logical :: submerged(SZIW_(CS),SZJW_(CS)) ! True where eta has dropped below the bottom depth [nondim]
+  logical :: eta_is_submerged ! True if submerged is true anywhere in the domain [nondim]
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
@@ -1886,42 +1888,41 @@ module procedure btstep_timeloop
 
   ! Zero out the arrays for various time-averaged quantities.
   if (find_etaav) then
-    !$OMP do
-    do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
+    do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
       eta_sum(i,j) = 0.0 ; eta_wtd(i,j) = 0.0
-    enddo ; enddo
+    enddo
   else
-    !$OMP do
-    do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
+    do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
       eta_wtd(i,j) = 0.0
-    enddo ; enddo
+    enddo
   endif
-  !$OMP do
-  do j=js,je ; do I=is-1,ie
+  !$omp target enter data map(to: CS, CS%ubtav, CS%vbtav)
+  do concurrent (j=js:je, I=is-1:ie)
     CS%ubtav(I,j) = 0.0 ; uhbtav(I,j) = 0.0
     PFu_avg(I,j) = 0.0 ; Coru_avg(I,j) = 0.0
     LDu_avg(I,j) = 0.0 ; ubt_wtd(I,j) = 0.0
-  enddo ; enddo
-  !$OMP do
-  do j=jsvf-1,jevf+1 ; do I=isvf-1,ievf
+  enddo
+  do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
     ubt_trans(I,j) = 0.0
-  enddo ; enddo
-  !$OMP do
-  do J=js-1,je ; do i=is,ie
+  enddo
+  do concurrent (J=js-1:je, i=is:ie)
     CS%vbtav(i,J) = 0.0 ; vhbtav(i,J) = 0.0
     PFv_avg(i,J) = 0.0 ; Corv_avg(i,J) = 0.0
     LDv_avg(i,J) = 0.0 ; vbt_wtd(i,J) = 0.0
-  enddo ; enddo
-  !$OMP do
-  do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
+  enddo
+  do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
     vbt_trans(i,J) = 0.0
-  enddo ; enddo
+  enddo
+  !$omp target exit data map(from: CS%ubtav, CS%vbtav)
+  !$omp target exit data map(release: CS)
   if (integral_BT_cont) then
     ubt_int(:,:) = 0.0 ; uhbt_int(:,:) = 0.0
     vbt_int(:,:) = 0.0 ; vhbt_int(:,:) = 0.0
   endif
 
-  p_surf_dyn(:,:) = 0.0
+  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
+    p_surf_dyn(i,j) = 0.0
+  enddo
   cfl_ltd_vol(:,:) = huge( GV%Z_to_H )
   if (CS%bt_limit_integral_transport) then
     ! Issue warnings if there are unphysical values of the initial sea surface height or total water column mass.
@@ -1972,12 +1973,12 @@ module procedure btstep_timeloop
     endif
 
     ! Store the previous velocities for time-filtered transports and OBCs.
-    do j=jsv,jev ; do I=isv-2,iev+1
+    do concurrent (j=jsv:jev, I=isv-2:iev+1)
       ubt_prev(I,j) = ubt(I,j)
-    enddo ; enddo
-    do J=jsv-2,jev+1 ; do i=isv,iev
+    enddo
+    do concurrent (J=jsv-2:jev+1, i=isv:iev)
       vbt_prev(i,J) = vbt(i,J)
-    enddo ; enddo
+    enddo
 
     if (integral_BT_cont) then
       !$OMP parallel do default(shared)
@@ -2094,17 +2095,14 @@ module procedure btstep_timeloop
         vhbt(i,J) = (vhbt_int(i,J) - vhbt_int_prev(i,J)) * Idtbt
       enddo ; enddo
     elseif (use_BT_cont) then
-      !$OMP do schedule(static)
-      do j=jsv,jev ; do I=isv-1,iev
+      do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = find_uhbt(ubt_trans(I,j), BTCL_u(I,j)) + uhbt0(I,j)
-      enddo ; enddo
-      !$OMP end do nowait
-      !$OMP do schedule(static)
-      do J=jsv-1,jev ; do i=isv,iev
+      enddo
+      do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = find_vhbt(vbt_trans(i,J), BTCL_v(i,J)) + vhbt0(i,J)
-      enddo ; enddo
+      enddo
     else
       !$OMP do schedule(static)
       do j=jsv,jev ; do I=isv-1,iev
@@ -2160,20 +2158,19 @@ module procedure btstep_timeloop
     endif
 
     ! Contribute to the running sums of the transports and velocities.
-    !$OMP do
-    do j=js,je ; do I=is-1,ie
+    !$omp target enter data map(to: CS, CS%ubtav, CS%vbtav)
+    do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) + wt_trans(n) * ubt_trans(I,j)
       uhbtav(I,j) = uhbtav(I,j) + wt_trans(n) * uhbt(I,j)
       ubt_wtd(I,j) = ubt_wtd(I,j) + wt_vel(n) * ubt(I,j)
-    enddo ; enddo
-    !$OMP end do nowait
-    !$OMP do
-    do J=js-1,je ; do i=is,ie
+    enddo
+    do concurrent (J=js-1:je, i=is:ie)
       CS%vbtav(i,J) = CS%vbtav(i,J) + wt_trans(n) * vbt_trans(i,J)
       vhbtav(i,J) = vhbtav(i,J) + wt_trans(n) * vhbt(i,J)
       vbt_wtd(i,J) = vbt_wtd(i,J) + wt_vel(n) * vbt(i,J)
-    enddo ; enddo
-    !$OMP end do nowait
+    enddo
+    !$omp target exit data map(from: CS%ubtav, CS%vbtav)
+    !$omp target exit data map(release: CS)
 
     if (CS%debug_bt) then
       call uvchksum("BT [uv]hbt just after OBC", uhbt, vhbt, CS%debug_BT_HI, haloshift=debug_halo, &
@@ -2214,12 +2211,13 @@ module procedure btstep_timeloop
         endif
       enddo ; enddo
     else
-      !$OMP do
-      do j=jsv,jev ; do i=isv,iev
+      !$omp target enter data map(to: CS, CS%IareaT_OBCmask)
+      do concurrent (j=jsv:jev, i=isv:iev)
         eta(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                    ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
         eta_wtd(i,j) = eta_wtd(i,j) + eta(i,j) * wt_eta(n)
-      enddo ; enddo
+      enddo
+      !$omp target exit data map(release: CS, CS%IareaT_OBCmask)
     endif
 
     if (CS%debug_bt) then
@@ -2230,9 +2228,20 @@ module procedure btstep_timeloop
     endif
 
     ! Issue warnings if there are unphysical values of the sea surface height or total water column mass.
+    eta_is_submerged = .false.
     if (GV%Boussinesq) then
+      ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
+      ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
+      ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
+      !$omp target teams distribute parallel do map(to: G, G%bathyT, G%mask2dT) map(from: submerged) &
+      !$omp                                     reduction(.or.: eta_is_submerged)
       do j=js,je ; do i=is,ie
-        if ((eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)) then
+        submerged(i,j) = (eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)
+        eta_is_submerged = eta_is_submerged .or. submerged(i,j)
+      enddo ; enddo
+
+      if (eta_is_submerged) then
+        do j=js,je ; do i=is,ie ; if (submerged(i,j)) then
           write(mesg,'(ES24.16," vs. ",ES24.16, " at ", ES12.4, ES12.4, i7, i7)') GV%H_to_m*eta(i,j), &
                -US%Z_to_m*G%bathyT(i,j), G%geoLonT(i,j), G%geoLatT(i,j), i + G%HI%idg_offset, j + G%HI%jdg_offset
           if (CS%bt_limit_integral_transport) &
@@ -2240,8 +2249,8 @@ module procedure btstep_timeloop
           if (err_count < 2) &
             call MOM_error(WARNING, "btstep: eta has dropped below bathyT: "//trim(mesg), all_print=.true.)
           err_count = err_count + 1
-        endif
-      enddo ; enddo
+        endif ; enddo ; enddo
+      endif
     else
       do j=js,je ; do i=is,ie
         if ((eta(i,j) < 0.0) .and. (G%mask2dT(i,j) > 0.0)) then
