@@ -1,4 +1,5 @@
 submodule (MOM_barotropic) MOM_barotropic_s
+#include "do_concurrent_compat.h"
 #include <MOM_memory.h>
 #ifdef STATIC_MEMORY_
 #  ifndef BTHALO_
@@ -1135,7 +1136,8 @@ module procedure btstep
   !$omp target enter data map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
   !$omp                          CS%IareaT, CS%bathyT, CS%eta_cor_bound)
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
-    do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0)
+    do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0) &
+        DO_LOCALITY(local(uint_cor, vint_cor, u_max_cor, v_max_cor))
       if (CS%eta_cor(i,j) > 0.0) then
         !   Limit the source (outward) correction to be a fraction the mass that
         ! can be transported out of the cell by velocities with a CFL number of CFL_cor.
