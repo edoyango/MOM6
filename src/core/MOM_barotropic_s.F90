@@ -1125,8 +1125,9 @@ module procedure btstep
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
-  !$OMP do
-  do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1 ; eta_src(i,j) = 0.0 ; enddo ; enddo
+  do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    eta_src(i,j) = 0.0
+  enddo
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
     do j=js,je ; do i=is,ie ; if (G%mask2dT(i,j) > 0.0) then
       if (CS%eta_cor(i,j) > 0.0) then
