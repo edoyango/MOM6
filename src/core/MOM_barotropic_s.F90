@@ -2753,6 +2753,8 @@ module procedure set_dtbt
   use_BT_cont = .false.
   if (present(BT_cont)) use_BT_cont = (associated(BT_cont))
 
+  !$omp target enter data map(alloc: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
+
   if (use_BT_cont) then
     call BT_cont_to_face_areas(BT_cont, Datu, Datv, G, US, MS, halo=0)
   elseif (CS%Nonlinear_continuity .and. present(eta)) then
@@ -2792,7 +2794,7 @@ module procedure set_dtbt
 
   min_max_dt2 = 1.0e38*US%s_to_T**2  ! A huge value for the permissible timestep squared.
   !$omp target teams distribute parallel do collapse(2) &
-  !$omp   map(to: G, G%IareaT, G%IdxCu, G%IdyCv, G%Coriolis2Bu, Datu, Datv, gtot_E, gtot_W, gtot_N, gtot_S) &
+  !$omp   map(to: G, G%IareaT, G%IdxCu, G%IdyCv, G%Coriolis2Bu) &
   !$omp   private(Idt_max2) reduction(min:min_max_dt2)
   do j=js,je ; do i=is,ie
     !   This is pretty accurate for gravity waves, but it is a conservative
@@ -2804,6 +2806,7 @@ module procedure set_dtbt
        (G%Coriolis2Bu(I-1,J) + G%Coriolis2Bu(I,J-1))) * CS%BT_Coriolis_scale**2 )
     if (Idt_max2 * min_max_dt2 > 1.0) min_max_dt2 = 1.0 / Idt_max2
   enddo ; enddo
+  !$omp target exit data map(release: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
   dtbt_max = sqrt(min_max_dt2 / dgeo_de)
   if (id_clock_sync > 0) call cpu_clock_begin(id_clock_sync)
   call min_across_PEs(dtbt_max)
