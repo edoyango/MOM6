@@ -1082,14 +1082,17 @@ module procedure btstep
         bt_rem_v(i,J) = G%mask2dCv(i,J) * (av_rem_v(i,J)**Instep)
     enddo ; enddo
   endif
+
   if (CS%linear_wave_drag) then
     !$OMP parallel do default(shared) private(Htot)
     do j=js,je ; do I=is-1,ie ; if (G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
+
       if (GV%Boussinesq) &
         Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
-      ! If Htot==0., linear wave drag is not used and Rayleigh_u = 0.0 (from initialization)
-      ! and bt_rem_u is unmodified.
+
+      ! If Htot == 0., linear wave drag is not used and Rayleigh_u = 0.0 (from
+      ! initialization) and bt_rem_u is unmodified.
       if (Htot > 0.0) then
         bt_rem_u(I,j) = bt_rem_u(I,j) * (Htot / (Htot + CS%lin_drag_u(I,j) * dtbt))
         Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
@@ -1098,10 +1101,12 @@ module procedure btstep
     !$OMP parallel do default(shared) private(Htot)
     do J=js-1,je ; do i=is,ie ; if (G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
+
       if (GV%Boussinesq) &
         Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
-      ! If Htot==0., linear wave drag is not used and Rayleigh_v = 0.0 (from initialization)
-      ! and bt_rem_v is unmodified.
+
+      ! If Htot == 0., linear wave drag is not used and Rayleigh_v = 0.0 (from
+      ! initialization) and bt_rem_v is unmodified.
       if (Htot > 0.0) then
         bt_rem_v(i,J) = bt_rem_v(i,J) * (Htot / (Htot + CS%lin_drag_v(i,J) * dtbt))
         Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
@@ -1186,33 +1191,34 @@ module procedure btstep
       endif
       !$OMP parallel do default(shared) private(Idt_max2,H_eff_dx2,dyn_coef_max,ice_strength)
       do j=js,je ; do i=is,ie
-      ! First determine the maximum stable value for dyn_coef_eta.
+        ! First determine the maximum stable value for dyn_coef_eta.
 
-      !   This estimate of the maximum stable time step is pretty accurate for
-      ! gravity waves, but it is a conservative estimate since it ignores the
-      ! stabilizing effect of the bottom drag.
-      Idt_max2 = 0.5 * (dgeo_de * (1.0 + 2.0*CS%bebt)) * (G%IareaT(i,j) * &
-            (((gtot_E(i,j) * (Datu(I,j)*G%IdxCu(I,j))) + &
-              (gtot_W(i,j) * (Datu(I-1,j)*G%IdxCu(I-1,j)))) + &
-             ((gtot_N(i,j) * (Datv(i,J)*G%IdyCv(i,J))) + &
-              (gtot_S(i,j) * (Datv(i,J-1)*G%IdyCv(i,J-1))))) + &
-            ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
-             (G%Coriolis2Bu(I-1,J) + G%Coriolis2Bu(I,J-1))) * CS%BT_Coriolis_scale**2 )
-      H_eff_dx2 = max(H_min_dyn * ((G%IdxT(i,j)**2) + (G%IdyT(i,j)**2)), &
-                      G%IareaT(i,j) * &
-                        (((Datu(I,j)*G%IdxCu(I,j)) + (Datu(I-1,j)*G%IdxCu(I-1,j))) + &
-                         ((Datv(i,J)*G%IdyCv(i,J)) + (Datv(i,J-1)*G%IdyCv(i,J-1))) ) )
-      dyn_coef_max = CS%const_dyn_psurf * max(0.0, 1.0 - dtbt**2 * Idt_max2) / &
-                     (dtbt**2 * H_eff_dx2)
+        !   This estimate of the maximum stable time step is pretty accurate for
+        ! gravity waves, but it is a conservative estimate since it ignores the
+        ! stabilizing effect of the bottom drag.
+        Idt_max2 = 0.5 * (dgeo_de * (1.0 + 2.0*CS%bebt)) * (G%IareaT(i,j) * &
+              (((gtot_E(i,j) * (Datu(I,j)*G%IdxCu(I,j))) + &
+                (gtot_W(i,j) * (Datu(I-1,j)*G%IdxCu(I-1,j)))) + &
+              ((gtot_N(i,j) * (Datv(i,J)*G%IdyCv(i,J))) + &
+                (gtot_S(i,j) * (Datv(i,J-1)*G%IdyCv(i,J-1))))) + &
+              ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
+              (G%Coriolis2Bu(I-1,J) + G%Coriolis2Bu(I,J-1))) * CS%BT_Coriolis_scale**2 )
+        H_eff_dx2 = max(H_min_dyn * ((G%IdxT(i,j)**2) + (G%IdyT(i,j)**2)), &
+                        G%IareaT(i,j) * &
+                          (((Datu(I,j)*G%IdxCu(I,j)) + (Datu(I-1,j)*G%IdxCu(I-1,j))) + &
+                          ((Datv(i,J)*G%IdyCv(i,J)) + (Datv(i,J-1)*G%IdyCv(i,J-1))) ) )
+        dyn_coef_max = CS%const_dyn_psurf * max(0.0, 1.0 - dtbt**2 * Idt_max2) / &
+                      (dtbt**2 * H_eff_dx2)
 
-      ! ice_strength has units of [L2 Z-1 T-2 ~> m s-2]. rigidity_ice_[uv] has units of [L4 Z-1 T-1 ~> m3 s-1].
-      ice_strength = ((forces%rigidity_ice_u(I,j) + forces%rigidity_ice_u(I-1,j)) + &
-                      (forces%rigidity_ice_v(i,J) + forces%rigidity_ice_v(i,J-1))) / &
-                      (CS%ice_strength_length**2 * dtbt)
+        ! ice_strength has units of [L2 Z-1 T-2 ~> m s-2]. rigidity_ice_[uv] has units of [L4 Z-1 T-1 ~> m3 s-1].
+        ice_strength = ((forces%rigidity_ice_u(I,j) + forces%rigidity_ice_u(I-1,j)) + &
+                        (forces%rigidity_ice_v(i,J) + forces%rigidity_ice_v(i,J-1))) / &
+                        (CS%ice_strength_length**2 * dtbt)
 
-      ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
-      dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
-    enddo ; enddo ; endif
+        ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
+        dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
+      enddo ; enddo
+    endif
   endif
 
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
@@ -1254,7 +1260,7 @@ module procedure btstep
       call hchksum(d_eta_PF, "BT d_eta_PF", CS%debug_BT_HI, haloshift=0, unscale=GV%H_to_MKS)
     else
       call hchksum(eta_PF, "BT eta_PF", CS%debug_BT_HI, haloshift=0, unscale=GV%H_to_MKS)
-      call hchksum(eta_PF_in, "BT eta_PF_in", G%HI,haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(eta_PF_in, "BT eta_PF_in", G%HI, haloshift=0, unscale=GV%H_to_MKS)
     endif
     if (CS%linearized_BT_PV) then
       call Bchksum(CS%q_D, "BT PV (q_D)", CS%debug_BT_HI, haloshift=0, symmetric=.true., unscale=US%s_to_T/GV%H_to_MKS)
@@ -1338,6 +1344,9 @@ module procedure btstep
     ! wt_eta(n) = wt_vel(n)
 
     ! The rest should not be changed.
+  enddo
+  ! do sum reduction on CPU to preserve fp summation order (nstep+filter is small)
+  do n=1,nstep+nfilter
     sum_wt_vel = sum_wt_vel + wt_vel(n) ; sum_wt_eta = sum_wt_eta + wt_eta(n)
   enddo
   wt_trans(nstep+nfilter+1) = 0.0 ; wt_accel(nstep+nfilter+1) = 0.0
