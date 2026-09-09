@@ -3827,6 +3827,14 @@ module procedure set_local_BT_cont_types
   hs = max(halo,0)
   dt = 1.0 ; if (present(dt_baroclinic)) dt = dt_baroclinic
 
+  !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp                          BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+  !$omp                          BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+  !$omp                          BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
+  !$omp                    map(alloc: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
+  !$omp                               v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS, &
+  !$omp                               BTCL_u, BTCL_v)
+
   ! Copy the BT_cont arrays into symmetric, potentially wide haloed arrays.
   do concurrent (j=js-hs:je+hs, i=is-hs-1:ie+hs)
     u_polarity(i,j) = 1.0
@@ -3861,9 +3869,18 @@ module procedure set_local_BT_cont_types
   call create_group_pass(BT_cont%pass_FA_uv, FA_u_W0, FA_v_S0, BT_Domain, To_All+Scalar_Pair)
   call create_group_pass(BT_cont%pass_FA_uv, FA_u_WW, FA_v_SS, BT_Domain, To_All+Scalar_Pair)
 !--- end setup for group halo update
-  ! Do halo updates on BT_cont.
+  ! Do halo updates on BT_cont. u_polarity/v_polarity/uBT_EE/... and FA_u_EE/... are device-
+  ! resident for the whole routine (see the map at the top). omp_offload=.true. is deliberately
+  ! not used: these are vector-pair passes, and FMS2's group_update_pack.inc documents an
+  ! unresolved ROCm device-runtime race in the target-update copy-back that path relies on (see
+  ! the longer note on this same issue in btstep_timeloop's halo pass). Manual sync around plain
+  ! calls avoids it.
+  !$omp target update from(u_polarity, v_polarity, uBT_EE, vBT_NN, uBT_WW, vBT_SS, &
+  !$omp                    FA_u_EE, FA_v_NN, FA_u_E0, FA_v_N0, FA_u_W0, FA_v_S0, FA_u_WW, FA_v_SS)
   call do_group_pass(BT_cont%pass_polarity_BT, BT_Domain)
   call do_group_pass(BT_cont%pass_FA_uv, BT_Domain)
+  !$omp target update to(u_polarity, v_polarity, uBT_EE, vBT_NN, uBT_WW, vBT_SS, &
+  !$omp                  FA_u_EE, FA_v_NN, FA_u_E0, FA_v_N0, FA_u_W0, FA_v_S0, FA_u_WW, FA_v_SS)
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
 
@@ -3927,6 +3944,15 @@ module procedure set_local_BT_cont_types
     if (abs(BTCL_v(i,J)%vBT_NN) > 0.0) BTCL_v(i,J)%vh_crvN = &
       (C1_3 * (BTCL_v(i,J)%FA_v_NN - BTCL_v(i,J)%FA_v_N0)) / BTCL_v(i,J)%vBT_NN**2
   enddo
+
+  !$omp target exit data map(from: BTCL_u, BTCL_v)
+  !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+  !$omp                              BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+  !$omp                              BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS, &
+  !$omp                              u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
+  !$omp                              v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
+
 end procedure set_local_BT_cont_types
 module procedure adjust_local_BT_cont_types
   real :: dt ! The baroclinic timestep [T ~> s] or 1.0 [nondim]
