@@ -790,8 +790,12 @@ module procedure btstep
 ! Calculate the initial barotropic velocities from the layer's velocities.
   call btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt, G, GV, CS)
 
-  uhbt(:,:) = 0.0 ; vhbt(:,:) = 0.0
-  u_accel_bt(:,:) = 0.0 ; v_accel_bt(:,:) = 0.0
+  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+    uhbt(i,j) = 0.0 ; u_accel_bt(i,j) = 0.0
+  enddo
+  do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+    vhbt(i,j) = 0.0 ; v_accel_bt(i,j) = 0.0
+  enddo
 
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
     do j=js,je ; do I=is-1,ie ; ubt_st(I,j) = ubt(I,j) ; enddo ; enddo
