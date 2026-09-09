@@ -2516,7 +2516,9 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
-  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv)
+  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, PFu, PFv, eta_PF_BT, eta_PF, &
+  !$omp                          gtot_N, gtot_S, gtot_E, gtot_W, eta_sum)
+
   do concurrent (j=js_u:je_u, I=isv-1:iev)
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
                 ((eta_PF_BT(i+1,j)-eta_PF(i+1,j))*gtot_W(i+1,j))) * &
@@ -2528,13 +2530,16 @@ module procedure btloop_find_PF
                 ((eta_PF_BT(i,j+1)-eta_PF(i,j+1))*gtot_S(i,j+1))) * &
                 dgeo_de * CS%IdyCv(i,J)
   enddo
-  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv)
 
   if (find_etaav .and. (abs(wt_accel2_n) > 0.0)) then
     do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
     enddo
   endif
+
+  !$omp target exit data map(from: PFu, PFv, eta_sum)
+  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, eta_PF_BT, eta_PF, &
+  !$omp                              gtot_N, gtot_S, gtot_E, gtot_W)
 
 end procedure btloop_find_PF
 module procedure btloop_add_dyn_PF
@@ -2567,6 +2572,9 @@ module procedure btloop_update_v
   logical :: use_bracket_bug
   integer :: i, j
   use_bracket_bug = .false. ; if (present(Cor_bracket_bug)) use_bracket_bug = Cor_bracket_bug
+
+  !$omp target enter data map(to: ubt, PFv, f_4_v, bt_rem_v, BT_force_v, Cor_ref_v, &
+  !$omp                          vbt, v_accel_bt, Cor_v)
 
   ! The bracket bug only applies if v is second, use ioff to check.
   if (use_bracket_bug) then
@@ -2602,9 +2610,15 @@ module procedure btloop_update_v
     enddo
   endif
 
+  !$omp target exit data map(from: vbt, v_accel_bt, Cor_v)
+  !$omp target exit data map(release: ubt, PFv, f_4_v, bt_rem_v, BT_force_v, Cor_ref_v)
+
 end procedure btloop_update_v
 module procedure btloop_update_u
   integer :: i, j
+  !$omp target enter data map(to: vbt, PFu, f_4_u, bt_rem_u, BT_force_u, Cor_ref_u, &
+  !$omp                          ubt, u_accel_bt, Cor_u)
+
   do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
     Cor_u(I,j) = (((f_4_u(4,I,j) * vbt(i+1,J)) + (f_4_u(1,I,j) * vbt(i,J-1))) + &
                   ((f_4_u(3,I,j) * vbt(i,J)) + (f_4_u(2,I,j) * vbt(i+1,J-1)))) - &
@@ -2627,6 +2641,9 @@ module procedure btloop_update_u
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * (Cor_u(I,j) + PFu(I,j))
     enddo
   endif
+
+  !$omp target exit data map(from: ubt, u_accel_bt, Cor_u)
+  !$omp target exit data map(release: vbt, PFu, f_4_u, bt_rem_u, BT_force_u, Cor_ref_u)
 
 end procedure btloop_update_u
 module procedure btstep_ubt_from_layer
