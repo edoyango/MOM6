@@ -2650,6 +2650,8 @@ module procedure btstep_ubt_from_layer
   integer :: i, j, k, is, ie, js, je, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
+  !$omp target enter data map(to: U_in, V_in, wt_u, wt_v) map(alloc: ubt, vbt)
+
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
     ubt(i,j) = 0.0
   enddo
@@ -2677,6 +2679,9 @@ module procedure btstep_ubt_from_layer
       if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
     enddo
   enddo
+
+  !$omp target exit data map(from: ubt, vbt)
+  !$omp target exit data map(release: U_in, V_in, wt_u, wt_v)
 
 end procedure btstep_ubt_from_layer
 module procedure btstep_layer_accel
