@@ -335,6 +335,12 @@ module procedure btstep
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
 !--- end setup for group halo update
 
+  !$omp target enter data &
+  !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
+  !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta)
+
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
 ! the halo update that needs to be completed before the next calculations.
@@ -349,106 +355,96 @@ module procedure btstep
       DCor_v(i,J) = CS%D_v_Cor(i,J)
     enddo
   else
-    q(:,:) = 0.0 ; DCor_u(:,:) = 0.0 ; DCor_v(:,:) = 0.0
+    do concurrent (J=CS%jsdw-1:CS%jedw, I=CS%isdw-1:CS%iedw)
+      q(I,J) = 0.0
+    enddo
+    do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+      DCor_u(I,j) = 0.0
+    enddo
+    do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+      DCor_v(i,J) = 0.0
+    enddo
     if (GV%Boussinesq) then
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie
+      do concurrent (j=js:je, I=is-1:ie)
         DCor_u(I,j) = 0.5 * (max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0) + &
                              max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0) )
-      enddo ; enddo
+      enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%u_OBCs_on_PE) then
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_u_W_obc), min(je,CS%BT_OBC%je_u_W_obc)
-          do I = max(is-1,CS%BT_OBC%Is_u_W_obc), min(ie,CS%BT_OBC%Ie_u_W_obc)
-            if (CS%BT_OBC%u_OBC_type(I,j) < 0) & ! Western boundary condition
-              DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), &
+                        CS%BT_OBC%u_OBC_type(I,j) < 0) ! Western boundary condition
+          DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)
         enddo
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_u_E_obc), min(je,CS%BT_OBC%je_u_E_obc)
-          do I = max(is-1,CS%BT_OBC%Is_u_E_obc), min(ie,CS%BT_OBC%Ie_u_E_obc)
-            if (CS%BT_OBC%u_OBC_type(I,j) > 0) & ! Eastern boundary condition
-              DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), &
+                        CS%BT_OBC%u_OBC_type(I,j) > 0) ! Eastern boundary condition
+          DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
         enddo
       endif
 
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie
+      do concurrent (J=js-1:je, i=is:ie)
         DCor_v(i,J) = 0.5 * (max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i+1,j), 0.0) + &
                              max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0) )
-      enddo ; enddo
+      enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%v_OBCs_on_PE) then
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_v_S_obc), min(je,CS%BT_OBC%je_v_S_obc)
-          do I = max(is-1,CS%BT_OBC%Is_v_S_obc), min(ie,CS%BT_OBC%Ie_v_S_obc)
-            if (CS%BT_OBC%v_OBC_type(i,J) < 0) & ! Southern boundary condition
-              DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0)
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), &
+                        CS%BT_OBC%v_OBC_type(i,J) < 0) ! Southern boundary condition
+          DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0)
         enddo
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_v_N_obc), min(je,CS%BT_OBC%je_v_N_obc)
-          do I = max(is-1,CS%BT_OBC%Is_v_N_obc), min(ie,CS%BT_OBC%Ie_v_N_obc)
-            if (CS%BT_OBC%v_OBC_type(i,J) > 0) & ! Northern boundary condition
-              DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), &
+                        CS%BT_OBC%v_OBC_type(i,J) > 0) ! Northern boundary condition
+          DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
         enddo
       endif
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do I=is-1,ie
+      do concurrent (J=js-1:je, I=is-1:ie)
         q(I,J) = 0.25 * (CS%BT_Coriolis_scale * G%CoriolisBu(I,J)) * &
              ((CS%q_wt(1,I,J) + CS%q_wt(4,I,J)) + (CS%q_wt(2,I,J) + CS%q_wt(3,I,J))) / &
              (max(((CS%q_wt(1,I,J) * max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)) + &
                    (CS%q_wt(4,I,J) * max(GV%Z_to_H*G%bathyT(i+1,j+1) + eta_in(i+1,j+1), 0.0))) + &
                   ((CS%q_wt(2,I,J) * max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)) + &
                    (CS%q_wt(3,I,J) * max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0))), h_a_neglect) )
-      enddo ; enddo
+      enddo
     else  ! Non-Boussinesq
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie
+      do concurrent (j=js:je, I=is-1:ie)
         DCor_u(I,j) = 0.5 * (eta_in(i+1,j) + eta_in(i,j))
-      enddo ; enddo
+      enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%u_OBCs_on_PE) then
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_u_W_obc), min(je,CS%BT_OBC%je_u_W_obc)
-          do I = max(is-1,CS%BT_OBC%Is_u_W_obc), min(ie,CS%BT_OBC%Ie_u_W_obc)
-            if (CS%BT_OBC%u_OBC_type(I,j) < 0) DCor_u(I,j) = eta_in(i+1,j) ! Western boundary condition
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), &
+                        CS%BT_OBC%u_OBC_type(I,j) < 0) ! Western boundary condition
+          DCor_u(I,j) = eta_in(i+1,j)
         enddo
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_u_E_obc), min(je,CS%BT_OBC%je_u_E_obc)
-          do I = max(is-1,CS%BT_OBC%Is_u_E_obc), min(ie,CS%BT_OBC%Ie_u_E_obc)
-            if (CS%BT_OBC%u_OBC_type(I,j) > 0) DCor_u(I,j) = eta_in(i,j)  ! Eastern boundary condition
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), &
+                        CS%BT_OBC%u_OBC_type(I,j) > 0) ! Eastern boundary condition
+          DCor_u(I,j) = eta_in(i,j)
         enddo
       endif
 
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie
+      do concurrent (J=js-1:je, i=is:ie)
         DCor_v(i,J) = 0.5 * (eta_in(i,j+1) + eta_in(i,j))
-      enddo ; enddo
+      enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%v_OBCs_on_PE) then
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_v_S_obc), min(je,CS%BT_OBC%je_v_S_obc)
-          do I = max(is-1,CS%BT_OBC%Is_v_S_obc), min(ie,CS%BT_OBC%Ie_v_S_obc)
-            if (CS%BT_OBC%v_OBC_type(i,J) < 0) DCor_v(i,J) = eta_in(i,j+1) ! Southern boundary condition
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), &
+                        CS%BT_OBC%v_OBC_type(i,J) < 0) ! Southern boundary condition
+          DCor_v(i,J) = eta_in(i,j+1)
         enddo
-        !$OMP parallel do default(shared)
-        do j = max(js,CS%BT_OBC%js_v_N_obc), min(je,CS%BT_OBC%je_v_N_obc)
-          do I = max(is-1,CS%BT_OBC%Is_v_N_obc), min(ie,CS%BT_OBC%Ie_v_N_obc)
-            if (CS%BT_OBC%v_OBC_type(i,J) > 0) DCor_v(i,J) = eta_in(i,j) ! Northern boundary condition
-          enddo
+        do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc), &
+                        I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), &
+                        CS%BT_OBC%v_OBC_type(i,J) > 0) ! Northern boundary condition
+          DCor_v(i,J) = eta_in(i,j)
         enddo
       endif
 
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do I=is-1,ie
+      do concurrent (J=js-1:je, I=is-1:ie)
         q(I,J) = 0.25 * (CS%BT_Coriolis_scale * G%CoriolisBu(I,J)) * &
              ((CS%q_wt(1,I,J) + CS%q_wt(4,I,J)) + (CS%q_wt(2,I,J) + CS%q_wt(3,I,J))) / &
              (max(((CS%q_wt(1,I,J) * eta_in(i,j)) + (CS%q_wt(4,I,J) * eta_in(i+1,j+1))) + &
                   ((CS%q_wt(2,I,J) * eta_in(i+1,j)) + (CS%q_wt(3,I,J) * eta_in(i,j+1))), h_a_neglect) )
-      enddo ; enddo
+      enddo
     endif
 
     ! With very wide halos, q and D need to be calculated on the available data
@@ -457,9 +453,16 @@ module procedure btstep
     ! must be done before the [abcd]mer and [abcd]zon are calculated.
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (nonblock_setup) then
+      !$omp target update from(q, DCor_u, DCor_v)
       call start_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
     else
+      ! omp_offload=.true. is deliberately not used here: FMS2's group_update_pack.inc documents
+      ! an unresolved ROCm device-runtime race in the target-update copy-back that path relies on
+      ! (see the longer note on this same issue in btstep_timeloop's halo pass). Manual sync
+      ! around a plain call avoids it.
+      !$omp target update from(q, DCor_u, DCor_v)
       call do_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
+      !$omp target update to(q, DCor_u, DCor_v)
     endif
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
@@ -478,6 +481,13 @@ module procedure btstep
     endif
     if (CS%dynamic_psurf) dyn_coef_eta(i,j) = 0.0
   enddo
+
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta)
+
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
