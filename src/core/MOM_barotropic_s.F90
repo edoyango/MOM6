@@ -491,6 +491,10 @@ module procedure btstep
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
+  !$omp target enter data &
+  !$omp   map(alloc: Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
+
   do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
     Cor_ref_u(I,j) = 0.0 ; BT_force_u(I,j) = 0.0 ; ubt(I,j) = 0.0
     Datu(I,j) = 0.0 ; bt_rem_u(I,j) = 0.0 ; uhbt0(I,j) = 0.0
@@ -499,6 +503,10 @@ module procedure btstep
     Cor_ref_v(i,J) = 0.0 ; BT_force_v(i,J) = 0.0 ; vbt(i,J) = 0.0
     Datv(i,J) = 0.0 ; bt_rem_v(i,J) = 0.0 ; vhbt0(i,J) = 0.0
   enddo
+
+  !$omp target exit data &
+  !$omp   map(from: Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
 
   if (apply_OBCs) then
     SpV_col_avg(:,:) = 0.0
