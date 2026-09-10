@@ -1602,18 +1602,23 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   ! Find or store the weighted time-mean velocities and transports.
+  ! CS%[uv]btav/uhbtav/vhbtav/[uv]bt_wtd all hold correct host values here,
+  ! accumulated by btstep_timeloop and left on host by the time it returns.
   if (CS%answer_date < 20190101) then
-    do j=js,je ; do I=is-1,ie
+    !$omp target enter data &
+    !$omp   map(to: CS, CS%ubtav, CS%vbtav, uhbtav, vhbtav, ubt_wtd, vbt_wtd)
+    do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) * I_sum_wt_trans
       uhbtav(I,j) = uhbtav(I,j) * I_sum_wt_trans
       ubt_wtd(I,j) = ubt_wtd(I,j) * I_sum_wt_vel
-    enddo ; enddo
-
-    do J=js-1,je ; do i=is,ie
+    enddo
+    do concurrent (J=js-1:je, i=is:ie)
       CS%vbtav(i,J) = CS%vbtav(i,J) * I_sum_wt_trans
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
       vbt_wtd(i,J) = vbt_wtd(i,J) * I_sum_wt_vel
-    enddo ; enddo
+    enddo
+    !$omp target exit data map(release: CS, CS%ubtav, CS%vbtav) &
+    !$omp   map(from: uhbtav, vhbtav, ubt_wtd, vbt_wtd)
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
@@ -1647,14 +1652,22 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   if (CS%strong_drag .and. CS%rescale_strong_drag) then
-    do j=js,je ; do I=is-1,ie
-      if (G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0) &
-        u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
-    enddo ; enddo
-    do J=js-1,je ; do i=is,ie
-      if (G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0) &
-        v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
-    enddo ; enddo
+    ! av_rem_u/v and bt_rem_u/v hold correct host values from their own
+    ! per-construct implicit mapping earlier in this routine (not part of any
+    ! persistent bracket there); u_accel_bt/v_accel_bt likewise from
+    ! btstep_layer_accel's own self-contained mapping.
+    !$omp target enter data &
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v, &
+    !$omp     u_accel_bt, v_accel_bt)
+    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
+      u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
+    enddo
+    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0)
+      v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
+    enddo
+    !$omp target exit data &
+    !$omp   map(release: G, G%mask2dCu, G%mask2dCv, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v) &
+    !$omp   map(from: u_accel_bt, v_accel_bt)
   endif
 
   ! Now calculate each layer's accelerations.
@@ -1664,18 +1677,29 @@ module procedure btstep
   if (apply_OBCs) then
     ! Correct the accelerations at OBC velocity points, but only in the
     ! symmetric-memory computational domain, not in the wide halo regions.
-    if (CS%BT_OBC%u_OBCs_on_PE) then ; do j=js,je ; do I=is-1,ie
-      if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
+    !$omp target enter data &
+    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_wtd, vbt_wtd, ubt_st, &
+    !$omp     vbt_st, u_accel_bt, v_accel_bt, accel_layer_u, accel_layer_v)
+    if (CS%BT_OBC%u_OBCs_on_PE) then
+      do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
         u_accel_bt(I,j) = (ubt_wtd(I,j) - ubt_st(I,j)) / dt
-        do k=1,nz ; accel_layer_u(I,j,k) = u_accel_bt(I,j) ; enddo
-      endif
-    enddo ; enddo ; endif
-    if (CS%BT_OBC%v_OBCs_on_PE) then ; do J=js-1,je ; do i=is,ie
-      if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
+        do k=1,nz
+          accel_layer_u(I,j,k) = u_accel_bt(I,j)
+        enddo
+      enddo
+    endif
+    if (CS%BT_OBC%v_OBCs_on_PE) then
+      do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
         v_accel_bt(i,J) = (vbt_wtd(i,J) - vbt_st(i,J)) / dt
-        do k=1,nz ; accel_layer_v(i,J,k) = v_accel_bt(i,J) ; enddo
-      endif
-    enddo ; enddo ; endif
+        do k=1,nz
+          accel_layer_v(i,J,k) = v_accel_bt(i,J)
+        enddo
+      enddo
+    endif
+    !$omp target exit data &
+    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_wtd, vbt_wtd, ubt_st, &
+    !$omp     vbt_st) &
+    !$omp   map(from: u_accel_bt, v_accel_bt, accel_layer_u, accel_layer_v)
   endif
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
