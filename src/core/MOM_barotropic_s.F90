@@ -818,15 +818,22 @@ module procedure btstep
                                         G, US, MS, 1+ievf-ie)
       endif
     endif
+    ! uhbt0/vhbt0 were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:
+    ! CS%jedw halo above, so they are mapped with `to`, not `alloc`, here.
+    ! uhbt/vhbt/ubt/vbt were released by the previous bracket and are re-mapped
+    ! with `to`. BTCL_u/BTCL_v are plain-data (no allocatable/pointer
+    ! components) so a simple `to` covers the whole array of derived types.
+    !$omp target enter data &
+    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, uhbt, vhbt, ubt, vbt, &
+    !$omp     BTCL_u, BTCL_v, Datu, Datv, uhbt0, vhbt0)
+
     if (integral_BT_cont) then
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie
+      do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(dt*ubt(I,j), BTCL_u(I,j)) * Idt
-      enddo ; enddo
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie
+      enddo
+      do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(dt*vbt(i,J), BTCL_v(i,J)) * Idt
-      enddo ; enddo
+      enddo
     elseif (use_BT_cont) then
       do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(ubt(I,j), BTCL_u(I,j))
@@ -835,27 +842,28 @@ module procedure btstep
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(vbt(i,J), BTCL_v(i,J))
       enddo
     else
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie
+      do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - Datu(I,j)*ubt(I,j)
-      enddo ; enddo
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie
+      enddo
+      do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - Datv(i,J)*vbt(i,J)
-      enddo ; enddo
+      enddo
     endif
     if (CS%BT_OBC%u_OBCs_on_PE) then  ! Zero out the reference transport at OBC points
-      !$OMP parallel do default(shared)
-      do j=js,je ; do I=is-1,ie ; if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
+      do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
         uhbt0(I,j) = 0.0
-      endif ; enddo ; enddo
+      enddo
     endif
     if (CS%BT_OBC%v_OBCs_on_PE) then  !Zero out the reference transport at OBC points
-      !$OMP parallel do default(shared)
-      do J=js-1,je ; do i=is,ie ; if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
+      do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
         vhbt0(i,J) = 0.0
-      endif ; enddo ; enddo
+      enddo
     endif
+
+    !$omp target exit data &
+    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, uhbt, vhbt, ubt, vbt, &
+    !$omp     BTCL_u, BTCL_v, Datu, Datv) &
+    !$omp   map(from: uhbt0, vhbt0)
   endif
 
 ! Calculate the initial barotropic velocities from the layer's velocities.
