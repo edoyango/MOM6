@@ -1306,8 +1306,16 @@ module procedure btstep
       else
         H_to_Z = GV%H_to_RZ / CS%Rho_BT_lin
       endif
-      !$OMP parallel do default(shared) private(Idt_max2,H_eff_dx2,dyn_coef_max,ice_strength)
-      do j=js,je ; do i=is,ie
+      ! dyn_coef_eta was already zeroed over the wider CS%isdw:CS%iedw/
+      ! CS%jsdw:CS%jedw halo above (under this same CS%dynamic_psurf guard),
+      ! so mapped with `to`, not `alloc`. forces%rigidity_ice_[uv] are mapped
+      ! alone, without a bare `forces`, matching the already-validated
+      ! forces%taux/tauy pattern earlier in this routine.
+      !$omp target enter data &
+      !$omp   map(to: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
+      !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, Datu, Datv, gtot_E, gtot_W, &
+      !$omp     gtot_N, gtot_S, dyn_coef_eta)
+      do concurrent (j=js:je, i=is:ie)
         ! First determine the maximum stable value for dyn_coef_eta.
 
         !   This estimate of the maximum stable time step is pretty accurate for
@@ -1334,7 +1342,12 @@ module procedure btstep
 
         ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
         dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
-      enddo ; enddo
+      enddo
+      !$omp target exit data &
+      !$omp   map(release: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
+      !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, Datu, Datv, gtot_E, gtot_W, &
+      !$omp     gtot_N, gtot_S) &
+      !$omp   map(from: dyn_coef_eta)
     endif
   endif
 
