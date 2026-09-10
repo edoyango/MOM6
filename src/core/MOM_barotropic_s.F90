@@ -954,19 +954,30 @@ module procedure btstep
   !$omp target exit data map(from: CS%IDatv)
   !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dx_Cv, forces%tauy)
 
+  ! BT_force_u/v hold correct host values here: the preceding bracket (this
+  ! routine's existing wind-stress loops) never mapped them, so their own
+  ! per-construct implicit mapping copied the result back to host already.
   if (associated(taux_bot) .and. associated(tauy_bot)) then
-    !$OMP parallel do default(shared)
-    do j=js,je ; do I=is-1,ie ; if (G%mask2dCu(I,j) > 0.0) then
+    !$omp target enter data &
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, CS%IDatu, CS%IDatv, taux_bot, tauy_bot, &
+    !$omp     BT_force_u, BT_force_v)
+    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
       BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
-    endif ; enddo ; enddo
-    !$OMP parallel do default(shared)
-    do J=js-1,je ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.0) then
+    enddo
+    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0)
       BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
-    endif ; enddo ; enddo
+    enddo
+    !$omp target exit data &
+    !$omp   map(release: G, G%mask2dCu, G%mask2dCv, GV, CS, CS%IDatu, CS%IDatv, taux_bot, tauy_bot) &
+    !$omp   map(from: BT_force_u, BT_force_v)
   endif
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
   ! non-symmetric computational domain.
+  !$omp target enter data &
+  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v, BT_force_u, &
+  !$omp     BT_force_v, ubt, vbt)
+
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (I=Isq:Ieq)
@@ -983,19 +994,21 @@ module procedure btstep
   enddo
 
   if (CS%gradual_BT_ICs) then
-    !$OMP parallel do default(shared)
-    do j=js,je ; do I=is-1,ie
+    do concurrent (j=js:je, I=is-1:ie)
       BT_force_u(I,j) = BT_force_u(I,j) + (ubt(I,j) - CS%ubt_IC(I,j)) * Idt
       ubt(I,j) = CS%ubt_IC(I,j)
       if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-    enddo ; enddo
-    !$OMP parallel do default(shared)
-    do J=js-1,je ; do i=is,ie
+    enddo
+    do concurrent (J=js-1:je, i=is:ie)
       BT_force_v(i,J) = BT_force_v(i,J) + (vbt(i,J) - CS%vbt_IC(i,J)) * Idt
       vbt(i,J) = CS%vbt_IC(i,J)
       if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-    enddo ; enddo
+    enddo
   endif
+
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v) &
+  !$omp   map(from: BT_force_u, BT_force_v, ubt, vbt)
 
   ! Compute instantaneous tidal velocities and apply frequency-dependent drag.
   ! Note that the filtered velocities are only updated during the current predictor step,
