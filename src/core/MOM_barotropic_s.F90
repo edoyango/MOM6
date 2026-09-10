@@ -1117,6 +1117,14 @@ module procedure btstep
   enddo
   !$omp target exit data map(release: CS, CS%ua_polarity, CS%va_polarity)
 
+  ! Cor_ref_u/v were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:
+  ! CS%jedw halo above, so mapped with `to`, not `alloc`, to preserve that
+  ! zero. f_4_u/f_4_v (from btstep_find_Cor) and ubt_Cor/vbt_Cor (from the
+  ! earlier ubt_Cor/gtot bracket) were both released by their own brackets
+  ! and are re-mapped here with `to`.
+  !$omp target enter data &
+  !$omp   map(to: f_4_u, f_4_v, ubt_Cor, vbt_Cor, Cor_ref_u, Cor_ref_v)
+
   do concurrent (j=js:je, I=is-1:ie)
     Cor_ref_u(I,j) =  &
         (((f_4_u(4,I,j) * vbt_Cor(i+1,j)) + (f_4_u(1,I,j) * vbt_Cor(i  ,j-1))) + &
@@ -1127,6 +1135,9 @@ module procedure btstep
         (((f_4_v(1,i,J) * ubt_Cor(I-1,j)) + (f_4_v(4,i,J) * ubt_Cor(I  ,j+1))) + &
          ((f_4_v(2,i,J) * ubt_Cor(I  ,j)) + (f_4_v(3,i,J) * ubt_Cor(I-1,j+1))))
   enddo
+
+  !$omp target exit data map(release: f_4_u, f_4_v, ubt_Cor, vbt_Cor) &
+  !$omp   map(from: Cor_ref_u, Cor_ref_v)
 
   ! Now start new halo updates.
   if (nonblock_setup) then
