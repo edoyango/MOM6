@@ -869,12 +869,20 @@ module procedure btstep
 ! Calculate the initial barotropic velocities from the layer's velocities.
   call btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt, G, GV, CS)
 
+  ! uhbt/vhbt are being repurposed here (their add_uh0 use above is fully
+  ! consumed already) and this loop covers their whole wide-halo extent, so
+  ! `alloc` is fine -- no narrower-than-wide preservation concern like the
+  ! brackets above.
+  !$omp target enter data map(alloc: uhbt, u_accel_bt, vhbt, v_accel_bt)
+
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
     uhbt(i,j) = 0.0 ; u_accel_bt(i,j) = 0.0
   enddo
   do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
     vhbt(i,j) = 0.0 ; v_accel_bt(i,j) = 0.0
   enddo
+
+  !$omp target exit data map(from: uhbt, u_accel_bt, vhbt, v_accel_bt)
 
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
     do j=js,je ; do I=is-1,ie ; ubt_st(I,j) = ubt(I,j) ; enddo ; enddo
