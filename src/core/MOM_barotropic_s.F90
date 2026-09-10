@@ -615,20 +615,22 @@ module procedure btstep
     !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot)
   endif
 
-  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v) &
-  !$omp   map(from: wt_u, wt_v)
+  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v)
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
   ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/
   ! CS%jsdw:CS%jedw halo above; this accumulation only touches the narrower
   ! js:je/is-1:ie (+/-1) range, so they are mapped with `to`, not `alloc`, to
-  ! preserve that wide-halo zero. The bracket closes before the host-only
+  ! preserve that wide-halo zero. wt_u/wt_v stay mapped (alloc'd by the prior
+  ! bracket, never released) rather than round-tripping through host between
+  ! that bracket and this one; their final host copy-back is deferred to this
+  ! bracket's own exit below. The bracket closes before the host-only
   ! CS%BT_OBC%u_OBCs_on_PE/v_OBCs_on_PE adjustment loops below so that those
   ! (always host, never do concurrent) read/write the host copy directly
   ! rather than racing a still-mapped device copy.
   !$omp target enter data &
-  !$omp   map(to: U_Cor, V_Cor, wt_u, wt_v, pbce, gtot_E, gtot_W, gtot_N, gtot_S) &
+  !$omp   map(to: U_Cor, V_Cor, pbce, gtot_E, gtot_W, gtot_N, gtot_S) &
   !$omp   map(alloc: ubt_Cor, vbt_Cor)
 
   do concurrent (j=js-1:je+1, I=is-1:ie)
@@ -673,8 +675,8 @@ module procedure btstep
     enddo
   enddo
 
-  !$omp target exit data map(release: U_Cor, V_Cor, wt_u, wt_v, pbce) &
-  !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
+  !$omp target exit data map(release: U_Cor, V_Cor, pbce) &
+  !$omp   map(from: wt_u, wt_v, gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
 
   if (CS%BT_OBC%u_OBCs_on_PE) then
     do j=js,je ; do I=is-1,ie
@@ -891,7 +893,9 @@ module procedure btstep
 ! between the accelerations due to the average of the layer equations and the
 ! barotropic calculation.
 
-  !$omp target enter data map(to: G, CS, GV, G%OBCmaskCu, CS%bathyT, CS%dy_Cu, CS%IDatu, forces%taux)
+  !$omp target enter data &
+  !$omp   map(to: G, CS, GV, G%OBCmaskCu, G%OBCmaskCv, CS%bathyT, CS%dy_Cu, CS%dx_Cv, &
+  !$omp     CS%IDatu, CS%IDatv, forces%taux, forces%tauy)
   do concurrent (j=js:je, I=is-1:ie) ; if (G%OBCmaskCu(I,j) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
@@ -917,9 +921,6 @@ module procedure btstep
   else
     BT_force_u(I,j) = 0.0
   endif ; enddo
-  !$omp target exit data map(from: CS%IDatu)
-  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dy_Cu, forces%taux)
-  !$omp target enter data map(to: G, CS, GV, G%OBCmaskCv, CS%bathyT, CS%dx_Cv, CS%IDatv, forces%tauy)
   do concurrent (J=js-1:je, i=is:ie) ; if (G%OBCmaskCv(i,J) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
@@ -945,8 +946,8 @@ module procedure btstep
   else
     BT_force_v(i,J) = 0.0
   endif ; enddo
-  !$omp target exit data map(from: CS%IDatv)
-  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dx_Cv, forces%tauy)
+  !$omp target exit data map(from: CS%IDatu, CS%IDatv) &
+  !$omp   map(release: CS, GV, CS%bathyT, CS%dy_Cu, CS%dx_Cv, forces%taux, forces%tauy)
 
   ! BT_force_u/v hold correct host values here: the preceding bracket (this
   ! routine's existing wind-stress loops) never mapped them, so their own
@@ -1104,20 +1105,19 @@ module procedure btstep
   endif
   ! The various elements of gtot are positive definite but directional, so use
   ! the polarity arrays to sort out when the directions have shifted.
-  !$omp target enter data map(to: CS, CS%ua_polarity, CS%va_polarity)
-  do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
-    if (CS%ua_polarity(i,j) < 0.0) call swap(gtot_E(i,j), gtot_W(i,j))
-    if (CS%va_polarity(i,j) < 0.0) call swap(gtot_N(i,j), gtot_S(i,j))
-  enddo
-  !$omp target exit data map(release: CS, CS%ua_polarity, CS%va_polarity)
-
   ! Cor_ref_u/v were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:
   ! CS%jedw halo above, so mapped with `to`, not `alloc`, to preserve that
   ! zero. f_4_u/f_4_v (from btstep_find_Cor) and ubt_Cor/vbt_Cor (from the
   ! earlier ubt_Cor/gtot bracket) were both released by their own brackets
-  ! and are re-mapped here with `to`.
+  ! and are re-mapped here with `to`, alongside the polarity swap's arrays
+  ! since nothing between the two loop groups needs a host round trip.
   !$omp target enter data &
-  !$omp   map(to: f_4_u, f_4_v, ubt_Cor, vbt_Cor, Cor_ref_u, Cor_ref_v)
+  !$omp   map(to: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v, ubt_Cor, vbt_Cor, &
+  !$omp     Cor_ref_u, Cor_ref_v)
+  do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    if (CS%ua_polarity(i,j) < 0.0) call swap(gtot_E(i,j), gtot_W(i,j))
+    if (CS%va_polarity(i,j) < 0.0) call swap(gtot_N(i,j), gtot_S(i,j))
+  enddo
 
   do concurrent (j=js:je, I=is-1:ie)
     Cor_ref_u(I,j) =  &
@@ -1130,7 +1130,7 @@ module procedure btstep
          ((f_4_v(2,i,J) * ubt_Cor(I  ,j)) + (f_4_v(3,i,J) * ubt_Cor(I-1,j+1))))
   enddo
 
-  !$omp target exit data map(release: f_4_u, f_4_v, ubt_Cor, vbt_Cor) &
+  !$omp target exit data map(release: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v, ubt_Cor, vbt_Cor) &
   !$omp   map(from: Cor_ref_u, Cor_ref_v)
 
   ! Now start new halo updates.
@@ -1300,8 +1300,8 @@ module procedure btstep
   do concurrent (j=js:je, i=is:ie)
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
   enddo
-  !$omp target exit data map(from: CS%eta_cor)
-  !$omp target exit data map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
+  !$omp target exit data map(from: CS%eta_cor) &
+  !$omp   map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
 
   if (CS%dynamic_psurf) then
     ice_is_rigid = (associated(forces%rigidity_ice_u) .and. &
