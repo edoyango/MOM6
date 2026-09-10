@@ -1528,22 +1528,34 @@ module procedure btstep
   if (id_clock_calc > 0) call cpu_clock_end(id_clock_calc)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
-  if (find_etaav) then ; do concurrent (j=js:je, i=is:ie)
-    etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
-  enddo ; endif
+  ! etaav is an optional, intent(out) dummy arg; find_etaav = present(etaav),
+  ! so it is only ever mapped inside this guard.
+  if (find_etaav) then
+    !$omp target enter data map(to: eta_sum) map(alloc: etaav)
+    do concurrent (j=js:je, i=is:ie)
+      etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
+    enddo
+    !$omp target exit data map(release: eta_sum) map(from: etaav)
+  endif
+
+  !$omp target enter data map(to: eta, eta_in, eta_PF_1, d_eta_PF, eta_PF) map(alloc: e_anom)
+
   do concurrent (j=js-1:je+1, i=is-1:ie+1)
     e_anom(i,j) = 0.0
   enddo
   if (interp_eta_PF) then
-    do j=js,je ; do i=is,ie
+    do concurrent (j=js:je, i=is:ie)
       e_anom(i,j) = dgeo_de * (0.5 * (eta(i,j) + eta_in(i,j)) - &
                                (eta_PF_1(i,j) + 0.5*d_eta_PF(i,j)))
-    enddo ; enddo
+    enddo
   else
     do concurrent (j=js:je, i=is:ie)
       e_anom(i,j) = dgeo_de * (0.5 * (eta(i,j) + eta_in(i,j)) - eta_PF(i,j))
     enddo
   endif
+
+  !$omp target exit data map(release: eta, eta_in, eta_PF_1, d_eta_PF, eta_PF) &
+  !$omp   map(from: e_anom)
   if (apply_OBCs) then
     ! This block of code may be unnecessary because e_anom is only used for accelerations that
     ! are then recalculated at OBC points.
@@ -1565,9 +1577,11 @@ module procedure btstep
   endif
 
   ! Note that it is possible that eta_out and eta_in are the same array.
+  !$omp target enter data map(to: eta_wtd) map(alloc: eta_out)
   do concurrent (j=js:je, i=is:ie)
     eta_out(i,j) = eta_wtd(i,j) * I_sum_wt_eta
   enddo
+  !$omp target exit data map(release: eta_wtd) map(from: eta_out)
 
   ! Accumulator is updated at the end of every baroclinic time step.
   ! Harmonic analysis will not be performed of a field that is not registered.
