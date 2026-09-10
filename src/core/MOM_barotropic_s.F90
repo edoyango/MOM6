@@ -626,6 +626,17 @@ module procedure btstep
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
+  ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/
+  ! CS%jsdw:CS%jedw halo above; this accumulation only touches the narrower
+  ! js:je/is-1:ie (+/-1) range, so they are mapped with `to`, not `alloc`, to
+  ! preserve that wide-halo zero. The bracket closes before the host-only
+  ! CS%BT_OBC%u_OBCs_on_PE/v_OBCs_on_PE adjustment loops below so that those
+  ! (always host, never do concurrent) read/write the host copy directly
+  ! rather than racing a still-mapped device copy.
+  !$omp target enter data &
+  !$omp   map(to: U_Cor, V_Cor, wt_u, wt_v, pbce, gtot_E, gtot_W, gtot_N, gtot_S) &
+  !$omp   map(alloc: ubt_Cor, vbt_Cor)
+
   do concurrent (j=js-1:je+1, I=is-1:ie)
     ubt_Cor(I,j) = 0.0
   enddo
@@ -667,6 +678,9 @@ module procedure btstep
       enddo
     enddo
   enddo
+
+  !$omp target exit data map(release: U_Cor, V_Cor, wt_u, wt_v, pbce) &
+  !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
 
   if (CS%BT_OBC%u_OBCs_on_PE) then
     do j=js,je ; do I=is-1,ie
