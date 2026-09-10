@@ -1048,16 +1048,18 @@ module procedure btstep
 
   ! Mask out the forcing at OBC points
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$OMP do
-    do j=js,je ; do I=is-1,ie
+    !$omp target enter data map(to: CS, CS%OBCmask_u, BT_force_u)
+    do concurrent (j=js:je, I=is-1:ie)
       BT_force_u(I,j) = CS%OBCmask_u(I,j) * BT_force_u(I,j)
-    enddo ; enddo
+    enddo
+    !$omp target exit data map(release: CS, CS%OBCmask_u) map(from: BT_force_u)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$OMP do
-    do J=js-1,je ; do i=is,ie
+    !$omp target enter data map(to: CS, CS%OBCmask_v, BT_force_v)
+    do concurrent (J=js-1:je, i=is:ie)
       BT_force_v(i,J) = CS%OBCmask_v(i,J) * BT_force_v(i,J)
-    enddo ; enddo
+    enddo
+    !$omp target exit data map(release: CS, CS%OBCmask_v) map(from: BT_force_v)
   endif
 
   if ((Isq > is-1) .or. (Jsq > js-1)) then
