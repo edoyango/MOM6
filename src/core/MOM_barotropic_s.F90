@@ -339,7 +339,8 @@ module procedure btstep
   !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta)
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -482,19 +483,9 @@ module procedure btstep
     if (CS%dynamic_psurf) dyn_coef_eta(i,j) = 0.0
   enddo
 
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta)
-
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
-  !$omp target enter data &
-  !$omp   map(alloc: Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
-
   do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
     Cor_ref_u(I,j) = 0.0 ; BT_force_u(I,j) = 0.0 ; ubt(I,j) = 0.0
     Datu(I,j) = 0.0 ; bt_rem_u(I,j) = 0.0 ; uhbt0(I,j) = 0.0
@@ -505,7 +496,10 @@ module procedure btstep
   enddo
 
   !$omp target exit data &
-  !$omp   map(from: Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
 
   if (apply_OBCs) then
