@@ -536,25 +536,40 @@ module procedure btstep
   endif
 
   ! Copy input arrays into their wide-halo counterparts.
+  ! eta, eta_PF, eta_PF_1, d_eta_PF and eta_IC were already zeroed over the wider
+  ! CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo above; this loop only overwrites the
+  ! narrower G%isd:G%ied/G%jsd:G%jed range, so they are mapped with `to`, not
+  ! `alloc`, to preserve that wide-halo zero rather than replace it with garbage.
   if (interp_eta_PF) then
+    !$omp target enter data &
+    !$omp   map(to: eta_in, eta_PF_in, eta_PF_start, eta, eta_PF_1, d_eta_PF)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF_1(i,j) = eta_PF_start(i,j)
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
     enddo
+    !$omp target exit data &
+    !$omp   map(release: eta_in, eta_PF_in, eta_PF_start) map(from: eta, eta_PF_1, d_eta_PF)
   else
+    !$omp target enter data map(to: eta_in, eta_PF_in, eta, eta_PF)
     do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
     enddo
+    !$omp target exit data map(release: eta_in, eta_PF_in) map(from: eta, eta_PF)
   endif
   if (integral_BT_cont) then
+    !$omp target enter data map(to: eta_in, eta_IC)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       eta_IC(i,j) = eta_in(i,j)
     enddo
+    !$omp target exit data map(release: eta_in) map(from: eta_IC)
   endif
+
+  !$omp target enter data &
+  !$omp   map(to: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v) map(alloc: wt_u, wt_v)
 
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
@@ -577,6 +592,7 @@ module procedure btstep
   enddo
 
   if (.not. CS%wt_uv_bug) then
+    !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv) map(alloc: Iwt_u_tot, Iwt_v_tot)
     do concurrent (j=js:je, I=is-1:ie)
       Iwt_u_tot(I,j) = wt_u(I,j,1)
     enddo
@@ -602,7 +618,11 @@ module procedure btstep
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       wt_v(i,J,k) = wt_v(i,J,k) * Iwt_v_tot(i,J)
     enddo
+    !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot)
   endif
+
+  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v) &
+  !$omp   map(from: wt_u, wt_v)
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
