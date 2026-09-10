@@ -1199,9 +1199,17 @@ module procedure btstep
     enddo ; enddo
   endif
 
+  ! bt_rem_u/v hold correct host values here regardless of which CS%strong_drag
+  ! branch ran above (the strong_drag=false branch is deliberately kept on
+  ! host: av_rem**Instep uses exp/log, which disagree with the device
+  ! versions in the last bit, so offloading it would change answers -- do not
+  ! convert that branch). This block only does simple arithmetic on the
+  ! result, which carries no such precision concern.
   if (CS%linear_wave_drag) then
-    !$OMP parallel do default(shared) private(Htot)
-    do j=js,je ; do I=is-1,ie ; if (G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0) then
+    !$omp target enter data &
+    !$omp   map(to: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, G%mask2dCv, &
+    !$omp     eta, bt_rem_u, bt_rem_v, Rayleigh_u, Rayleigh_v)
+    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
 
       if (GV%Boussinesq) &
@@ -1213,9 +1221,8 @@ module procedure btstep
         bt_rem_u(I,j) = bt_rem_u(I,j) * (Htot / (Htot + CS%lin_drag_u(I,j) * dtbt))
         Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
       endif
-    endif ; enddo ; enddo
-    !$OMP parallel do default(shared) private(Htot)
-    do J=js-1,je ; do i=is,ie ; if (G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0) then
+    enddo
+    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0)
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
 
       if (GV%Boussinesq) &
@@ -1227,27 +1234,35 @@ module procedure btstep
         bt_rem_v(i,J) = bt_rem_v(i,J) * (Htot / (Htot + CS%lin_drag_v(i,J) * dtbt))
         Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
       endif
-    endif ; enddo ; enddo
+    enddo
+    !$omp target exit data &
+    !$omp   map(release: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, &
+    !$omp     G%mask2dCv, eta) &
+    !$omp   map(from: bt_rem_u, bt_rem_v, Rayleigh_u, Rayleigh_v)
   endif
 
   ! Avoid changing the velocities at OBC points due to non-OBC calculations.
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$OMP parallel do default(shared)
-    do j=js,je ; do I=is-1,ie ; if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
+    !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type, bt_rem_u)
+    do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
       bt_rem_u(I,j) = 1.0
-    endif ; enddo ; enddo
+    enddo
+    !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type) map(from: bt_rem_u)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$OMP parallel do default(shared)
-    do J=js-1,je ; do i=is,ie ; if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
+    !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type, bt_rem_v)
+    do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
       bt_rem_v(i,J) = 1.0
-    endif ; enddo ; enddo
+    enddo
+    !$omp target exit data map(release: CS, CS%BT_OBC%v_OBC_type) map(from: bt_rem_v)
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
+  !$omp target enter data map(alloc: eta_src)
   do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     eta_src(i,j) = 0.0
   enddo
+  !$omp target exit data map(from: eta_src)
   !$omp target enter data map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
   !$omp                          CS%IareaT, CS%bathyT, CS%eta_cor_bound)
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
