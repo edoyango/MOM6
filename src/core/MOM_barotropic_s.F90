@@ -1252,13 +1252,18 @@ module procedure btstep
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
-  !$omp target enter data map(alloc: eta_src)
+  ! eta_src is only ever written (zeroed over the wide jsvf/ievf halo here,
+  ! then unconditionally overwritten on the narrower js:je/is:ie domain
+  ! below), never read on device, so it stays mapped through both loops with
+  ! a single copy-back at this bracket's exit rather than round-tripping
+  ! through host in between.
+  !$omp target enter data &
+  !$omp   map(alloc: eta_src) &
+  !$omp   map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
+  !$omp     CS%IareaT, CS%bathyT, CS%eta_cor_bound)
   do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     eta_src(i,j) = 0.0
   enddo
-  !$omp target exit data map(from: eta_src)
-  !$omp target enter data map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
-  !$omp                          CS%IareaT, CS%bathyT, CS%eta_cor_bound)
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
     do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0) &
         DO_LOCALITY(local(uint_cor, vint_cor, u_max_cor, v_max_cor))
@@ -1300,7 +1305,7 @@ module procedure btstep
   do concurrent (j=js:je, i=is:ie)
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
   enddo
-  !$omp target exit data map(from: CS%eta_cor) &
+  !$omp target exit data map(from: CS%eta_cor, eta_src) &
   !$omp   map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
 
   if (CS%dynamic_psurf) then
