@@ -741,13 +741,19 @@ module procedure btstep
   ! releases them once that's done), so they also stay mapped straight through to there.
   ! wt_u/wt_v are read again inside the add_uh0 block just below on device (never written there,
   ! never on host), so they too stay mapped straight through rather than round-tripping here.
+  ! BT_force_u/v are freshly overwritten (not read) by the wind-stress loop well below, so they
+  ! also stay mapped straight through rather than round-tripping now just to be reuploaded unused;
+  ! they stay mapped through the apply_bottom_drag/bc_accel/linear_freq_drag/OBC-masking device
+  ! work that follows (the linear_freq_drag host loop is covered by its own update to/from), then
+  ! are flushed and released in one place, right after the OBC masking, ahead of the host-only
+  ! non-symmetric-memory halo copy and pass_force_hbt0_Cor_ref halo pass.
   !$omp target exit data &
   !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     eta_in, eta_PF_in, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
   !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, ubt_Cor, vbt_Cor, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, vbt, Datv, bt_rem_v, vhbt0, ubt_Cor, vbt_Cor, &
   !$omp     BTCL_u, BTCL_v)
 
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
@@ -995,14 +1001,13 @@ module procedure btstep
   ! CS%IDatu/CS%IDatv are persistent CS state (read again next call and by the CS%debug chksum
   ! below), so they must always end up flushed to host by the time this if-block is done -- but
   ! only need to leave the device now if the bottom-drag bracket below won't run to do it later.
-  ! BT_force_u/v hold correct host values here regardless: the preceding bracket (this routine's
-  ! existing wind-stress loops) never mapped them, so their own per-construct implicit mapping
-  ! copied the result back to host already.
+  ! BT_force_u/v were just written by the wind-stress loop above and stay mapped (part of
+  ! btstep's persistent set; see the early-exit comment well above) regardless of this branch.
   !$omp target exit data map(from: CS%IDatu, CS%IDatv) if(.not. apply_bottom_drag)
 
   if (apply_bottom_drag) then
     !$omp target enter data &
-    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot, BT_force_u, BT_force_v)
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
       BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
     enddo
@@ -1010,9 +1015,8 @@ module procedure btstep
       BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
     enddo
     ! CS%IDatu/IDatv are flushed here (deferred from the exit above, since this branch is running).
-    ! BT_force_u/v are deliberately left mapped: the bc_accel_u/v bracket below reads and updates
-    ! them further before its own exit finally flushes them, so releasing them here would just be
-    ! an avoidable round trip.
+    ! BT_force_u/v are part of btstep's persistent set (see the early-exit comment above) and stay
+    ! mapped without being named in either this bracket's enter or exit.
     !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot) &
     !$omp   map(from: CS%IDatu, CS%IDatv)
   endif
@@ -1025,13 +1029,11 @@ module procedure btstep
   ! right before they'd otherwise go untouched anyway. ubt/vbt are likewise already mapped
   ! continuously (part of btstep's persistent set); this bracket's own exit below no longer
   ! releases them either, since the host-only Filt_accum call just past it, and btstep_timeloop
-  ! further down, both still need them on device/host respectively.
+  ! further down, both still need them on device/host respectively. BT_force_u/v are also already
+  ! mapped continuously (whether or not the bottom-drag bracket above ran), so no enter is needed
+  ! for them here either.
   !$omp target enter data &
   !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v)
-  ! BT_force_u/v are already device-resident from the bottom-drag bracket above when it ran;
-  ! otherwise they were never mapped there at all (only touched via per-construct implicit
-  ! mapping in the wind-stress loops further up), so they need a fresh `to` here instead.
-  !$omp target enter data map(to: BT_force_u, BT_force_v) if(.not. apply_bottom_drag)
 
   do concurrent (j=js:je)
     do k=1,nz
@@ -1062,8 +1064,7 @@ module procedure btstep
   endif
 
   !$omp target exit data &
-  !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v) &
-  !$omp   map(from: BT_force_u, BT_force_v)
+  !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v)
   ! ubt/vbt stay mapped (see above), but CS%gradual_BT_ICs may just have modified them on device,
   ! and the host-only Filt_accum call just below needs their current value -- refresh instead of
   ! releasing.
@@ -1079,6 +1080,9 @@ module procedure btstep
 
   if (CS%use_filter .and. CS%linear_freq_drag) then
     call wave_drag_calc(ufilt, vfilt, Drag_u, Drag_v, G, CS%Drag_CS)
+    ! BT_force_u/v are device-resident here; this block reads and writes them on the host, so
+    ! refresh the host copy first and push the result back before either is used on device again.
+    !$omp target update from(BT_force_u, BT_force_v)
     !$OMP do
     do j=js,je ; do I=is-1,ie
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
@@ -1103,23 +1107,31 @@ module procedure btstep
         Drag_v(i,J) = 0.0
       endif
     enddo ; enddo
+    !$omp target update to(BT_force_u, BT_force_v)
   endif
 
-  ! Mask out the forcing at OBC points
+  ! Mask out the forcing at OBC points. BT_force_u/v are already device-resident (part of
+  ! btstep's persistent set), so neither block below needs to map them in or flush them out.
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%OBCmask_u, BT_force_u)
+    !$omp target enter data map(to: CS, CS%OBCmask_u)
     do concurrent (j=js:je, I=is-1:ie)
       BT_force_u(I,j) = CS%OBCmask_u(I,j) * BT_force_u(I,j)
     enddo
-    !$omp target exit data map(release: CS, CS%OBCmask_u) map(from: BT_force_u)
+    !$omp target exit data map(release: CS, CS%OBCmask_u)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%OBCmask_v, BT_force_v)
+    !$omp target enter data map(to: CS, CS%OBCmask_v)
     do concurrent (J=js-1:je, i=is:ie)
       BT_force_v(i,J) = CS%OBCmask_v(i,J) * BT_force_v(i,J)
     enddo
-    !$omp target exit data map(release: CS, CS%OBCmask_v) map(from: BT_force_v)
+    !$omp target exit data map(release: CS, CS%OBCmask_v)
   endif
+
+  ! BT_force_u/v have no further device use until btstep_timeloop re-maps them (its own bracket
+  ! well below): the non-symmetric-memory halo copy just below and the pass_force_hbt0_Cor_ref
+  ! halo pass further down are both host-only (MPI communication via the FMS domain layer), so
+  ! flush and release the mapping now rather than carrying it, unused, through that host-only span.
+  !$omp target exit data map(from: BT_force_u, BT_force_v)
 
   if ((Isq > is-1) .or. (Jsq > js-1)) then
     ! Non-symmetric memory is being used, so the edge values need to be
@@ -1469,6 +1481,10 @@ module procedure btstep
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
 
+  ! BT_force_u/v already hold correct host values here (flushed and released well above, right
+  ! after the OBC-point masking, and never mapped back onto the device since -- the
+  ! pass_force_hbt0_Cor_ref halo pass just completed above is host-only and writes their halo
+  ! region directly on host).
   if (CS%debug) then
     call uvchksum("BT [uv]hbt", uhbt, vhbt, CS%debug_BT_HI, haloshift=0, &
                   unscale=US%s_to_T*US%L_to_m**2*GV%H_to_m)
