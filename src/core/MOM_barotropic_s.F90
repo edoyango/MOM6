@@ -1219,7 +1219,13 @@ module procedure btstep
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
-  !$omp target enter data map(to: CS)
+  ! av_rem_u/v are freshly overwritten (not read) here, and stay mapped afterward: on into the
+  ! CS%strong_drag device branch below (no round trip needed there), and -- only when strong_drag
+  ! and rescale_strong_drag are both true -- further into the u_accel_bt/v_accel_bt rescaling
+  ! bracket much further down, which is now their true final release. Every other path releases
+  ! them right after this if/else (see below), since the host branch needs a host copy anyway and
+  ! the block further down that would otherwise consume them won't run.
+  !$omp target enter data map(to: CS) map(alloc: av_rem_u, av_rem_v)
   do concurrent (j=js-1:je+1, I=is-1:ie)
     av_rem_u(I,j) = 0.0
   enddo
@@ -1255,6 +1261,7 @@ module procedure btstep
     !   These two loops stay on the host.  av_rem**Instep is a real power, which is
     ! evaluated as exp(Instep*log(av_rem)), and the device exp and log do not agree
     ! with the host versions to the last bit, so offloading them changes answers.
+    !$omp target update from(av_rem_u, av_rem_v)
     !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie
       bt_rem_u(I,j) = 0.0
@@ -1268,6 +1275,11 @@ module procedure btstep
         bt_rem_v(i,J) = G%mask2dCv(i,J) * (av_rem_v(i,J)**Instep)
     enddo ; enddo
   endif
+  ! Release av_rem_u/v now unless the strong_drag-and-rescale_strong_drag block much further down
+  ! is about to consume them again on device -- that block does the release instead, once it's
+  ! actually reached.
+  !$omp target exit data map(release: av_rem_u, av_rem_v) &
+  !$omp   if(.not. (CS%strong_drag .and. CS%rescale_strong_drag))
 
   ! bt_rem_u/v hold correct host values here regardless of which CS%strong_drag
   ! branch ran above (the strong_drag=false branch is deliberately kept on
@@ -1759,12 +1771,13 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   if (CS%strong_drag .and. CS%rescale_strong_drag) then
-    ! av_rem_u/v and bt_rem_u/v hold correct host values from their own
-    ! per-construct implicit mapping earlier in this routine (not part of any
-    ! persistent bracket there); u_accel_bt/v_accel_bt likewise from
-    ! btstep_layer_accel's own self-contained mapping.
+    ! av_rem_u/v are already device-resident here -- this branch is exactly the condition under
+    ! which the av_rem_u/v computation above deliberately left them mapped instead of releasing
+    ! them. bt_rem_u/v hold correct host values from their own per-construct implicit mapping
+    ! earlier in this routine (not part of any persistent bracket there); u_accel_bt/v_accel_bt
+    ! likewise from btstep_layer_accel's own self-contained mapping.
     !$omp target enter data &
-    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v, &
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, bt_rem_u, bt_rem_v, &
     !$omp     u_accel_bt, v_accel_bt)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
       u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
