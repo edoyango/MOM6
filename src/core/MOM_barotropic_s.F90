@@ -2837,8 +2837,11 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
+  ! gtot_N/gtot_S/gtot_E/gtot_W are read-only throughout btstep_timeloop and never touched by any
+  ! host code, so they stay mapped continuously from its own top-level bracket rather than being
+  ! bumped and debumped on every one of these per-substep calls.
   !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, PFu, PFv, eta_PF_BT, eta_PF, &
-  !$omp                          gtot_N, gtot_S, gtot_E, gtot_W, eta_sum)
+  !$omp                          eta_sum)
 
   do concurrent (j=js_u:je_u, I=isv-1:iev)
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
@@ -2859,8 +2862,7 @@ module procedure btloop_find_PF
   endif
 
   !$omp target exit data map(from: PFu, PFv, eta_sum)
-  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, eta_PF_BT, eta_PF, &
-  !$omp                              gtot_N, gtot_S, gtot_E, gtot_W)
+  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, eta_PF_BT, eta_PF)
 
 end procedure btloop_find_PF
 module procedure btloop_add_dyn_PF
@@ -2894,7 +2896,10 @@ module procedure btloop_update_v
   integer :: i, j
   use_bracket_bug = .false. ; if (present(Cor_bracket_bug)) use_bracket_bug = Cor_bracket_bug
 
-  !$omp target enter data map(to: ubt, PFv, f_4_v, bt_rem_v, BT_force_v, Cor_ref_v, &
+  ! f_4_v/bt_rem_v/BT_force_v/Cor_ref_v are read-only throughout btstep_timeloop and never
+  ! touched by any host code, so they stay mapped continuously from its own top-level bracket
+  ! rather than being bumped and debumped on every one of these per-substep calls.
+  !$omp target enter data map(to: ubt, PFv, &
   !$omp                          vbt, v_accel_bt, Cor_v)
 
   ! The bracket bug only applies if v is second, use ioff to check.
@@ -2932,12 +2937,12 @@ module procedure btloop_update_v
   endif
 
   !$omp target exit data map(from: vbt, v_accel_bt, Cor_v)
-  !$omp target exit data map(release: ubt, PFv, f_4_v, bt_rem_v, BT_force_v, Cor_ref_v)
+  !$omp target exit data map(release: ubt, PFv)
 
 end procedure btloop_update_v
 module procedure btloop_update_u
   integer :: i, j
-  !$omp target enter data map(to: vbt, PFu, f_4_u, bt_rem_u, BT_force_u, Cor_ref_u, &
+  !$omp target enter data map(to: vbt, PFu, &
   !$omp                          ubt, u_accel_bt, Cor_u)
 
   do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
@@ -2964,7 +2969,7 @@ module procedure btloop_update_u
   endif
 
   !$omp target exit data map(from: ubt, u_accel_bt, Cor_u)
-  !$omp target exit data map(release: vbt, PFu, f_4_u, bt_rem_u, BT_force_u, Cor_ref_u)
+  !$omp target exit data map(release: vbt, PFu)
 
 end procedure btloop_update_u
 module procedure btstep_ubt_from_layer

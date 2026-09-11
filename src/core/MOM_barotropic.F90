@@ -1042,6 +1042,9 @@ module subroutine btloop_update_u(dtbt, ubt, vbt, u_accel_bt, &
 
   ! Local variables
 
+  ! f_4_u/bt_rem_u/BT_force_u/Cor_ref_u are read-only throughout btstep_timeloop and never
+  ! touched by any host code, so they stay mapped continuously from its own top-level bracket
+  ! rather than being bumped and debumped on every one of these per-substep calls.
 end subroutine btloop_update_u
 module subroutine btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt,  G, GV, CS)
   type(verticalGrid_type), intent(in)  :: GV      !< The ocean's vertical grid structure.
