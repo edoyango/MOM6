@@ -725,9 +725,12 @@ module procedure btstep
   ! btstep_find_Cor, well below), and never written again anywhere in btstep after this point --
   ! so they also stay mapped straight through, kept correct by the update to() added above for the
   ! one path (nonblock_setup) that genuinely modifies them on host in between.
+  ! CS%BT_OBC%u_OBC_type/v_OBC_type are pure read-only OBC classification metadata, never written
+  ! anywhere in btstep; they are read again inside the add_uh0 block just below (its own bracket
+  ! releases them once that's done), so they also stay mapped straight through to there.
   !$omp target exit data &
   !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, &
+  !$omp     eta_in, eta_PF_in, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
   !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
@@ -842,10 +845,11 @@ module procedure btstep
     ! CS%jedw halo above, so they are mapped with `to`, not `alloc`, here.
     ! ubt/vbt/uhbt/vhbt are handled by the conditional pair above, not here.
     ! BTCL_u/BTCL_v are plain-data (no allocatable/pointer components) so a
-    ! simple `to` covers the whole array of derived types.
+    ! simple `to` covers the whole array of derived types. CS%BT_OBC%[uv]_OBC_type
+    ! are never written anywhere in btstep, so they were left mapped continuously
+    ! from before set_up_BT_OBC rather than being re-added here.
     !$omp target enter data &
-    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, &
-    !$omp     BTCL_u, BTCL_v, Datu, Datv, uhbt0, vhbt0)
+    !$omp   map(to: CS, BTCL_u, BTCL_v, Datu, Datv, uhbt0, vhbt0)
 
     if (integral_BT_cont) then
       do concurrent (j=js:je, I=is-1:ie)
