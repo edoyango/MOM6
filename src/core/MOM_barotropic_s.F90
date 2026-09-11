@@ -1022,9 +1022,12 @@ module procedure btstep
   ! update from() right after being finished, well above) and this is their last use in the
   ! routine, so no bump is needed here -- correspondingly dropped from this bracket's exit too,
   ! leaving them mapped (unreleased) for the rest of the routine rather than releasing them
-  ! right before they'd otherwise go untouched anyway.
+  ! right before they'd otherwise go untouched anyway. ubt/vbt are likewise already mapped
+  ! continuously (part of btstep's persistent set); this bracket's own exit below no longer
+  ! releases them either, since the host-only Filt_accum call just past it, and btstep_timeloop
+  ! further down, both still need them on device/host respectively.
   !$omp target enter data &
-  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v, ubt, vbt)
+  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v)
   ! BT_force_u/v are already device-resident from the bottom-drag bracket above when it ran;
   ! otherwise they were never mapped there at all (only touched via per-construct implicit
   ! mapping in the wind-stress loops further up), so they need a fresh `to` here instead.
@@ -1060,7 +1063,11 @@ module procedure btstep
 
   !$omp target exit data &
   !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v) &
-  !$omp   map(from: BT_force_u, BT_force_v, ubt, vbt)
+  !$omp   map(from: BT_force_u, BT_force_v)
+  ! ubt/vbt stay mapped (see above), but CS%gradual_BT_ICs may just have modified them on device,
+  ! and the host-only Filt_accum call just below needs their current value -- refresh instead of
+  ! releasing.
+  !$omp target update from(ubt, vbt)
 
   ! Compute instantaneous tidal velocities and apply frequency-dependent drag.
   ! Note that the filtered velocities are only updated during the current predictor step,
