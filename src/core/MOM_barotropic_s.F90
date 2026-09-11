@@ -780,8 +780,11 @@ module procedure btstep
     ! wt_u/wt_v are already mapped continuously from well before this block (they are finished
     ! and flushed to host right after being computed, long before this point), so they no longer
     ! need a bump here -- correspondingly dropped from this block's matching mid-exit below too.
+    ! ubt/vbt are likewise already mapped continuously (part of btstep's persistent set), so they
+    ! are also dropped here and from this block's final exit below -- both are about to be
+    ! overwritten by the zero-init loop just below regardless of their incoming device value.
     !$omp target enter data &
-    !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0, ubt, vbt) &
+    !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0) &
     !$omp   map(alloc: uhbt, vhbt)
 
     do concurrent (j=js:je, I=is-1:ie)
@@ -907,7 +910,7 @@ module procedure btstep
     endif
 
     !$omp target exit data &
-    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, uhbt, vhbt, ubt, vbt, &
+    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, uhbt, vhbt, &
     !$omp     BTCL_u, BTCL_v, Datu, Datv) &
     !$omp   map(from: uhbt0, vhbt0)
   endif
