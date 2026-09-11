@@ -338,10 +338,11 @@ module procedure btstep
   !$omp target enter data &
   !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
-  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv) &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, U_Cor, V_Cor, pbce) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot)
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot, &
+  !$omp     ubt_Cor, vbt_Cor)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -600,30 +601,15 @@ module procedure btstep
     enddo
   endif
 
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
-  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
-
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
-  ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/
-  ! CS%jsdw:CS%jedw halo above; this accumulation only touches the narrower
-  ! js:je/is-1:ie (+/-1) range, so they are mapped with `to`, not `alloc`, to
-  ! preserve that wide-halo zero. wt_u/wt_v stay mapped (alloc'd by the prior
-  ! bracket, never released) rather than round-tripping through host between
-  ! that bracket and this one; their final host copy-back is deferred to this
-  ! bracket's own exit below. The bracket closes before the host-only
-  ! CS%BT_OBC%u_OBCs_on_PE/v_OBCs_on_PE adjustment loops below so that those
-  ! (always host, never do concurrent) read/write the host copy directly
-  ! rather than racing a still-mapped device copy.
-  !$omp target enter data &
-  !$omp   map(to: U_Cor, V_Cor, pbce, gtot_E, gtot_W, gtot_N, gtot_S) &
-  !$omp   map(alloc: ubt_Cor, vbt_Cor)
-
+  ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo, and
+  ! wt_u/wt_v computed, in the bracket opened above; both stay mapped (never released) straight
+  ! through into this accumulation rather than round-tripping through host, since nothing in
+  ! between reads or writes them. Their final host copy-back is deferred to this bracket's own
+  ! exit below, which closes before the host-only CS%BT_OBC%u_OBCs_on_PE/v_OBCs_on_PE adjustment
+  ! loops further down so that those (always host, never do concurrent) read/write the host copy
+  ! directly rather than racing a still-mapped device copy.
   do concurrent (j=js-1:je+1, I=is-1:ie)
     ubt_Cor(I,j) = 0.0
   enddo
@@ -666,8 +652,13 @@ module procedure btstep
     enddo
   enddo
 
-  !$omp target exit data map(release: U_Cor, V_Cor, pbce) &
-  !$omp   map(from: wt_u, wt_v, gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, ubt_Cor, vbt_Cor)
 
   if (CS%BT_OBC%u_OBCs_on_PE) then
     do j=js,je ; do I=is-1,ie
