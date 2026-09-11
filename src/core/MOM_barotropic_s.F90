@@ -690,6 +690,12 @@ module procedure btstep
   if (nonblock_setup .and. .not.CS%linearized_BT_PV) then
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     call complete_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
+    ! The update from(...) issued before start_group_pass (above) pulled q/DCor_u/DCor_v to host
+    ! so this host-only MPI halo exchange could run; nothing has pushed the halo-completed host
+    ! values back to device until now. The blocking do_group_pass(..., omp_offload=.true.) path
+    ! (the other branch of the enclosing if/else, not shown here) needs no such update -- it keeps
+    ! the device copy correct internally -- so this is reached, and needed, only in this branch.
+    !$omp target update to(q, DCor_u, DCor_v)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
 
@@ -715,11 +721,15 @@ module procedure btstep
   ! eta is never written anywhere else in btstep (read-only from here on, including by the
   ! host-only set_up_BT_OBC call right below and the later linear_wave_drag block), so it stays
   ! mapped straight through rather than round-tripping now just to be re-uploaded unchanged later.
+  ! q/DCor_u/DCor_v are local (btstep-declared) arrays, read again only later on device (inside
+  ! btstep_find_Cor, well below), and never written again anywhere in btstep after this point --
+  ! so they also stay mapped straight through, kept correct by the update to() added above for the
+  ! one path (nonblock_setup) that genuinely modifies them on host in between.
   !$omp target exit data &
   !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
+  !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, ubt_Cor, vbt_Cor, &
   !$omp     BTCL_u, BTCL_v)
