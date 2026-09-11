@@ -2349,6 +2349,10 @@ module procedure btstep_timeloop
       do j=jsv-1,jev+1 ; do i=isv-1,iev+1
         eta_PF(i,j) = eta_PF_1(i,j) + wt_end*d_eta_PF(i,j)
       enddo ; enddo
+      ! eta_PF is already device-resident (part of btstep_timeloop's persistent bracket), so the
+      ! host loop just above leaves the device copy stale; btloop_find_PF's do-concurrent kernel
+      ! reads eta_PF right below, so push this substep's freshly interpolated value to device now.
+      !$omp target update to(eta_PF)
     endif
 
     v_first = (MOD(n+G%first_direction,2)==1)
