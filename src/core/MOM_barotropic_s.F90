@@ -728,13 +728,15 @@ module procedure btstep
   ! CS%BT_OBC%u_OBC_type/v_OBC_type are pure read-only OBC classification metadata, never written
   ! anywhere in btstep; they are read again inside the add_uh0 block just below (its own bracket
   ! releases them once that's done), so they also stay mapped straight through to there.
+  ! wt_u/wt_v are read again inside the add_uh0 block just below on device (never written there,
+  ! never on host), so they too stay mapped straight through rather than round-tripping here.
   !$omp target exit data &
   !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     eta_in, eta_PF_in, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
   !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, ubt_Cor, vbt_Cor, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, ubt_Cor, vbt_Cor, &
   !$omp     BTCL_u, BTCL_v)
 
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
@@ -2878,7 +2880,12 @@ module procedure btstep_ubt_from_layer
   integer :: i, j, k, is, ie, js, je, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !$omp target enter data map(to: U_in, V_in, wt_u, wt_v) map(alloc: ubt, vbt)
+  ! wt_u/wt_v/ubt/vbt are already mapped continuously from the caller (btstep) by this point, so
+  ! only U_in/V_in need mapping here. U_in/V_in cannot join that caller-side persistent bracket:
+  ! in the predictor-step call they alias u_uh0/v_vh0 (a pointer pair with its own, narrower
+  ! mapped lifetime scoped to the add_uh0 block above, which has already closed by the time this
+  ! is called) -- see the aliasing note in btstep's add_uh0 block for the full explanation.
+  !$omp target enter data map(to: U_in, V_in)
 
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
     ubt(i,j) = 0.0
@@ -2908,8 +2915,11 @@ module procedure btstep_ubt_from_layer
     enddo
   enddo
 
-  !$omp target exit data map(from: ubt, vbt)
-  !$omp target exit data map(release: U_in, V_in, wt_u, wt_v)
+  ! ubt/vbt stay mapped (they're part of btstep's persistent bracket), but the plain host loop
+  ! right after this call (ubt_st(I,j) = ubt(I,j)) needs their just-computed value on host, so an
+  ! explicit refresh replaces the old release+later-refetch round trip.
+  !$omp target update from(ubt, vbt)
+  !$omp target exit data map(release: U_in, V_in)
 
 end procedure btstep_ubt_from_layer
 module procedure btstep_layer_accel
