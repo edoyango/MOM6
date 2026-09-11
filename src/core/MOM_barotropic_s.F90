@@ -1655,14 +1655,18 @@ module procedure btstep
   ! etaav is an optional, intent(out) dummy arg; find_etaav = present(etaav),
   ! so it is only ever mapped inside this guard.
   if (find_etaav) then
-    !$omp target enter data map(to: eta_sum) map(alloc: etaav)
+    ! eta_sum is already device-resident here (btstep_timeloop's own exit deferred it exactly
+    ! because find_etaav is true), so it is not re-entered.
+    !$omp target enter data map(alloc: etaav)
     do concurrent (j=js:je, i=is:ie)
       etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
     enddo
     !$omp target exit data map(release: eta_sum) map(from: etaav)
   endif
 
-  !$omp target enter data map(to: eta, eta_in, eta_PF_1, d_eta_PF, eta_PF) map(alloc: e_anom)
+  ! eta is already device-resident here (part of btstep's persistent set, deferred from
+  ! btstep_timeloop's own exit), so it is not re-entered.
+  !$omp target enter data map(to: eta_in, eta_PF_1, d_eta_PF, eta_PF) map(alloc: e_anom)
 
   do concurrent (j=js-1:je+1, i=is-1:ie+1)
     e_anom(i,j) = 0.0
@@ -1701,7 +1705,9 @@ module procedure btstep
   endif
 
   ! Note that it is possible that eta_out and eta_in are the same array.
-  !$omp target enter data map(to: eta_wtd) map(alloc: eta_out)
+  ! eta_wtd is already device-resident here (deferred from btstep_timeloop's own exit), so it is
+  ! not re-entered.
+  !$omp target enter data map(alloc: eta_out)
   do concurrent (j=js:je, i=is:ie)
     eta_out(i,j) = eta_wtd(i,j) * I_sum_wt_eta
   enddo
@@ -1726,11 +1732,13 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   ! Find or store the weighted time-mean velocities and transports.
-  ! CS%[uv]btav/uhbtav/vhbtav/[uv]bt_wtd all hold correct host values here,
-  ! accumulated by btstep_timeloop and left on host by the time it returns.
+  ! CS%ubtav/CS%vbtav hold correct host values here, accumulated by btstep_timeloop and left on
+  ! host by the time it returns (unchanged from before); uhbtav/vhbtav/ubt_wtd/vbt_wtd are
+  ! already device-resident instead (deferred, along with u_accel_bt/v_accel_bt below, all the
+  ! way from btstep_timeloop's own exit), so only CS%ubtav/CS%vbtav need a fresh `to` here.
   if (CS%answer_date < 20190101) then
     !$omp target enter data &
-    !$omp   map(to: CS, CS%ubtav, CS%vbtav, uhbtav, vhbtav, ubt_wtd, vbt_wtd)
+    !$omp   map(to: CS, CS%ubtav, CS%vbtav)
     do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) * I_sum_wt_trans
       uhbtav(I,j) = uhbtav(I,j) * I_sum_wt_trans
@@ -1741,8 +1749,10 @@ module procedure btstep
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
       vbt_wtd(i,J) = vbt_wtd(i,J) * I_sum_wt_vel
     enddo
-    !$omp target exit data map(release: CS, CS%ubtav, CS%vbtav) &
-    !$omp   map(from: uhbtav, vhbtav, ubt_wtd, vbt_wtd)
+    ! uhbtav/vhbtav/ubt_wtd/vbt_wtd stay mapped (not released here); a single common flush point
+    ! well downstream in btstep, after the apply_OBCs correction has had its chance to run too,
+    ! takes care of their eventual host copy instead.
+    !$omp target exit data map(release: CS, CS%ubtav, CS%vbtav)
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
@@ -1778,21 +1788,23 @@ module procedure btstep
   if (CS%strong_drag .and. CS%rescale_strong_drag) then
     ! av_rem_u/v are already device-resident here -- this branch is exactly the condition under
     ! which the av_rem_u/v computation above deliberately left them mapped instead of releasing
-    ! them. bt_rem_u/v hold correct host values from their own per-construct implicit mapping
-    ! earlier in this routine (not part of any persistent bracket there); u_accel_bt/v_accel_bt
-    ! likewise from btstep_layer_accel's own self-contained mapping.
+    ! them. bt_rem_u/v were flushed and released after their own computation (well above, ahead
+    ! of the pass_eta_bt_rem halo pass), so need a fresh host-to-device copy here.
+    ! u_accel_bt/v_accel_bt are already device-resident too (deferred from btstep_timeloop's own
+    ! exit), so they are not named here.
     !$omp target enter data &
-    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, bt_rem_u, bt_rem_v, &
-    !$omp     u_accel_bt, v_accel_bt)
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, bt_rem_u, bt_rem_v)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
       u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
     enddo
     do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0)
       v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
     enddo
+    ! u_accel_bt/v_accel_bt stay mapped (not released here); the single common flush point well
+    ! downstream in btstep, after the apply_OBCs correction has had its chance to run too, takes
+    ! care of their eventual host copy instead.
     !$omp target exit data &
-    !$omp   map(release: G, G%mask2dCu, G%mask2dCv, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v) &
-    !$omp   map(from: u_accel_bt, v_accel_bt)
+    !$omp   map(release: G, G%mask2dCu, G%mask2dCv, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v)
   endif
 
   ! Now calculate each layer's accelerations.
@@ -1802,9 +1814,11 @@ module procedure btstep
   if (apply_OBCs) then
     ! Correct the accelerations at OBC velocity points, but only in the
     ! symmetric-memory computational domain, not in the wide halo regions.
+    ! ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/accel_layer_u/accel_layer_v are all already
+    ! device-resident here (deferred from btstep_timeloop's own exit and/or
+    ! btstep_layer_accel's own exit just above), so none of them are named here.
     !$omp target enter data &
-    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_wtd, vbt_wtd, ubt_st, &
-    !$omp     vbt_st, u_accel_bt, v_accel_bt, accel_layer_u, accel_layer_v)
+    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_st, vbt_st)
     if (CS%BT_OBC%u_OBCs_on_PE) then
       do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
         u_accel_bt(I,j) = (ubt_wtd(I,j) - ubt_st(I,j)) / dt
@@ -1821,11 +1835,21 @@ module procedure btstep
         enddo
       enddo
     endif
+    ! ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/accel_layer_u/accel_layer_v all stay mapped (not
+    ! released here); the single common flush point right below, reached regardless of whether
+    ! this apply_OBCs correction ran, takes care of their host copy instead.
     !$omp target exit data &
-    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_wtd, vbt_wtd, ubt_st, &
-    !$omp     vbt_st) &
-    !$omp   map(from: u_accel_bt, v_accel_bt, accel_layer_u, accel_layer_v)
+    !$omp   map(release: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_st, vbt_st)
   endif
+
+  ! uhbtav/vhbtav (btstep's own intent(out) args) and ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/
+  ! accel_layer_u/accel_layer_v (all read again on host below, or are themselves intent(out) --
+  ! accel_layer_u/v) are all still device-resident at this point, deferred through whichever of
+  ! the renorm/strong_drag-rescale/apply_OBCs-correction blocks above did or did not run. Flush
+  ! and release all of them here in one place, unconditionally, rather than at each of those
+  ! optional blocks individually.
+  !$omp target exit data map(from: uhbtav, vhbtav, ubt_wtd, vbt_wtd, u_accel_bt, v_accel_bt, &
+  !$omp     accel_layer_u, accel_layer_v)
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
 
@@ -2661,10 +2685,18 @@ module procedure btstep_timeloop
   ! Reset the time information in the diag type.
   if (do_hifreq_output) call enable_averaging(time_int_in, time_end_in, CS%diag)
 
-  !$omp target exit data map(from: CS%ubtav, CS%vbtav, eta, ubt, vbt, uhbtav, vhbtav, &
-  !$omp                            ubt_wtd, vbt_wtd, eta_sum, eta_wtd, &
-  !$omp                            PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, &
-  !$omp                            u_accel_bt, v_accel_bt)
+  ! eta, eta_sum, eta_wtd, uhbtav, vhbtav, ubt_wtd, vbt_wtd, u_accel_bt, and v_accel_bt are all
+  ! consumed again on device by btstep's own post-time-loop blocks (etaav/e_anom/eta_out, the
+  ! CS%answer_date<20190101 renorm, the strong_drag-and-rescale_strong_drag rescaling, and the
+  ! apply_OBCs correction), so none of them are flushed or released here -- each stays mapped for
+  ! whichever of those blocks needs it next, with a single common flush point (or, for eta/
+  ! eta_sum/eta_wtd, that block's own exit) well downstream in btstep taking care of the eventual
+  ! host copy instead of round-tripping here first. eta_sum specifically is btstep_timeloop's own
+  ! local accumulator with no further use at all unless find_etaav (etaav is the only consumer),
+  ! so it still needs releasing here in the one case where that block won't run.
+  !$omp target exit data map(from: CS%ubtav, CS%vbtav, ubt, vbt, &
+  !$omp                            PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg)
+  !$omp target exit data map(release: eta_sum) if(.not. find_etaav)
   !$omp target exit data map(release: CS, CS%IareaT_OBCmask, CS%IdxCu, CS%IdyCv, G, G%bathyT, G%mask2dT, &
   !$omp                              uhbt0, vhbt0, BTCL_u, BTCL_v, eta_src, &
   !$omp                              gtot_N, gtot_S, gtot_E, gtot_W, eta_PF, &
@@ -2990,7 +3022,9 @@ module procedure btstep_layer_accel
   Idt = 1.0 / dt
   accel_underflow = CS%vel_underflow * Idt
 
-  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, u_accel_bt, v_accel_bt, pbce, &
+  ! u_accel_bt/v_accel_bt are already device-resident here -- part of btstep's persistent set for
+  ! this call, deferred all the way from btstep_timeloop's own exit -- so they are not named here.
+  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, pbce, &
   !$omp                          gtot_E, gtot_W, gtot_N, gtot_S, e_anom) &
   !$omp                      map(alloc: accel_layer_u, accel_layer_v)
 
@@ -3008,8 +3042,12 @@ module procedure btstep_layer_accel
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
   enddo
 
-  !$omp target exit data map(from: accel_layer_u, accel_layer_v)
-  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, u_accel_bt, v_accel_bt, pbce, &
+  ! accel_layer_u/v are btstep's own intent(out) dummy args and u_accel_bt/v_accel_bt may still be
+  ! read again by the apply_OBCs correction back in btstep, so refresh the host copy of
+  ! accel_layer_u/v here without releasing either array -- both are released together, in one
+  ! place, well downstream in btstep once that optional correction has had its chance to run.
+  !$omp target update from(accel_layer_u, accel_layer_v)
+  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, pbce, &
   !$omp                              gtot_E, gtot_W, gtot_N, gtot_S, e_anom)
 
 end procedure btstep_layer_accel
