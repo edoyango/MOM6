@@ -337,7 +337,7 @@ module procedure btstep
 
   !$omp target enter data &
   !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
@@ -495,13 +495,6 @@ module procedure btstep
     Datv(i,J) = 0.0 ; bt_rem_v(i,J) = 0.0 ; vhbt0(i,J) = 0.0
   enddo
 
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
-
   if (apply_OBCs) then
     SpV_col_avg(:,:) = 0.0
     if (apply_OBC_flather .and. .not.GV%Boussinesq) then
@@ -530,37 +523,40 @@ module procedure btstep
   endif
 
   ! Copy input arrays into their wide-halo counterparts.
-  ! eta, eta_PF, eta_PF_1, d_eta_PF and eta_IC were already zeroed over the wider
-  ! CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo above; this loop only overwrites the
-  ! narrower G%isd:G%ied/G%jsd:G%jed range, so they are mapped with `to`, not
-  ! `alloc`, to preserve that wide-halo zero rather than replace it with garbage.
+  ! eta, eta_PF, eta_PF_1, d_eta_PF, eta_IC, eta_in and eta_PF_in are already resident on device
+  ! from the bracket opened above (eta/eta_PF/eta_PF_1/d_eta_PF/eta_IC alloc'd there after being
+  ! zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo, eta_in/eta_PF_in mapped `to` since
+  ! eta_PF_in is read unconditionally below, in whichever branch runs); this loop only overwrites
+  ! the narrower G%isd:G%ied/G%jsd:G%jed range, so none of them need remapping here. Only
+  ! eta_PF_start, used solely by the interp_eta_PF branch, gets its own small enter/exit pair.
   if (interp_eta_PF) then
-    !$omp target enter data &
-    !$omp   map(to: eta_in, eta_PF_in, eta_PF_start, eta, eta_PF_1, d_eta_PF)
+    !$omp target enter data map(to: eta_PF_start)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF_1(i,j) = eta_PF_start(i,j)
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
     enddo
-    !$omp target exit data &
-    !$omp   map(release: eta_in, eta_PF_in, eta_PF_start) map(from: eta, eta_PF_1, d_eta_PF)
+    !$omp target exit data map(release: eta_PF_start)
   else
-    !$omp target enter data map(to: eta_in, eta_PF_in, eta, eta_PF)
     do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
     enddo
-    !$omp target exit data map(release: eta_in, eta_PF_in) map(from: eta, eta_PF)
   endif
   if (integral_BT_cont) then
-    !$omp target enter data map(to: eta_in, eta_IC)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       eta_IC(i,j) = eta_in(i,j)
     enddo
-    !$omp target exit data map(release: eta_in) map(from: eta_IC)
   endif
+
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
 
   !$omp target enter data &
   !$omp   map(to: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v) map(alloc: wt_u, wt_v)
