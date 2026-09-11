@@ -774,6 +774,10 @@ module subroutine btstep_find_Cor(q, DCor_u, DCor_v, f_4_u, f_4_v, isvf, ievf, j
 
   ! real :: C1_3 ! One third [nondim]
 
+  ! q/DCor_u/DCor_v are already mapped continuously from the caller (btstep) by this point, so
+  ! only CS%OBCmask_u/v and f_4_u/f_4_v need mapping here. This is q/DCor_u/DCor_v's last use in
+  ! btstep, so the exit below still releases them -- their host copy was already refreshed by the
+  ! caller right after they were finished, well before this call.
 end subroutine btstep_find_Cor
 module subroutine truncate_velocities(ubt, vbt, dt, G, CS, isv, iev, jsv, jev)
   type(ocean_grid_type), intent(inout) :: G  !< The ocean's grid structure.

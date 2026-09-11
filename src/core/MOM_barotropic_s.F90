@@ -2642,7 +2642,7 @@ module procedure btstep_timeloop
 end procedure btstep_timeloop
 module procedure btstep_find_Cor
   integer :: i, j
-  !$omp target enter data map(to: CS, CS%OBCmask_u, CS%OBCmask_v, q, DCor_u, DCor_v, f_4_u, f_4_v)
+  !$omp target enter data map(to: CS, CS%OBCmask_u, CS%OBCmask_v, f_4_u, f_4_v)
 
   if (CS%Sadourny) then
     do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
