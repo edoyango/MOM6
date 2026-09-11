@@ -773,8 +773,17 @@ module procedure btstep
     endif
 
     !$omp target exit data &
-    !$omp   map(release: CS, CS%frhatu, CS%frhatv, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v) &
-    !$omp   map(from: ubt, vbt, uhbt, vhbt)
+    !$omp   map(release: CS, CS%frhatu, CS%frhatv, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v)
+
+    ! ubt/vbt/uhbt/vhbt only need to leave the device when the halo-exchange +
+    ! adjust_local_BT_cont_types branch below actually runs (it needs correct
+    ! host values to pass and adjust); this exit/enter pair is symmetrically
+    ! guarded by the same `if` so that when the branch doesn't run, neither
+    ! side executes and the four arrays simply stay device-resident from the
+    ! bracket above, straight through into the uhbt0/vhbt0 bracket below --
+    ! with no net change in their reference count either way.
+    !$omp target exit data map(from: ubt, vbt, uhbt, vhbt) &
+    !$omp   if((use_BT_cont .or. integral_BT_cont) .and. CS%adjust_BT_cont)
 
     if ((use_BT_cont .or. integral_BT_cont) .and. CS%adjust_BT_cont) then
       ! Use the additional input transports to broaden the fits
@@ -796,13 +805,17 @@ module procedure btstep
                                         G, US, MS, 1+ievf-ie)
       endif
     endif
+
+    !$omp target enter data map(to: ubt, vbt, uhbt, vhbt) &
+    !$omp   if((use_BT_cont .or. integral_BT_cont) .and. CS%adjust_BT_cont)
+
     ! uhbt0/vhbt0 were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:
     ! CS%jedw halo above, so they are mapped with `to`, not `alloc`, here.
-    ! uhbt/vhbt/ubt/vbt were released by the previous bracket and are re-mapped
-    ! with `to`. BTCL_u/BTCL_v are plain-data (no allocatable/pointer
-    ! components) so a simple `to` covers the whole array of derived types.
+    ! ubt/vbt/uhbt/vhbt are handled by the conditional pair above, not here.
+    ! BTCL_u/BTCL_v are plain-data (no allocatable/pointer components) so a
+    ! simple `to` covers the whole array of derived types.
     !$omp target enter data &
-    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, uhbt, vhbt, ubt, vbt, &
+    !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, &
     !$omp     BTCL_u, BTCL_v, Datu, Datv, uhbt0, vhbt0)
 
     if (integral_BT_cont) then
