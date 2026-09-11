@@ -771,8 +771,11 @@ module procedure btstep
     ! halo above; uhbt/vhbt are first written here. uh0/vh0/u_uh0/v_vh0 are
     ! pointer dummy args guaranteed associated inside this add_uh0 = associated
     ! (uh0) branch.
+    ! wt_u/wt_v are already mapped continuously from well before this block (they are finished
+    ! and flushed to host right after being computed, long before this point), so they no longer
+    ! need a bump here -- correspondingly dropped from this block's matching mid-exit below too.
     !$omp target enter data &
-    !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v, ubt, vbt) &
+    !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0, ubt, vbt) &
     !$omp   map(alloc: uhbt, vhbt)
 
     do concurrent (j=js:je, I=is-1:ie)
@@ -818,7 +821,7 @@ module procedure btstep
     endif
 
     !$omp target exit data &
-    !$omp   map(release: CS, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v)
+    !$omp   map(release: CS, uh0, vh0, u_uh0, v_vh0)
 
     ! ubt/vbt/uhbt/vhbt only need to leave the device when the halo-exchange +
     ! adjust_local_BT_cont_types branch below actually runs (it needs correct
@@ -1015,9 +1018,13 @@ module procedure btstep
   endif
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
-  ! non-symmetric computational domain.
+  ! non-symmetric computational domain. wt_u/wt_v are already mapped continuously (see their
+  ! update from() right after being finished, well above) and this is their last use in the
+  ! routine, so no bump is needed here -- correspondingly dropped from this bracket's exit too,
+  ! leaving them mapped (unreleased) for the rest of the routine rather than releasing them
+  ! right before they'd otherwise go untouched anyway.
   !$omp target enter data &
-  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v, ubt, vbt)
+  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v, ubt, vbt)
   ! BT_force_u/v are already device-resident from the bottom-drag bracket above when it ran;
   ! otherwise they were never mapped there at all (only touched via per-construct implicit
   ! mapping in the wind-stress loops further up), so they need a fresh `to` here instead.
@@ -1052,7 +1059,7 @@ module procedure btstep
   endif
 
   !$omp target exit data &
-  !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v) &
+  !$omp   map(release: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v) &
   !$omp   map(from: BT_force_u, BT_force_v, ubt, vbt)
 
   ! Compute instantaneous tidal velocities and apply frequency-dependent drag.
