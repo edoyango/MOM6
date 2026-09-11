@@ -604,15 +604,18 @@ module procedure btstep
     enddo
   endif
 
+  ! wt_u/wt_v are now finished (never written again anywhere in btstep) and stay mapped
+  ! continuously for the rest of the routine -- no exit ever releases them again, so this is
+  ! their only host copy-back. It exists solely for the CS%debug uvchksum call much further down
+  ! (the only remaining host reader); nothing else needs it, since every other use is on device.
+  !$omp target update from(wt_u, wt_v)
+
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
   ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo, and
   ! wt_u/wt_v computed, in the bracket opened above; both stay mapped (never released) straight
   ! through into this accumulation rather than round-tripping through host, since nothing in
-  ! between reads or writes them. Their final host copy-back is deferred to this bracket's own
-  ! exit below, which closes before the host-only CS%BT_OBC%u_OBCs_on_PE/v_OBCs_on_PE adjustment
-  ! loops further down so that those (always host, never do concurrent) read/write the host copy
-  ! directly rather than racing a still-mapped device copy.
+  ! between reads or writes them.
   do concurrent (j=js-1:je+1, I=is-1:ie)
     ubt_Cor(I,j) = 0.0
   enddo
