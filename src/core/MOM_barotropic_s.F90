@@ -702,6 +702,14 @@ module procedure btstep
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
 
+  ! q/DCor_u/DCor_v are finished by this point in every branch (linearized: computed directly
+  ! with no halo pass; blocking halo: do_group_pass keeps the device copy correct internally;
+  ! nonblock halo: fixed up by the update to() just above) and stay mapped for the rest of the
+  ! routine with no other exit ever releasing them, so this is their only host copy-back. It
+  ! exists solely for the CS%debug Bchksum/uvchksum calls much further down (the only remaining
+  ! host readers); nothing else needs it, since every other use is on device (btstep_find_Cor).
+  !$omp target update from(q, DCor_u, DCor_v)
+
   ! Calculate the open areas at the velocity points.
   ! The halo updates are needed before Datu is first used, either in set_up_BT_OBC or ubt_Cor.
   if (integral_BT_cont) then
