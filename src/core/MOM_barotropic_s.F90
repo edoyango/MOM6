@@ -169,6 +169,7 @@ module procedure btstep
                       ! from the initial condition using the time-integrated barotropic velocity.
   logical :: ice_is_rigid, nonblock_setup, interp_eta_PF
   logical :: add_uh0
+  logical :: apply_bottom_drag ! If true, the zonal & meridional bottom frictional stresses are applied.
 
   real :: dyn_coef_max ! The maximum stable value of dyn_coef_eta
                       ! [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1].
@@ -247,6 +248,8 @@ module procedure btstep
   if (add_uh0 .and. .not.(associated(vh0) .and. associated(u_uh0) .and. &
                           associated(v_vh0))) call MOM_error(FATAL, &
       "btstep: vh0, u_uh0, and v_vh0 must be associated if uh0 is used.")
+
+  apply_bottom_drag = associated(taux_bot) .and. associated(tauy_bot)
 
   ! This can be changed to try to optimize the performance.
   nonblock_setup = G%nonblocking_updates
@@ -941,32 +944,41 @@ module procedure btstep
   else
     BT_force_v(i,J) = 0.0
   endif ; enddo
-  !$omp target exit data map(from: CS%IDatu, CS%IDatv) &
-  !$omp   map(release: CS, GV, CS%bathyT, CS%dy_Cu, CS%dx_Cv, forces%taux, forces%tauy)
+  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dy_Cu, CS%dx_Cv, forces%taux, forces%tauy)
 
-  ! BT_force_u/v hold correct host values here: the preceding bracket (this
-  ! routine's existing wind-stress loops) never mapped them, so their own
-  ! per-construct implicit mapping copied the result back to host already.
-  if (associated(taux_bot) .and. associated(tauy_bot)) then
+  ! CS%IDatu/CS%IDatv are persistent CS state (read again next call and by the CS%debug chksum
+  ! below), so they must always end up flushed to host by the time this if-block is done -- but
+  ! only need to leave the device now if the bottom-drag bracket below won't run to do it later.
+  ! BT_force_u/v hold correct host values here regardless: the preceding bracket (this routine's
+  ! existing wind-stress loops) never mapped them, so their own per-construct implicit mapping
+  ! copied the result back to host already.
+  !$omp target exit data map(from: CS%IDatu, CS%IDatv) if(.not. apply_bottom_drag)
+
+  if (apply_bottom_drag) then
     !$omp target enter data &
-    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, CS%IDatu, CS%IDatv, taux_bot, tauy_bot, &
-    !$omp     BT_force_u, BT_force_v)
+    !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot, BT_force_u, BT_force_v)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
       BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
     enddo
     do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0)
       BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
     enddo
-    !$omp target exit data &
-    !$omp   map(release: G, G%mask2dCu, G%mask2dCv, GV, CS, CS%IDatu, CS%IDatv, taux_bot, tauy_bot) &
-    !$omp   map(from: BT_force_u, BT_force_v)
+    ! CS%IDatu/IDatv are flushed here (deferred from the exit above, since this branch is running).
+    ! BT_force_u/v are deliberately left mapped: the bc_accel_u/v bracket below reads and updates
+    ! them further before its own exit finally flushes them, so releasing them here would just be
+    ! an avoidable round trip.
+    !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot) &
+    !$omp   map(from: CS%IDatu, CS%IDatv)
   endif
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
   ! non-symmetric computational domain.
   !$omp target enter data &
-  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v, BT_force_u, &
-  !$omp     BT_force_v, ubt, vbt)
+  !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, wt_u, wt_v, bc_accel_u, bc_accel_v, ubt, vbt)
+  ! BT_force_u/v are already device-resident from the bottom-drag bracket above when it ran;
+  ! otherwise they were never mapped there at all (only touched via per-construct implicit
+  ! mapping in the wind-stress loops further up), so they need a fresh `to` here instead.
+  !$omp target enter data map(to: BT_force_u, BT_force_v) if(.not. apply_bottom_drag)
 
   do concurrent (j=js:je)
     do k=1,nz
