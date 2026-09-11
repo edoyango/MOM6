@@ -337,10 +337,11 @@ module procedure btstep
 
   !$omp target enter data &
   !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in) &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -551,16 +552,6 @@ module procedure btstep
     enddo
   endif
 
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
-
-  !$omp target enter data &
-  !$omp   map(to: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v) map(alloc: wt_u, wt_v)
-
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
     ! The 0.5 below is just for safety.
@@ -582,7 +573,6 @@ module procedure btstep
   enddo
 
   if (.not. CS%wt_uv_bug) then
-    !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv) map(alloc: Iwt_u_tot, Iwt_v_tot)
     do concurrent (j=js:je, I=is-1:ie)
       Iwt_u_tot(I,j) = wt_u(I,j,1)
     enddo
@@ -608,10 +598,15 @@ module procedure btstep
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       wt_v(i,J,k) = wt_v(i,J,k) * Iwt_v_tot(i,J)
     enddo
-    !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot)
   endif
 
-  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv, visc_rem_u, visc_rem_v)
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0)
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
