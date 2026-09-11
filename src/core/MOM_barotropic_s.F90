@@ -752,8 +752,8 @@ module procedure btstep
   !$omp     eta_in, eta_PF_in, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
   !$omp   map(from: gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, vbt, Datv, bt_rem_v, vhbt0, ubt_Cor, vbt_Cor, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, ubt, Datu, uhbt0, &
+  !$omp     Cor_ref_v, vbt, Datv, vhbt0, ubt_Cor, vbt_Cor, &
   !$omp     BTCL_u, BTCL_v)
 
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
@@ -1250,6 +1250,10 @@ module procedure btstep
     enddo
   enddo
   !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv)
+  ! bt_rem_u/v are part of btstep's persistent set from here on (dropped from the early-exit's
+  ! release list well above): the CS%strong_drag branch writes them fully on device with no round
+  ! trip needed, and the host branch below writes them fully on host, so it just needs an
+  ! update to() afterward to push the result back rather than a full round trip.
   if (CS%strong_drag) then
     !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv)
     do concurrent (j=js:je, I=is-1:ie)
@@ -1277,6 +1281,7 @@ module procedure btstep
       if (G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0) &
         bt_rem_v(i,J) = G%mask2dCv(i,J) * (av_rem_v(i,J)**Instep)
     enddo ; enddo
+    !$omp target update to(bt_rem_u, bt_rem_v)
   endif
   ! Release av_rem_u/v now unless the strong_drag-and-rescale_strong_drag block much further down
   ! is about to consume them again on device -- that block does the release instead, once it's
@@ -1293,7 +1298,7 @@ module procedure btstep
   if (CS%linear_wave_drag) then
     !$omp target enter data &
     !$omp   map(to: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, G%mask2dCv, &
-    !$omp     eta, bt_rem_u, bt_rem_v, Rayleigh_u, Rayleigh_v)
+    !$omp     eta, Rayleigh_u, Rayleigh_v)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
 
@@ -1324,35 +1329,25 @@ module procedure btstep
     !$omp   map(release: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, &
     !$omp     G%mask2dCv, eta) &
     !$omp   map(from: Rayleigh_u, Rayleigh_v)
-    ! bt_rem_u/v only need to leave the device now if the OBC block below (an
-    ! independent condition) won't be the one to flush them instead -- see the
-    ! matching guards on the OBC blocks' own enters below. Skipping this exit
-    ! leaves the just-computed linear_wave_drag values resident on device,
-    ! which is exactly what the OBC loop reads next; no value or ref-count
-    ! difference from the unconditional round trip this replaces.
-    !$omp target exit data map(from: bt_rem_u) if(.not. CS%BT_OBC%u_OBCs_on_PE)
-    !$omp target exit data map(from: bt_rem_v) if(.not. CS%BT_OBC%v_OBCs_on_PE)
+    ! bt_rem_u/v stay mapped (part of btstep's persistent set) rather than leaving the device here.
   endif
 
-  ! Avoid changing the velocities at OBC points due to non-OBC calculations.
+  ! Avoid changing the velocities at OBC points due to non-OBC calculations. bt_rem_u/v are
+  ! already device-resident (part of btstep's persistent set), so this block neither maps them in
+  ! nor flushes them out.
   if (CS%BT_OBC%u_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type)
-    ! bt_rem_u is already device-resident (held over from the block above)
-    ! exactly when CS%linear_wave_drag ran; only a fresh host value needs
-    ! uploading otherwise.
-    !$omp target enter data map(to: bt_rem_u) if(.not. CS%linear_wave_drag)
     do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
       bt_rem_u(I,j) = 1.0
     enddo
-    !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type) map(from: bt_rem_u)
+    !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type)
-    !$omp target enter data map(to: bt_rem_v) if(.not. CS%linear_wave_drag)
     do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
       bt_rem_v(i,J) = 1.0
     enddo
-    !$omp target exit data map(release: CS, CS%BT_OBC%v_OBC_type) map(from: bt_rem_v)
+    !$omp target exit data map(release: CS, CS%BT_OBC%v_OBC_type)
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
@@ -1468,6 +1463,13 @@ module procedure btstep
       !$omp   map(from: dyn_coef_eta)
     endif
   endif
+
+  ! bt_rem_u/v have no further device use until btstep_timeloop re-maps them (its own bracket
+  ! well below) or the strong_drag-and-rescale_strong_drag rescaling bracket further down still:
+  ! the pass_eta_bt_rem halo pass just below is host-only (MPI communication via the FMS domain
+  ! layer, alongside eta_src/dyn_coef_eta/eta_PF*/eta_IC/Rayleigh_u/v), so flush and release the
+  ! mapping now rather than carrying it, unused, through that host-only span.
+  !$omp target exit data map(from: bt_rem_u, bt_rem_v)
 
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
