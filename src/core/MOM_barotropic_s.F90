@@ -345,7 +345,7 @@ module procedure btstep
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot, &
-  !$omp     ubt_Cor, vbt_Cor)
+  !$omp     ubt_Cor, vbt_Cor, BTCL_u, BTCL_v)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -655,29 +655,25 @@ module procedure btstep
     enddo
   enddo
 
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
-  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
-  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
-  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
-  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, ubt_Cor, vbt_Cor)
-
   if (CS%BT_OBC%u_OBCs_on_PE) then
+    !$omp target update from(gtot_W, gtot_E)
     do j=js,je ; do I=is-1,ie
       if (CS%BT_OBC%u_OBC_type(I,j) > 0) & ! Eastern boundary condition
         gtot_W(i+1,j) = gtot_W(i,j)  ! Perhaps this should be gtot_E(i,j)?
       if (CS%BT_OBC%u_OBC_type(I,j) < 0) & ! Western boundary condition
         gtot_E(i,j) = gtot_E(i+1,j)  ! Perhaps this should be gtot_W(i+1,j)?
     enddo ; enddo
+    !$omp target update to(gtot_W, gtot_E)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
+    !$omp target update from(gtot_S, gtot_N)
     do J=js-1,je ; do i=is,ie
       if (CS%BT_OBC%v_OBC_type(i,J) > 0) & ! Northern boundary condition
         gtot_S(i,j+1) = gtot_S(i,j)  !### Should this be gtot_N(i,j) to use wt_v at the same point?
       if (CS%BT_OBC%v_OBC_type(i,J) < 0) & ! Southern boundary condition
         gtot_N(i,j) = gtot_N(i,j+1)  ! Perhaps this should be gtot_S(i,j+1)?
     enddo ; enddo
+    !$omp target update to(gtot_S, gtot_N)
   endif
 
   if (CS%calculate_SAL) then
@@ -711,6 +707,23 @@ module procedure btstep
     endif
   endif
 
+  ! CS%frhatu/CS%frhatv are pure read-only inputs for the whole of btstep --
+  ! never written on host or device anywhere in this routine -- so leaving
+  ! them mapped continuously across this and the next two brackets that use
+  ! them (rather than releasing and re-uploading from host each time) cannot
+  ! change their value; the redundant round trips are dropped below.
+  ! eta is never written anywhere else in btstep (read-only from here on, including by the
+  ! host-only set_up_BT_OBC call right below and the later linear_wave_drag block), so it stays
+  ! mapped straight through rather than round-tripping now just to be re-uploaded unchanged later.
+  !$omp target exit data &
+  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, eta_in, eta_PF_in, &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, Iwt_u_tot, Iwt_v_tot, U_Cor, V_Cor, pbce) &
+  !$omp   map(from: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta_PF, eta_PF_1, &
+  !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
+  !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, ubt_Cor, vbt_Cor, &
+  !$omp     BTCL_u, BTCL_v)
+
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
   ! must occur on all PEs when there are open boundary conditions anywhere.
   if (apply_OBCs) then
@@ -718,6 +731,9 @@ module procedure btstep
       call complete_group_pass(CS%pass_SpV_avg, CS%BT_domain)
 
     dgeo_de_OBC = 1.0 ; if (CS%tidal_SAL_Flather) dgeo_de_OBC = dgeo_de
+    ! set_up_BT_OBC is host-only and only reads eta, so a plain refresh is enough -- no update-to
+    ! needed coming back out, since nothing writes eta here or anywhere later in this routine.
+    !$omp target update from(eta)
     call set_up_BT_OBC(OBC, eta, SpV_col_avg, CS%BT_OBC, CS%BT_Domain, G, GV, US, CS, MS, ievf-ie, &
                        use_BT_cont, integral_BT_cont, dt, Datu, Datv, BTCL_u, BTCL_v, dgeo_de_OBC)
   endif
@@ -730,7 +746,7 @@ module procedure btstep
     ! pointer dummy args guaranteed associated inside this add_uh0 = associated
     ! (uh0) branch.
     !$omp target enter data &
-    !$omp   map(to: CS, CS%frhatu, CS%frhatv, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v, ubt, vbt) &
+    !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v, ubt, vbt) &
     !$omp   map(alloc: uhbt, vhbt)
 
     do concurrent (j=js:je, I=is-1:ie)
@@ -776,7 +792,7 @@ module procedure btstep
     endif
 
     !$omp target exit data &
-    !$omp   map(release: CS, CS%frhatu, CS%frhatv, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v)
+    !$omp   map(release: CS, uh0, vh0, u_uh0, v_vh0, wt_u, wt_v)
 
     ! ubt/vbt/uhbt/vhbt only need to leave the device when the halo-exchange +
     ! adjust_local_BT_cont_types branch below actually runs (it needs correct
@@ -1150,7 +1166,7 @@ module procedure btstep
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
-  !$omp target enter data map(to: CS, CS%frhatu, CS%frhatv)
+  !$omp target enter data map(to: CS)
   do concurrent (j=js-1:je+1, I=is-1:ie)
     av_rem_u(I,j) = 0.0
   enddo
@@ -1239,19 +1255,32 @@ module procedure btstep
     !$omp target exit data &
     !$omp   map(release: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, &
     !$omp     G%mask2dCv, eta) &
-    !$omp   map(from: bt_rem_u, bt_rem_v, Rayleigh_u, Rayleigh_v)
+    !$omp   map(from: Rayleigh_u, Rayleigh_v)
+    ! bt_rem_u/v only need to leave the device now if the OBC block below (an
+    ! independent condition) won't be the one to flush them instead -- see the
+    ! matching guards on the OBC blocks' own enters below. Skipping this exit
+    ! leaves the just-computed linear_wave_drag values resident on device,
+    ! which is exactly what the OBC loop reads next; no value or ref-count
+    ! difference from the unconditional round trip this replaces.
+    !$omp target exit data map(from: bt_rem_u) if(.not. CS%BT_OBC%u_OBCs_on_PE)
+    !$omp target exit data map(from: bt_rem_v) if(.not. CS%BT_OBC%v_OBCs_on_PE)
   endif
 
   ! Avoid changing the velocities at OBC points due to non-OBC calculations.
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type, bt_rem_u)
+    !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type)
+    ! bt_rem_u is already device-resident (held over from the block above)
+    ! exactly when CS%linear_wave_drag ran; only a fresh host value needs
+    ! uploading otherwise.
+    !$omp target enter data map(to: bt_rem_u) if(.not. CS%linear_wave_drag)
     do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
       bt_rem_u(I,j) = 1.0
     enddo
     !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type) map(from: bt_rem_u)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type, bt_rem_v)
+    !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type)
+    !$omp target enter data map(to: bt_rem_v) if(.not. CS%linear_wave_drag)
     do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
       bt_rem_v(i,J) = 1.0
     enddo
@@ -4017,8 +4046,7 @@ module procedure set_local_BT_cont_types
   !$omp                          BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
   !$omp                          BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
   !$omp                    map(alloc: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
-  !$omp                               v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS, &
-  !$omp                               BTCL_u, BTCL_v)
+  !$omp                               v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
 
   ! Copy the BT_cont arrays into symmetric, potentially wide haloed arrays.
   do concurrent (j=js-hs:je+hs, i=is-hs-1:ie+hs)
@@ -4130,7 +4158,6 @@ module procedure set_local_BT_cont_types
       (C1_3 * (BTCL_v(i,J)%FA_v_NN - BTCL_v(i,J)%FA_v_N0)) / BTCL_v(i,J)%vBT_NN**2
   enddo
 
-  !$omp target exit data map(from: BTCL_u, BTCL_v)
   !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
   !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
   !$omp                              BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
