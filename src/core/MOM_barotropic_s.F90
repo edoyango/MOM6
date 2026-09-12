@@ -695,15 +695,15 @@ module procedure btstep
     call complete_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
     ! The update from(...) issued before start_group_pass (above) pulled q/DCor_u/DCor_v to host
     ! so this host-only MPI halo exchange could run; nothing has pushed the halo-completed host
-    ! values back to device until now. The blocking do_group_pass(..., omp_offload=.true.) path
-    ! (the other branch of the enclosing if/else, not shown here) needs no such update -- it keeps
-    ! the device copy correct internally -- so this is reached, and needed, only in this branch.
+    ! values back to device until now. The blocking do_group_pass path (the other branch of the
+    ! enclosing if/else, not shown here) has its own target update to() right after that call
+    ! instead, so this one is reached, and needed, only in this (nonblock_setup) branch.
     !$omp target update to(q, DCor_u, DCor_v)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
 
   ! q/DCor_u/DCor_v are finished by this point in every branch (linearized: computed directly
-  ! with no halo pass; blocking halo: do_group_pass keeps the device copy correct internally;
+  ! with no halo pass; blocking halo: fixed up by its own update to() right after that call;
   ! nonblock halo: fixed up by the update to() just above) and stay mapped for the rest of the
   ! routine with no other exit ever releasing them, so this is their only host copy-back. It
   ! exists solely for the CS%debug Bchksum/uvchksum calls much further down (the only remaining
