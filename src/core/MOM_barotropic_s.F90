@@ -351,106 +351,162 @@ module procedure btstep
 ! barotropic momentum equations.  This has to be done quite early to start
 ! the halo update that needs to be completed before the next calculations.
   if (CS%linearized_BT_PV) then
-    do concurrent (J=jsvf-2:jevf+1, I=isvf-2:ievf+1)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=jsvf-2:jevf+1, I=isvf-2:ievf+1)
+    do J=jsvf-2,jevf+1 ; do I=isvf-2,ievf+1
       q(I,J) = CS%q_D(I,j)
-    enddo
-    do concurrent (j=jsvf-1:jevf+1, I=isvf-2:ievf+1)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=jsvf-1:jevf+1, I=isvf-2:ievf+1)
+    do j=jsvf-1,jevf+1 ; do I=isvf-2,ievf+1
       DCor_u(I,j) = CS%D_u_Cor(I,j)
-    enddo
-    do concurrent (J=jsvf-2:jevf+1, i=isvf-1:ievf+1)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=jsvf-2:jevf+1, i=isvf-1:ievf+1)
+    do J=jsvf-2,jevf+1 ; do i=isvf-1,ievf+1
       DCor_v(i,J) = CS%D_v_Cor(i,J)
-    enddo
+    enddo ; enddo
   else
-    do concurrent (J=CS%jsdw-1:CS%jedw, I=CS%isdw-1:CS%iedw)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=CS%jsdw-1:CS%jedw, I=CS%isdw-1:CS%iedw)
+    do J=CS%jsdw-1,CS%jedw ; do I=CS%isdw-1,CS%iedw
       q(I,J) = 0.0
-    enddo
-    do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+    do j=CS%jsdw,CS%jedw ; do I=CS%isdw-1,CS%iedw
       DCor_u(I,j) = 0.0
-    enddo
-    do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+    do J=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
       DCor_v(i,J) = 0.0
-    enddo
+    enddo ; enddo
     if (GV%Boussinesq) then
-      do concurrent (j=js:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie)
+      do j=js,je ; do I=is-1,ie
         DCor_u(I,j) = 0.5 * (max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0) + &
                              max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0) )
-      enddo
+      enddo ; enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%u_OBCs_on_PE) then
-        do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), &
-                        CS%BT_OBC%u_OBC_type(I,j) < 0) ! Western boundary condition
-          DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)
-        enddo
-        do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), &
-                        CS%BT_OBC%u_OBC_type(I,j) > 0) ! Eastern boundary condition
-          DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
-        enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), CS%BT_OBC%u_OBC_type(I,j) < 0)
+        do j=max(js,CS%BT_OBC%js_u_W_obc),min(je,CS%BT_OBC%je_u_W_obc)
+          do I=max(is-1,CS%BT_OBC%Is_u_W_obc),min(ie,CS%BT_OBC%Ie_u_W_obc)
+          if (CS%BT_OBC%u_OBC_type(I,j) < 0) then ! Western boundary condition
+            DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)
+          endif
+        enddo ; enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), CS%BT_OBC%u_OBC_type(I,j) > 0)
+        do j=max(js,CS%BT_OBC%js_u_E_obc),min(je,CS%BT_OBC%je_u_E_obc)
+          do I=max(is-1,CS%BT_OBC%Is_u_E_obc),min(ie,CS%BT_OBC%Ie_u_E_obc)
+          if (CS%BT_OBC%u_OBC_type(I,j) > 0) then ! Eastern boundary condition
+            DCor_u(I,j) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
+          endif
+        enddo ; enddo
       endif
 
-      do concurrent (J=js-1:je, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie)
+      do J=js-1,je ; do i=is,ie
         DCor_v(i,J) = 0.5 * (max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i+1,j), 0.0) + &
                              max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0) )
-      enddo
+      enddo ; enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%v_OBCs_on_PE) then
-        do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), &
-                        CS%BT_OBC%v_OBC_type(i,J) < 0) ! Southern boundary condition
-          DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0)
-        enddo
-        do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), &
-                        CS%BT_OBC%v_OBC_type(i,J) > 0) ! Northern boundary condition
-          DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
-        enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), CS%BT_OBC%v_OBC_type(i,J) < 0)
+        do j=max(js,CS%BT_OBC%js_v_S_obc),min(je,CS%BT_OBC%je_v_S_obc)
+          do I=max(is-1,CS%BT_OBC%Is_v_S_obc),min(ie,CS%BT_OBC%Ie_v_S_obc)
+          if (CS%BT_OBC%v_OBC_type(i,J) < 0) then ! Southern boundary condition
+            DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0)
+          endif
+        enddo ; enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), CS%BT_OBC%v_OBC_type(i,J) > 0)
+        do j=max(js,CS%BT_OBC%js_v_N_obc),min(je,CS%BT_OBC%je_v_N_obc)
+          do I=max(is-1,CS%BT_OBC%Is_v_N_obc),min(ie,CS%BT_OBC%Ie_v_N_obc)
+          if (CS%BT_OBC%v_OBC_type(i,J) > 0) then ! Northern boundary condition
+            DCor_v(i,J) = max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)
+          endif
+        enddo ; enddo
       endif
-      do concurrent (J=js-1:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, I=is-1:ie)
+      do J=js-1,je ; do I=is-1,ie
         q(I,J) = 0.25 * (CS%BT_Coriolis_scale * G%CoriolisBu(I,J)) * &
              ((CS%q_wt(1,I,J) + CS%q_wt(4,I,J)) + (CS%q_wt(2,I,J) + CS%q_wt(3,I,J))) / &
              (max(((CS%q_wt(1,I,J) * max(GV%Z_to_H*G%bathyT(i,j) + eta_in(i,j), 0.0)) + &
                    (CS%q_wt(4,I,J) * max(GV%Z_to_H*G%bathyT(i+1,j+1) + eta_in(i+1,j+1), 0.0))) + &
                   ((CS%q_wt(2,I,J) * max(GV%Z_to_H*G%bathyT(i+1,j) + eta_in(i+1,j), 0.0)) + &
                    (CS%q_wt(3,I,J) * max(GV%Z_to_H*G%bathyT(i,j+1) + eta_in(i,j+1), 0.0))), h_a_neglect) )
-      enddo
+      enddo ; enddo
     else  ! Non-Boussinesq
-      do concurrent (j=js:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie)
+      do j=js,je ; do I=is-1,ie
         DCor_u(I,j) = 0.5 * (eta_in(i+1,j) + eta_in(i,j))
-      enddo
+      enddo ; enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%u_OBCs_on_PE) then
-        do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), &
-                        CS%BT_OBC%u_OBC_type(I,j) < 0) ! Western boundary condition
-          DCor_u(I,j) = eta_in(i+1,j)
-        enddo
-        do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), &
-                        CS%BT_OBC%u_OBC_type(I,j) > 0) ! Eastern boundary condition
-          DCor_u(I,j) = eta_in(i,j)
-        enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_u_W_obc):min(je,CS%BT_OBC%je_u_W_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_u_W_obc):min(ie,CS%BT_OBC%Ie_u_W_obc), CS%BT_OBC%u_OBC_type(I,j) < 0)
+        do j=max(js,CS%BT_OBC%js_u_W_obc),min(je,CS%BT_OBC%je_u_W_obc)
+          do I=max(is-1,CS%BT_OBC%Is_u_W_obc),min(ie,CS%BT_OBC%Ie_u_W_obc)
+          if (CS%BT_OBC%u_OBC_type(I,j) < 0) then ! Western boundary condition
+            DCor_u(I,j) = eta_in(i+1,j)
+          endif
+        enddo ; enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_u_E_obc):min(je,CS%BT_OBC%je_u_E_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_u_E_obc):min(ie,CS%BT_OBC%Ie_u_E_obc), CS%BT_OBC%u_OBC_type(I,j) > 0)
+        do j=max(js,CS%BT_OBC%js_u_E_obc),min(je,CS%BT_OBC%je_u_E_obc)
+          do I=max(is-1,CS%BT_OBC%Is_u_E_obc),min(ie,CS%BT_OBC%Ie_u_E_obc)
+          if (CS%BT_OBC%u_OBC_type(I,j) > 0) then ! Eastern boundary condition
+            DCor_u(I,j) = eta_in(i,j)
+          endif
+        enddo ; enddo
       endif
 
-      do concurrent (J=js-1:je, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie)
+      do J=js-1,je ; do i=is,ie
         DCor_v(i,J) = 0.5 * (eta_in(i,j+1) + eta_in(i,j))
-      enddo
+      enddo ; enddo
       if (CS%interior_OBC_PV .and. CS%BT_OBC%v_OBCs_on_PE) then
-        do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), &
-                        CS%BT_OBC%v_OBC_type(i,J) < 0) ! Southern boundary condition
-          DCor_v(i,J) = eta_in(i,j+1)
-        enddo
-        do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc), &
-                        I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), &
-                        CS%BT_OBC%v_OBC_type(i,J) > 0) ! Northern boundary condition
-          DCor_v(i,J) = eta_in(i,j)
-        enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_v_S_obc):min(je,CS%BT_OBC%je_v_S_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_v_S_obc):min(ie,CS%BT_OBC%Ie_v_S_obc), CS%BT_OBC%v_OBC_type(i,J) < 0)
+        do j=max(js,CS%BT_OBC%js_v_S_obc),min(je,CS%BT_OBC%je_v_S_obc)
+          do I=max(is-1,CS%BT_OBC%Is_v_S_obc),min(ie,CS%BT_OBC%Ie_v_S_obc)
+          if (CS%BT_OBC%v_OBC_type(i,J) < 0) then ! Southern boundary condition
+            DCor_v(i,J) = eta_in(i,j+1)
+          endif
+        enddo ; enddo
+        !$omp target teams distribute parallel do collapse(2) num_threads(256)
+        ! do concurrent (j=max(js,CS%BT_OBC%js_v_N_obc):min(je,CS%BT_OBC%je_v_N_obc),
+        ! I=max(is-1,CS%BT_OBC%Is_v_N_obc):min(ie,CS%BT_OBC%Ie_v_N_obc), CS%BT_OBC%v_OBC_type(i,J) > 0)
+        do j=max(js,CS%BT_OBC%js_v_N_obc),min(je,CS%BT_OBC%je_v_N_obc)
+          do I=max(is-1,CS%BT_OBC%Is_v_N_obc),min(ie,CS%BT_OBC%Ie_v_N_obc)
+          if (CS%BT_OBC%v_OBC_type(i,J) > 0) then ! Northern boundary condition
+            DCor_v(i,J) = eta_in(i,j)
+          endif
+        enddo ; enddo
       endif
 
-      do concurrent (J=js-1:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, I=is-1:ie)
+      do J=js-1,je ; do I=is-1,ie
         q(I,J) = 0.25 * (CS%BT_Coriolis_scale * G%CoriolisBu(I,J)) * &
              ((CS%q_wt(1,I,J) + CS%q_wt(4,I,J)) + (CS%q_wt(2,I,J) + CS%q_wt(3,I,J))) / &
              (max(((CS%q_wt(1,I,J) * eta_in(i,j)) + (CS%q_wt(4,I,J) * eta_in(i+1,j+1))) + &
                   ((CS%q_wt(2,I,J) * eta_in(i+1,j)) + (CS%q_wt(3,I,J) * eta_in(i,j+1))), h_a_neglect) )
-      enddo
+      enddo ; enddo
     endif
 
     ! With very wide halos, q and D need to be calculated on the available data
@@ -474,7 +530,9 @@ module procedure btstep
   endif
 
   ! Zero out various wide-halo arrays.
-  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
+  do j=CS%jsdw,CS%jedw ; do i=CS%isdw,CS%iedw
     gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
     gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
     eta(i,j) = 0.0
@@ -486,19 +544,23 @@ module procedure btstep
       eta_IC(i,j) = 0.0
     endif
     if (CS%dynamic_psurf) dyn_coef_eta(i,j) = 0.0
-  enddo
+  enddo ; enddo
 
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
-  do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
+  do j=CS%jsdw,CS%jedw ; do I=CS%isdw-1,CS%iedw
     Cor_ref_u(I,j) = 0.0 ; BT_force_u(I,j) = 0.0 ; ubt(I,j) = 0.0
     Datu(I,j) = 0.0 ; bt_rem_u(I,j) = 0.0 ; uhbt0(I,j) = 0.0
-  enddo
-  do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  do J=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
     Cor_ref_v(i,J) = 0.0 ; BT_force_v(i,J) = 0.0 ; vbt(i,J) = 0.0
     Datv(i,J) = 0.0 ; bt_rem_v(i,J) = 0.0 ; vhbt0(i,J) = 0.0
-  enddo
+  enddo ; enddo
 
   if (apply_OBCs) then
     SpV_col_avg(:,:) = 0.0
@@ -536,27 +598,35 @@ module procedure btstep
   ! eta_PF_start, used solely by the interp_eta_PF branch, gets its own small enter/exit pair.
   if (interp_eta_PF) then
     !$omp target enter data map(to: eta_PF_start)
-    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    do j=G%jsd,G%jed ; do i=G%isd,G%ied
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF_1(i,j) = eta_PF_start(i,j)
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
-    enddo
+    enddo ; enddo
     !$omp target exit data map(release: eta_PF_start)
   else
-    do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
+    do j=G%Jsd,G%Jed ; do i=G%isd,G%ied
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
       eta_PF(i,j) = eta_PF_in(i,j)
-    enddo
+    enddo ; enddo
   endif
   if (integral_BT_cont) then
-    do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    do j=G%jsd,G%jed ; do i=G%isd,G%ied
       eta_IC(i,j) = eta_in(i,j)
-    enddo
+    enddo ; enddo
   endif
 
-  do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(3) num_threads(256)
+  ! do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+  do k=1,nz ; do j=js,je ; do I=is-1,ie
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
     ! The 0.5 below is just for safety.
     ! NOTE: subroundoff is a negligible value used to prevent division by zero.
@@ -567,41 +637,67 @@ module procedure btstep
     visc_rem = max(visc_rem, 1. - 0.5 * Instep / (visc_rem + subroundoff))
     visc_rem = max(visc_rem, 0.)
     wt_u(I,j,k) = CS%frhatu(I,j,k) * visc_rem
-  enddo
-  do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+  enddo ; enddo ; enddo
+  !$omp target teams distribute parallel do collapse(3) num_threads(256)
+  ! do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+  do k=1,nz ; do J=js-1,je ; do i=is,ie
     ! As above, rem must be greater than visc_rem_v and 1-Instep/visc_rem_v.
     visc_rem = min(visc_rem_v(I,j,k), 1.)
     visc_rem = max(visc_rem, 1. - 0.5 * Instep / (visc_rem + subroundoff))
     visc_rem = max(visc_rem, 0.)
     wt_v(i,J,k) = CS%frhatv(i,J,k) * visc_rem
-  enddo
+  enddo ; enddo ; enddo
 
   if (.not. CS%wt_uv_bug) then
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       Iwt_u_tot(I,j) = wt_u(I,j,1)
-    enddo
-    do k=2,nz ; do concurrent (j=js:je, I=is-1:ie)
-      Iwt_u_tot(I,j) = Iwt_u_tot(I,j) + wt_u(I,j,k)
     enddo ; enddo
-    do concurrent (j=js:je, I=is-1:ie, abs(Iwt_u_tot(I,j)) > 0.0)
-      Iwt_u_tot(I,j) = G%mask2dCu(I,j) / Iwt_u_tot(I,j)
-    enddo
-    do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do k=2,nz ; do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
+      do k=2,nz
+        Iwt_u_tot(I,j) = Iwt_u_tot(I,j) + wt_u(I,j,k)
+      enddo
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie, abs(Iwt_u_tot(I,j)) > 0.0)
+    do j=js,je ; do I=is-1,ie
+      if (abs(Iwt_u_tot(I,j)) > 0.0) then
+        Iwt_u_tot(I,j) = G%mask2dCu(I,j) / Iwt_u_tot(I,j)
+      endif
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(3) num_threads(256)
+    ! do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+    do k=1,nz ; do j=js,je ; do I=is-1,ie
       wt_u(I,j,k) = wt_u(I,j,k) * Iwt_u_tot(I,j)
-    enddo
+    enddo ; enddo ; enddo
 
-    do concurrent (J=js-1:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       Iwt_v_tot(i,J) = wt_v(i,J,1)
-    enddo
-    do k=2,nz ; do concurrent (J=js-1:je, i=is:ie)
-      Iwt_v_tot(i,J) = Iwt_v_tot(i,J) + wt_v(i,J,k)
     enddo ; enddo
-    do concurrent (J=js-1:je, i=is:ie, abs(Iwt_v_tot(i,J)) > 0.0)
-      Iwt_v_tot(i,J) = G%mask2dCv(i,J) / Iwt_v_tot(i,J)
-    enddo
-    do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do k=2,nz ; do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
+      do k=2,nz
+        Iwt_v_tot(i,J) = Iwt_v_tot(i,J) + wt_v(i,J,k)
+      enddo
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie, abs(Iwt_v_tot(i,J)) > 0.0)
+    do J=js-1,je ; do i=is,ie
+      if (abs(Iwt_v_tot(i,J)) > 0.0) then
+        Iwt_v_tot(i,J) = G%mask2dCv(i,J) / Iwt_v_tot(i,J)
+      endif
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(3) num_threads(256)
+    ! do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+    do k=1,nz ; do J=js-1,je ; do i=is,ie
       wt_v(i,J,k) = wt_v(i,J,k) * Iwt_v_tot(i,J)
-    enddo
+    enddo ; enddo ; enddo
   endif
 
   ! wt_u/wt_v are now finished (never written again anywhere in btstep) and stay mapped
@@ -616,22 +712,32 @@ module procedure btstep
   ! wt_u/wt_v computed, in the bracket opened above; both stay mapped (never released) straight
   ! through into this accumulation rather than round-tripping through host, since nothing in
   ! between reads or writes them.
-  do concurrent (j=js-1:je+1, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-1:je+1, I=is-1:ie)
+  do j=js-1,je+1 ; do I=is-1,ie
     ubt_Cor(I,j) = 0.0
-  enddo
-  do concurrent (J=js-1:je, i=is-1:ie+1)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je, i=is-1:ie+1)
+  do J=js-1,je ; do i=is-1,ie+1
     vbt_Cor(i,J) = 0.0
-  enddo
-  do concurrent (j=js:je)
+  enddo ; enddo
+  ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=is-1:ie)
+  !$omp target teams distribute
+  do j=js,je
     do k=1,nz
-      do concurrent (I=is-1:ie)
+      !$omp parallel do num_threads(256)
+      do I=is-1,ie
         ubt_Cor(I,j) = ubt_Cor(I,j) + wt_u(I,j,k) * U_Cor(I,j,k)
       enddo
     enddo
   enddo
-  do concurrent (J=js-1:je)
+  ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie)
+  !$omp target teams distribute
+  do J=js-1,je
     do k=1,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         vbt_Cor(i,J) = vbt_Cor(i,J) + wt_v(i,J,k) * V_Cor(i,J,k)
       enddo
     enddo
@@ -641,17 +747,23 @@ module procedure btstep
   ! accelerations across the various faces, with names for the relative
   ! locations of the faces to the pressure point.  They will have their halos
   ! updated later on.
-  do concurrent (j=js:je)
+  ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (i=is-1:ie)
+  !$omp target teams distribute
+  do j=js,je
     do k=1,nz
-      do concurrent (i=is-1:ie)
+      !$omp parallel do num_threads(256)
+      do i=is-1,ie
         gtot_E(i,j)   = gtot_E(i,j)   + pbce(i,j,k)   * wt_u(I,j,k)
         gtot_W(i+1,j) = gtot_W(i+1,j) + pbce(i+1,j,k) * wt_u(I,j,k)
       enddo
     enddo
   enddo
-  do concurrent (J=js-1:je)
+  ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie)
+  !$omp target teams distribute
+  do J=js-1,je
     do k=1,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         gtot_N(i,j)   = gtot_N(i,j)   + pbce(i,j,k)   * wt_v(i,J,k)
         gtot_S(i,j+1) = gtot_S(i,j+1) + pbce(i,j+1,k) * wt_v(i,J,k)
       enddo
@@ -787,41 +899,57 @@ module procedure btstep
     !$omp   map(to: CS, uh0, vh0, u_uh0, v_vh0) &
     !$omp   map(alloc: uhbt, vhbt)
 
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       uhbt(I,j) = 0.0 ; ubt(I,j) = 0.0
-    enddo
-    do concurrent (J=js-1:je, i=is:ie)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       vhbt(i,J) = 0.0 ; vbt(i,J) = 0.0
-    enddo
+    enddo ; enddo
     if (CS%visc_rem_u_uh0) then
-      do concurrent (j=js:je)
+      ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=is-1:ie)
+      !$omp target teams distribute
+      do j=js,je
         do k=1,nz
-          do concurrent (I=is-1:ie)
+          !$omp parallel do num_threads(256)
+          do I=is-1,ie
             uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
             ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * u_uh0(I,j,k)
           enddo
         enddo
       enddo
-      do concurrent (J=js-1:je)
+      ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie)
+      !$omp target teams distribute
+      do J=js-1,je
         do k=1,nz
-          do concurrent (i=is:ie)
+          !$omp parallel do num_threads(256)
+          do i=is,ie
             vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
             vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
           enddo
         enddo
       enddo
     else
-      do concurrent (j=js:je)
+      ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=is-1:ie)
+      !$omp target teams distribute
+      do j=js,je
         do k=1,nz
-          do concurrent (I=is-1:ie)
+          !$omp parallel do num_threads(256)
+          do I=is-1,ie
             uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
             ubt(I,j) = ubt(I,j) + CS%frhatu(I,j,k) * u_uh0(I,j,k)
           enddo
         enddo
       enddo
-      do concurrent (J=js-1:je)
+      ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie)
+      !$omp target teams distribute
+      do J=js-1,je
         do k=1,nz
-          do concurrent (i=is:ie)
+          !$omp parallel do num_threads(256)
+          do i=is,ie
             vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
             vbt(i,J) = vbt(i,J) + CS%frhatv(i,J,k) * v_vh0(i,J,k)
           enddo
@@ -877,36 +1005,56 @@ module procedure btstep
     !$omp   map(to: CS, BTCL_u, BTCL_v, Datu, Datv, uhbt0, vhbt0)
 
     if (integral_BT_cont) then
-      do concurrent (j=js:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie)
+      do j=js,je ; do I=is-1,ie
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(dt*ubt(I,j), BTCL_u(I,j)) * Idt
-      enddo
-      do concurrent (J=js-1:je, i=is:ie)
+      enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie)
+      do J=js-1,je ; do i=is,ie
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(dt*vbt(i,J), BTCL_v(i,J)) * Idt
-      enddo
+      enddo ; enddo
     elseif (use_BT_cont) then
-      do concurrent (j=js:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie)
+      do j=js,je ; do I=is-1,ie
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(ubt(I,j), BTCL_u(I,j))
-      enddo
-      do concurrent (J=js-1:je, i=is:ie)
+      enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie)
+      do J=js-1,je ; do i=is,ie
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(vbt(i,J), BTCL_v(i,J))
-      enddo
+      enddo ; enddo
     else
-      do concurrent (j=js:je, I=is-1:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie)
+      do j=js,je ; do I=is-1,ie
         uhbt0(I,j) = uhbt(I,j) - Datu(I,j)*ubt(I,j)
-      enddo
-      do concurrent (J=js-1:je, i=is:ie)
+      enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie)
+      do J=js-1,je ; do i=is,ie
         vhbt0(i,J) = vhbt(i,J) - Datv(i,J)*vbt(i,J)
-      enddo
+      enddo ; enddo
     endif
     if (CS%BT_OBC%u_OBCs_on_PE) then  ! Zero out the reference transport at OBC points
-      do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
-        uhbt0(I,j) = 0.0
-      enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
+      do j=js,je ; do I=is-1,ie
+        if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
+          uhbt0(I,j) = 0.0
+        endif
+      enddo ; enddo
     endif
     if (CS%BT_OBC%v_OBCs_on_PE) then  !Zero out the reference transport at OBC points
-      do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
-        vhbt0(i,J) = 0.0
-      enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
+      do J=js-1,je ; do i=is,ie
+        if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
+          vhbt0(i,J) = 0.0
+        endif
+      enddo ; enddo
     endif
 
     !$omp target exit data &
@@ -924,12 +1072,16 @@ module procedure btstep
   ! brackets above.
   !$omp target enter data map(alloc: uhbt, u_accel_bt, vhbt, v_accel_bt)
 
-  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+  do j=CS%jsdw,CS%jedw ; do i=CS%isdw-1,CS%iedw
     uhbt(i,j) = 0.0 ; u_accel_bt(i,j) = 0.0
-  enddo
-  do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  do j=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
     vhbt(i,j) = 0.0 ; v_accel_bt(i,j) = 0.0
-  enddo
+  enddo ; enddo
 
   !$omp target exit data map(from: uhbt, u_accel_bt, vhbt, v_accel_bt)
 
@@ -949,7 +1101,9 @@ module procedure btstep
   !$omp target enter data &
   !$omp   map(to: G, CS, GV, G%OBCmaskCu, G%OBCmaskCv, CS%bathyT, CS%dy_Cu, CS%dx_Cv, &
   !$omp     CS%IDatu, CS%IDatv, forces%taux, forces%tauy)
-  do concurrent (j=js:je, I=is-1:ie) ; if (G%OBCmaskCu(I,j) > 0.0) then
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, I=is-1:ie) ; if (G%OBCmaskCu(I,j) > 0.0) then
+  do j=js,je ; do I=is-1,ie ; if (G%OBCmaskCu(I,j) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
         Htot_avg = 0.5*(max(CS%bathyT(i,j)*GV%Z_to_H + eta(i,j), 0.0) + &
@@ -973,8 +1127,10 @@ module procedure btstep
     BT_force_u(I,j) = forces%taux(I,j) * GV%RZ_to_H * CS%IDatu(I,j)*visc_rem_u(I,j,1)
   else
     BT_force_u(I,j) = 0.0
-  endif ; enddo
-  do concurrent (J=js-1:je, i=is:ie) ; if (G%OBCmaskCv(i,J) > 0.0) then
+  endif ; enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je, i=is:ie) ; if (G%OBCmaskCv(i,J) > 0.0) then
+  do J=js-1,je ; do i=is,ie ; if (G%OBCmaskCv(i,J) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
         Htot_avg = 0.5*(max(CS%bathyT(i,j)*GV%Z_to_H + eta(i,j), 0.0) + &
@@ -998,7 +1154,7 @@ module procedure btstep
     BT_force_v(i,J) = forces%tauy(i,J) * GV%RZ_to_H * CS%IDatv(i,J)*visc_rem_v(i,J,1)
   else
     BT_force_v(i,J) = 0.0
-  endif ; enddo
+  endif ; enddo ; enddo
   !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dy_Cu, CS%dx_Cv, forces%taux, forces%tauy)
 
   ! CS%IDatu/CS%IDatv are persistent CS state (read again next call and by the CS%debug chksum
@@ -1011,12 +1167,20 @@ module procedure btstep
   if (apply_bottom_drag) then
     !$omp target enter data &
     !$omp   map(to: G, G%mask2dCu, G%mask2dCv, GV, CS, taux_bot, tauy_bot)
-    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
-      BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
-    enddo
-    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0)
-      BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
-    enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
+    do j=js,je ; do I=is-1,ie
+      if (G%mask2dCu(I,j) > 0.0) then
+        BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
+      endif
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0)
+    do J=js-1,je ; do i=is,ie
+      if (G%mask2dCv(i,J) > 0.0) then
+        BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
+      endif
+    enddo ; enddo
     ! CS%IDatu/IDatv are flushed here (deferred from the exit above, since this branch is running).
     ! BT_force_u/v are part of btstep's persistent set (see the early-exit comment above) and stay
     ! mapped without being named in either this bracket's enter or exit.
@@ -1038,32 +1202,42 @@ module procedure btstep
   !$omp target enter data &
   !$omp   map(to: CS, CS%ubt_IC, CS%vbt_IC, bc_accel_u, bc_accel_v)
 
-  do concurrent (j=js:je)
+  ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=Isq:Ieq)
+  !$omp target teams distribute
+  do j=js,je
     do k=1,nz
-      do concurrent (I=Isq:Ieq)
+      !$omp parallel do num_threads(256)
+      do I=Isq,Ieq
         BT_force_u(I,j) = BT_force_u(I,j) + wt_u(I,j,k) * bc_accel_u(I,j,k)
       enddo
     enddo
   enddo
-  do concurrent (J=Jsq:Jeq)
+  ! do concurrent (J=Jsq:Jeq) with inner do k=1,nz do concurrent (i=is:ie)
+  !$omp target teams distribute
+  do J=Jsq,Jeq
     do k=1,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         BT_force_v(i,J) = BT_force_v(i,J) + wt_v(i,J,k) * bc_accel_v(i,J,k)
       enddo
     enddo
   enddo
 
   if (CS%gradual_BT_ICs) then
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       BT_force_u(I,j) = BT_force_u(I,j) + (ubt(I,j) - CS%ubt_IC(I,j)) * Idt
       ubt(I,j) = CS%ubt_IC(I,j)
       if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-    enddo
-    do concurrent (J=js-1:je, i=is:ie)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       BT_force_v(i,J) = BT_force_v(i,J) + (vbt(i,J) - CS%vbt_IC(i,J)) * Idt
       vbt(i,J) = CS%vbt_IC(i,J)
       if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data &
@@ -1117,16 +1291,20 @@ module procedure btstep
   ! btstep's persistent set), so neither block below needs to map them in or flush them out.
   if (CS%BT_OBC%u_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%OBCmask_u)
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       BT_force_u(I,j) = CS%OBCmask_u(I,j) * BT_force_u(I,j)
-    enddo
+    enddo ; enddo
     !$omp target exit data map(release: CS, CS%OBCmask_u)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%OBCmask_v)
-    do concurrent (J=js-1:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       BT_force_v(i,J) = CS%OBCmask_v(i,J) * BT_force_v(i,J)
-    enddo
+    enddo ; enddo
     !$omp target exit data map(release: CS, CS%OBCmask_v)
   endif
 
@@ -1193,21 +1371,27 @@ module procedure btstep
   !$omp target enter data &
   !$omp   map(to: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v, ubt_Cor, vbt_Cor, &
   !$omp     Cor_ref_u, Cor_ref_v)
-  do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+  do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
     if (CS%ua_polarity(i,j) < 0.0) call swap(gtot_E(i,j), gtot_W(i,j))
     if (CS%va_polarity(i,j) < 0.0) call swap(gtot_N(i,j), gtot_S(i,j))
-  enddo
+  enddo ; enddo
 
-  do concurrent (j=js:je, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, I=is-1:ie)
+  do j=js,je ; do I=is-1,ie
     Cor_ref_u(I,j) =  &
         (((f_4_u(4,I,j) * vbt_Cor(i+1,j)) + (f_4_u(1,I,j) * vbt_Cor(i  ,j-1))) + &
          ((f_4_u(3,I,j) * vbt_Cor(i  ,j)) + (f_4_u(2,I,j) * vbt_Cor(i+1,j-1))))
-  enddo
-  do concurrent (J=js-1:je, i=is:ie)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je, i=is:ie)
+  do J=js-1,je ; do i=is,ie
     Cor_ref_v(i,J) = -1.0 * &
         (((f_4_v(1,i,J) * ubt_Cor(I-1,j)) + (f_4_v(4,i,J) * ubt_Cor(I  ,j+1))) + &
          ((f_4_v(2,i,J) * ubt_Cor(I  ,j)) + (f_4_v(3,i,J) * ubt_Cor(I-1,j+1))))
-  enddo
+  enddo ; enddo
 
   !$omp target exit data map(release: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v, ubt_Cor, vbt_Cor) &
   !$omp   map(from: Cor_ref_u, Cor_ref_v)
@@ -1229,22 +1413,32 @@ module procedure btstep
   ! them right after this if/else (see below), since the host branch needs a host copy anyway and
   ! the block further down that would otherwise consume them won't run.
   !$omp target enter data map(to: CS) map(alloc: av_rem_u, av_rem_v)
-  do concurrent (j=js-1:je+1, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-1:je+1, I=is-1:ie)
+  do j=js-1,je+1 ; do I=is-1,ie
     av_rem_u(I,j) = 0.0
-  enddo
-  do concurrent (j=js:je)
+  enddo ; enddo
+  ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=is-1:ie)
+  !$omp target teams distribute
+  do j=js,je
     do k=1,nz
-      do concurrent (I=is-1:ie)
+      !$omp parallel do num_threads(256)
+      do I=is-1,ie
         av_rem_u(I,j) = av_rem_u(I,j) + CS%frhatu(I,j,k) * visc_rem_u(I,j,k)
       enddo
     enddo
   enddo
-  do concurrent (J=js-1:je)
-    do concurrent(i=is-1:ie+1)
-      av_rem_v(i,J) = 0.0
-    enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je) with inner do concurrent(i=is-1:ie+1)7.
+  do J=js-1,je ; do i=is-1,ie+1
+    av_rem_v(i,J) = 0.0
+  enddo ; enddo
+  ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie)
+  !$omp target teams distribute
+  do J=js-1,je
     do k=1,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         av_rem_v(i,J) = av_rem_v(i,J) + CS%frhatv(i,J,k) * visc_rem_v(i,J,k)
       enddo
     enddo
@@ -1256,14 +1450,18 @@ module procedure btstep
   ! update to() afterward to push the result back rather than a full round trip.
   if (CS%strong_drag) then
     !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv)
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       bt_rem_u(I,j) = G%mask2dCu(I,j) * &
          ((nstep * av_rem_u(I,j)) / (1.0 + (nstep-1)*av_rem_u(I,j)))
-    enddo
-    do concurrent (J=js-1:je, i=is:ie)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       bt_rem_v(i,J) = G%mask2dCv(i,J) * &
          ((nstep * av_rem_v(i,J)) / (1.0 + (nstep-1)*av_rem_v(i,J)))
-    enddo
+    enddo ; enddo
   else
     !   These two loops stay on the host.  av_rem**Instep is a real power, which is
     ! evaluated as exp(Instep*log(av_rem)), and the device exp and log do not agree
@@ -1299,7 +1497,10 @@ module procedure btstep
     !$omp target enter data &
     !$omp   map(to: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, G%mask2dCv, &
     !$omp     eta, Rayleigh_u, Rayleigh_v)
-    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
+    do j=js,je ; do I=is-1,ie
+      if (G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
 
       if (GV%Boussinesq) &
@@ -1311,8 +1512,12 @@ module procedure btstep
         bt_rem_u(I,j) = bt_rem_u(I,j) * (Htot / (Htot + CS%lin_drag_u(I,j) * dtbt))
         Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
       endif
-    enddo
-    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0)
+      endif
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0)
+    do J=js-1,je ; do i=is,ie
+      if (G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0) then
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
 
       if (GV%Boussinesq) &
@@ -1324,7 +1529,8 @@ module procedure btstep
         bt_rem_v(i,J) = bt_rem_v(i,J) * (Htot / (Htot + CS%lin_drag_v(i,J) * dtbt))
         Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
       endif
-    enddo
+      endif
+    enddo ; enddo
     !$omp target exit data &
     !$omp   map(release: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, G%mask2dCu, &
     !$omp     G%mask2dCv, eta) &
@@ -1337,16 +1543,24 @@ module procedure btstep
   ! nor flushes them out.
   if (CS%BT_OBC%u_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type)
-    do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
-      bt_rem_u(I,j) = 1.0
-    enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
+    do j=js,je ; do I=is-1,ie
+      if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
+        bt_rem_u(I,j) = 1.0
+      endif
+    enddo ; enddo
     !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
     !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type)
-    do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
-      bt_rem_v(i,J) = 1.0
-    enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
+    do J=js-1,je ; do i=is,ie
+      if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
+        bt_rem_v(i,J) = 1.0
+      endif
+    enddo ; enddo
     !$omp target exit data map(release: CS, CS%BT_OBC%v_OBC_type)
   endif
 
@@ -1360,12 +1574,16 @@ module procedure btstep
   !$omp   map(alloc: eta_src) &
   !$omp   map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
   !$omp     CS%IareaT, CS%bathyT, CS%eta_cor_bound)
-  do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+  do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
     eta_src(i,j) = 0.0
-  enddo
+  enddo ; enddo
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
-    do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0) &
-        DO_LOCALITY(local(uint_cor, vint_cor, u_max_cor, v_max_cor))
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0) DO_LOCALITY(local(uint_cor, vint_cor, u_max_cor, v_max_cor))
+    do j=js,je ; do i=is,ie
+      if (G%mask2dT(i,j) > 0.0) then
       if (CS%eta_cor(i,j) > 0.0) then
         !   Limit the source (outward) correction to be a fraction the mass that
         ! can be transported out of the cell by velocities with a CFL number of CFL_cor.
@@ -1394,16 +1612,23 @@ module procedure btstep
 
         CS%eta_cor(i,j) = max(CS%eta_cor(i,j), -max(0.0,Htot))
       endif
-    enddo
+      endif
+    enddo ; enddo
   else
-    do concurrent (j=js:je, i=is:ie, abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j))
-      CS%eta_cor(i,j) = sign(dt*CS%eta_cor_bound(i,j), CS%eta_cor(i,j))
-    enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie, abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j))
+    do j=js,je ; do i=is,ie
+      if (abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j)) then
+        CS%eta_cor(i,j) = sign(dt*CS%eta_cor_bound(i,j), CS%eta_cor(i,j))
+      endif
+    enddo ; enddo
   endif ; endif
 
-  do concurrent (j=js:je, i=is:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, i=is:ie)
+  do j=js,je ; do i=is,ie
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
-  enddo
+  enddo ; enddo
   !$omp target exit data map(from: CS%eta_cor, eta_src) &
   !$omp   map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
 
@@ -1428,7 +1653,9 @@ module procedure btstep
       !$omp   map(to: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
       !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, Datu, Datv, gtot_E, gtot_W, &
       !$omp     gtot_N, gtot_S, dyn_coef_eta)
-      do concurrent (j=js:je, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, i=is:ie)
+      do j=js,je ; do i=is,ie
         ! First determine the maximum stable value for dyn_coef_eta.
 
         !   This estimate of the maximum stable time step is pretty accurate for
@@ -1455,7 +1682,7 @@ module procedure btstep
 
         ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
         dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
-      enddo
+      enddo ; enddo
       !$omp target exit data &
       !$omp   map(release: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
       !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, Datu, Datv, gtot_E, gtot_W, &
@@ -1658,9 +1885,11 @@ module procedure btstep
     ! eta_sum is already device-resident here (btstep_timeloop's own exit deferred it exactly
     ! because find_etaav is true), so it is not re-entered.
     !$omp target enter data map(alloc: etaav)
-    do concurrent (j=js:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie)
+    do j=js,je ; do i=is,ie
       etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
-    enddo
+    enddo ; enddo
     !$omp target exit data map(release: eta_sum) map(from: etaav)
   endif
 
@@ -1668,18 +1897,24 @@ module procedure btstep
   ! btstep_timeloop's own exit), so it is not re-entered.
   !$omp target enter data map(to: eta_in, eta_PF_1, d_eta_PF, eta_PF) map(alloc: e_anom)
 
-  do concurrent (j=js-1:je+1, i=is-1:ie+1)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-1:je+1, i=is-1:ie+1)
+  do j=js-1,je+1 ; do i=is-1,ie+1
     e_anom(i,j) = 0.0
-  enddo
+  enddo ; enddo
   if (interp_eta_PF) then
-    do concurrent (j=js:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie)
+    do j=js,je ; do i=is,ie
       e_anom(i,j) = dgeo_de * (0.5 * (eta(i,j) + eta_in(i,j)) - &
                                (eta_PF_1(i,j) + 0.5*d_eta_PF(i,j)))
-    enddo
+    enddo ; enddo
   else
-    do concurrent (j=js:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie)
+    do j=js,je ; do i=is,ie
       e_anom(i,j) = dgeo_de * (0.5 * (eta(i,j) + eta_in(i,j)) - eta_PF(i,j))
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data map(release: eta, eta_in, eta_PF_1, d_eta_PF, eta_PF) &
@@ -1708,9 +1943,11 @@ module procedure btstep
   ! eta_wtd is already device-resident here (deferred from btstep_timeloop's own exit), so it is
   ! not re-entered.
   !$omp target enter data map(alloc: eta_out)
-  do concurrent (j=js:je, i=is:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, i=is:ie)
+  do j=js,je ; do i=is,ie
     eta_out(i,j) = eta_wtd(i,j) * I_sum_wt_eta
-  enddo
+  enddo ; enddo
   !$omp target exit data map(release: eta_wtd) map(from: eta_out)
 
   ! Accumulator is updated at the end of every baroclinic time step.
@@ -1739,16 +1976,20 @@ module procedure btstep
   if (CS%answer_date < 20190101) then
     !$omp target enter data &
     !$omp   map(to: CS, CS%ubtav, CS%vbtav)
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       CS%ubtav(I,j) = CS%ubtav(I,j) * I_sum_wt_trans
       uhbtav(I,j) = uhbtav(I,j) * I_sum_wt_trans
       ubt_wtd(I,j) = ubt_wtd(I,j) * I_sum_wt_vel
-    enddo
-    do concurrent (J=js-1:je, i=is:ie)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       CS%vbtav(i,J) = CS%vbtav(i,J) * I_sum_wt_trans
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
       vbt_wtd(i,J) = vbt_wtd(i,J) * I_sum_wt_vel
-    enddo
+    enddo ; enddo
     ! uhbtav/vhbtav/ubt_wtd/vbt_wtd stay mapped (not released here); a single common flush point
     ! well downstream in btstep, after the apply_OBCs correction has had its chance to run too,
     ! takes care of their eventual host copy instead.
@@ -1794,12 +2035,20 @@ module procedure btstep
     ! exit), so they are not named here.
     !$omp target enter data &
     !$omp   map(to: G, G%mask2dCu, G%mask2dCv, bt_rem_u, bt_rem_v)
-    do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
-      u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
-    enddo
-    do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0)
-      v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
-    enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
+    do j=js,je ; do I=is-1,ie
+      if (G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0) then
+        u_accel_bt(I,j) = u_accel_bt(I,j) * min(bt_rem_u(I,j)**nstep / av_rem_u(I,j), 1.0)
+      endif
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0)
+    do J=js-1,je ; do i=is,ie
+      if (G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0) then
+        v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
+      endif
+    enddo ; enddo
     ! u_accel_bt/v_accel_bt stay mapped (not released here); the single common flush point well
     ! downstream in btstep, after the apply_OBCs correction has had its chance to run too, takes
     ! care of their eventual host copy instead.
@@ -1820,20 +2069,28 @@ module procedure btstep
     !$omp target enter data &
     !$omp   map(to: CS, CS%BT_OBC%u_OBC_type, CS%BT_OBC%v_OBC_type, ubt_st, vbt_st)
     if (CS%BT_OBC%u_OBCs_on_PE) then
-      do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
+      do j=js,je ; do I=is-1,ie
+        if (CS%BT_OBC%u_OBC_type(I,j) /= 0) then
         u_accel_bt(I,j) = (ubt_wtd(I,j) - ubt_st(I,j)) / dt
         do k=1,nz
           accel_layer_u(I,j,k) = u_accel_bt(I,j)
         enddo
-      enddo
+        endif
+      enddo ; enddo
     endif
     if (CS%BT_OBC%v_OBCs_on_PE) then
-      do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
+      do J=js-1,je ; do i=is,ie
+        if (CS%BT_OBC%v_OBC_type(i,J) /= 0) then
         v_accel_bt(i,J) = (vbt_wtd(i,J) - vbt_st(i,J)) / dt
         do k=1,nz
           accel_layer_v(i,J,k) = v_accel_bt(i,J)
         enddo
-      enddo
+        endif
+      enddo ; enddo
     endif
     ! ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/accel_layer_u/accel_layer_v all stay mapped (not
     ! released here); the single common flush point right below, reached regardless of whether
@@ -2219,38 +2476,52 @@ module procedure btstep_timeloop
 
   ! Zero out the arrays for various time-averaged quantities.
   if (find_etaav) then
-    do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
       eta_sum(i,j) = 0.0 ; eta_wtd(i,j) = 0.0
-    enddo
+    enddo ; enddo
   else
-    do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
+    do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
       eta_wtd(i,j) = 0.0
-    enddo
+    enddo ; enddo
   endif
-  do concurrent (j=js:je, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, I=is-1:ie)
+  do j=js,je ; do I=is-1,ie
     CS%ubtav(I,j) = 0.0 ; uhbtav(I,j) = 0.0
     PFu_avg(I,j) = 0.0 ; Coru_avg(I,j) = 0.0
     LDu_avg(I,j) = 0.0 ; ubt_wtd(I,j) = 0.0
-  enddo
-  do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
+  do j=jsvf-1,jevf+1 ; do I=isvf-1,ievf
     ubt_trans(I,j) = 0.0
-  enddo
-  do concurrent (J=js-1:je, i=is:ie)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je, i=is:ie)
+  do J=js-1,je ; do i=is,ie
     CS%vbtav(i,J) = 0.0 ; vhbtav(i,J) = 0.0
     PFv_avg(i,J) = 0.0 ; Corv_avg(i,J) = 0.0
     LDv_avg(i,J) = 0.0 ; vbt_wtd(i,J) = 0.0
-  enddo
-  do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
+  do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
     vbt_trans(i,J) = 0.0
-  enddo
+  enddo ; enddo
   if (integral_BT_cont) then
     ubt_int(:,:) = 0.0 ; uhbt_int(:,:) = 0.0
     vbt_int(:,:) = 0.0 ; vhbt_int(:,:) = 0.0
   endif
 
-  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
+  do j=CS%jsdw,CS%jedw ; do i=CS%isdw,CS%iedw
     p_surf_dyn(i,j) = 0.0
-  enddo
+  enddo ; enddo
   cfl_ltd_vol(:,:) = huge( GV%Z_to_H )
   if (CS%bt_limit_integral_transport) then
     ! Issue warnings if there are unphysical values of the initial sea surface height or total water column mass.
@@ -2311,12 +2582,16 @@ module procedure btstep_timeloop
     endif
 
     ! Store the previous velocities for time-filtered transports and OBCs.
-    do concurrent (j=jsv:jev, I=isv-2:iev+1)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=jsv:jev, I=isv-2:iev+1)
+    do j=jsv,jev ; do I=isv-2,iev+1
       ubt_prev(I,j) = ubt(I,j)
-    enddo
-    do concurrent (J=jsv-2:jev+1, i=isv:iev)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=jsv-2:jev+1, i=isv:iev)
+    do J=jsv-2,jev+1 ; do i=isv,iev
       vbt_prev(i,J) = vbt(i,J)
-    enddo
+    enddo ; enddo
 
     if (integral_BT_cont) then
       !$OMP parallel do default(shared)
@@ -2437,14 +2712,18 @@ module procedure btstep_timeloop
         vhbt(i,J) = (vhbt_int(i,J) - vhbt_int_prev(i,J)) * Idtbt
       enddo ; enddo
     elseif (use_BT_cont) then
-      do concurrent (j=jsv:jev, I=isv-1:iev)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=jsv:jev, I=isv-1:iev)
+      do j=jsv,jev ; do I=isv-1,iev
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = find_uhbt(ubt_trans(I,j), BTCL_u(I,j)) + uhbt0(I,j)
-      enddo
-      do concurrent (J=jsv-1:jev, i=isv:iev)
+      enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=jsv-1:jev, i=isv:iev)
+      do J=jsv-1,jev ; do i=isv,iev
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = find_vhbt(vbt_trans(i,J), BTCL_v(i,J)) + vhbt0(i,J)
-      enddo
+      enddo ; enddo
     else
       !$OMP do schedule(static)
       do j=jsv,jev ; do I=isv-1,iev
@@ -2500,16 +2779,20 @@ module procedure btstep_timeloop
     endif
 
     ! Contribute to the running sums of the transports and velocities.
-    do concurrent (j=js:je, I=is-1:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, I=is-1:ie)
+    do j=js,je ; do I=is-1,ie
       CS%ubtav(I,j) = CS%ubtav(I,j) + wt_trans(n) * ubt_trans(I,j)
       uhbtav(I,j) = uhbtav(I,j) + wt_trans(n) * uhbt(I,j)
       ubt_wtd(I,j) = ubt_wtd(I,j) + wt_vel(n) * ubt(I,j)
-    enddo
-    do concurrent (J=js-1:je, i=is:ie)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1:je, i=is:ie)
+    do J=js-1,je ; do i=is,ie
       CS%vbtav(i,J) = CS%vbtav(i,J) + wt_trans(n) * vbt_trans(i,J)
       vhbtav(i,J) = vhbtav(i,J) + wt_trans(n) * vhbt(i,J)
       vbt_wtd(i,J) = vbt_wtd(i,J) + wt_vel(n) * vbt(i,J)
-    enddo
+    enddo ; enddo
 
     if (CS%debug_bt) then
       call uvchksum("BT [uv]hbt just after OBC", uhbt, vhbt, CS%debug_BT_HI, haloshift=debug_halo, &
@@ -2550,11 +2833,13 @@ module procedure btstep_timeloop
         endif
       enddo ; enddo
     else
-      do concurrent (j=jsv:jev, i=isv:iev)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=jsv:jev, i=isv:iev)
+      do j=jsv,jev ; do i=isv,iev
         eta(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                    ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
         eta_wtd(i,j) = eta_wtd(i,j) + eta(i,j) * wt_eta(n)
-      enddo
+      enddo ; enddo
     endif
 
     if (CS%debug_bt) then
@@ -2715,18 +3000,22 @@ module procedure btstep_find_Cor
   !$omp target enter data map(to: CS, CS%OBCmask_u, CS%OBCmask_v, f_4_u, f_4_v)
 
   if (CS%Sadourny) then
-    do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
+    do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
       f_4_v(1,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j) * q(I-1,J)
       f_4_v(2,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j) * q(I,J)
       f_4_v(4,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j+1) * q(I,J)
       f_4_v(3,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j+1) * q(I-1,J)
-    enddo
-    do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
+    do j=jsvf-1,jevf+1 ; do I=isvf-1,ievf
       f_4_u(4,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J) * q(I,J)
       f_4_u(3,I,j) = CS%OBCmask_u(I,j) * DCor_v(i,J) * q(I,J)
       f_4_u(1,I,j) = CS%OBCmask_u(I,j) * DCor_v(i,J-1) * q(I,J-1)
       f_4_u(2,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J-1) * q(I,J-1)
-    enddo
+    enddo ; enddo
   else  !### if (CS%answer_date < 20250601) then  ! Uncomment this later.
     !$OMP parallel do default(shared)
     do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
@@ -2847,22 +3136,28 @@ module procedure btloop_find_PF
   !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, PFu, PFv, eta_PF_BT, eta_PF, &
   !$omp                          eta_sum)
 
-  do concurrent (j=js_u:je_u, I=isv-1:iev)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js_u:je_u, I=isv-1:iev)
+  do j=js_u,je_u ; do I=isv-1,iev
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
                 ((eta_PF_BT(i+1,j)-eta_PF(i+1,j))*gtot_W(i+1,j))) * &
                 dgeo_de * CS%IdxCu(I,j)
-  enddo
+  enddo ; enddo
 
-  do concurrent (J=jsv-1:jev, i=is_v:ie_v)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=jsv-1:jev, i=is_v:ie_v)
+  do J=jsv-1,jev ; do i=is_v,ie_v
     PFv(i,J) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_N(i,j)) - &
                 ((eta_PF_BT(i,j+1)-eta_PF(i,j+1))*gtot_S(i,j+1))) * &
                 dgeo_de * CS%IdyCv(i,J)
-  enddo
+  enddo ; enddo
 
   if (find_etaav .and. (abs(wt_accel2_n) > 0.0)) then
-    do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
+    do j=G%jsc,G%jec ; do i=G%isc,G%iec
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data map(from: PFu, PFv, eta_sum)
@@ -2915,18 +3210,22 @@ module procedure btloop_update_v
    enddo ; enddo
    !$OMP end do nowait
   else
-   do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+   !$omp target teams distribute parallel do collapse(2) num_threads(256)
+   ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+   do J=Js_v,Je_v ; do i=is_v,ie_v
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(4,i,J) * ubt(I,j+1))) + &
              ((f_4_v(2,i,J) * ubt(I,j)) + (f_4_v(3,i,J) * ubt(I-1,j+1)))) - Cor_ref_v(i,J)
-   enddo
+   enddo ; enddo
   endif
 
   ! This updates the v-velocity, except at OBC points.
-  do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+  do J=Js_v,Je_v ; do i=is_v,ie_v
     vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
          dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
     if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
-  enddo
+  enddo ; enddo
 
   if (CS%linear_wave_drag) then
     !$OMP do schedule(static)
@@ -2935,9 +3234,11 @@ module procedure btloop_update_v
           ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
     enddo ; enddo
   else
-    do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
+    do J=Js_v,Je_v ; do i=is_v,ie_v
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * (Cor_v(i,J) + PFv(i,J))
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data map(from: vbt, v_accel_bt, Cor_v)
@@ -2949,7 +3250,9 @@ module procedure btloop_update_u
   !$omp target enter data map(to: vbt, PFu, &
   !$omp                          ubt, u_accel_bt, Cor_u)
 
-  do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
+  do j=js_u,je_u ; do I=Is_u,Ie_u
     Cor_u(I,j) = (((f_4_u(4,I,j) * vbt(i+1,J)) + (f_4_u(1,I,j) * vbt(i,J-1))) + &
                   ((f_4_u(3,I,j) * vbt(i,J)) + (f_4_u(2,I,j) * vbt(i+1,J-1)))) - &
                  Cor_ref_u(I,j)
@@ -2957,7 +3260,7 @@ module procedure btloop_update_u
     ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
          dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
     if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
-  enddo
+  enddo ; enddo
 
   if (CS%linear_wave_drag) then
     !$OMP do schedule(static)
@@ -2967,9 +3270,11 @@ module procedure btloop_update_u
     enddo ; enddo
     !$OMP end do nowait
   else
-    do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
+    do j=js_u,je_u ; do I=Is_u,Ie_u
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * (Cor_u(I,j) + PFu(I,j))
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data map(from: ubt, u_accel_bt, Cor_u)
@@ -2987,30 +3292,42 @@ module procedure btstep_ubt_from_layer
   ! is called) -- see the aliasing note in btstep's add_uh0 block for the full explanation.
   !$omp target enter data map(to: U_in, V_in)
 
-  do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
+  do j=CS%jsdw,CS%jedw ; do i=CS%isdw-1,CS%iedw
     ubt(i,j) = 0.0
-  enddo
-  do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
+  do j=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
     vbt(i,j) = 0.0
-  enddo
+  enddo ; enddo
 
-  do concurrent (j=js:je)
+  ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=is-1:ie), then do concurrent (I=is-1:ie) underflow clamp
+  !$omp target teams distribute
+  do j=js,je
     do k=1,nz
-      do concurrent (I=is-1:ie)
+      !$omp parallel do num_threads(256)
+      do I=is-1,ie
         ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * U_in(I,j,k)
       enddo
     enddo
-    do concurrent (I=is-1:ie)
+    !$omp parallel do num_threads(256)
+    do I=is-1,ie
       if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
     enddo
   enddo
-  do concurrent (J=js-1:je)
+  ! do concurrent (J=js-1:je) with inner do k=1,nz do concurrent (i=is:ie), then do concurrent (i=is:ie) underflow clamp
+  !$omp target teams distribute
+  do J=js-1,je
     do k=1,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * V_in(i,J,k)
       enddo
     enddo
-    do concurrent (i=is:ie)
+    !$omp parallel do num_threads(256)
+    do i=is,ie
       if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
     enddo
   enddo
@@ -3038,18 +3355,22 @@ module procedure btstep_layer_accel
   !$omp                      map(alloc: accel_layer_u, accel_layer_v)
 
   ! Now calculate each layer's accelerations.
-  do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+  !$omp target teams distribute parallel do collapse(3) num_threads(256)
+  ! do concurrent (k=1:nz, j=js:je, I=is-1:ie)
+  do k=1,nz ; do j=js,je ; do I=is-1,ie
     accel_layer_u(I,j,k) = (u_accel_bt(I,j) - &
           (((pbce(i+1,j,k) - gtot_W(i+1,j)) * e_anom(i+1,j)) - &
           ((pbce(i,j,k) - gtot_E(i,j)) * e_anom(i,j))) * CS%IdxCu(I,j) )
     if (abs(accel_layer_u(I,j,k)) < accel_underflow) accel_layer_u(I,j,k) = 0.0
-  enddo
-  do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+  enddo ; enddo ; enddo
+  !$omp target teams distribute parallel do collapse(3) num_threads(256)
+  ! do concurrent (k=1:nz, J=js-1:je, i=is:ie)
+  do k=1,nz ; do J=js-1,je ; do i=is,ie
     accel_layer_v(i,J,k) = (v_accel_bt(i,J) - &
           (((pbce(i,j+1,k) - gtot_S(i,j+1)) * e_anom(i,j+1)) - &
           ((pbce(i,j,k) - gtot_N(i,j)) * e_anom(i,j))) * CS%IdyCv(i,J) )
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
-  enddo
+  enddo ; enddo ; enddo
 
   ! accel_layer_u/v are btstep's own intent(out) dummy args and u_accel_bt/v_accel_bt may still be
   ! read again by the apply_OBCs correction back in btstep, so refresh the host copy of
@@ -3115,13 +3436,17 @@ module procedure set_dtbt
     dgeo_de = 1.0 + max(0.0, CS%G_extra - det_de)
   endif
   if (present(pbce)) then
-    do concurrent (j=js:je)
-      do concurrent (i=is:ie)
+    ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) zero-init, then do k=1,nz do concurrent (i=is:ie) accumulate
+    !$omp target teams distribute
+    do j=js,je
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
         gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
       enddo
       do k=1,nz
-        do concurrent (i=is:ie)
+        !$omp parallel do num_threads(256)
+        do i=is,ie
           gtot_E(i,j) = gtot_E(i,j) + pbce(i,j,k) * CS%frhatu(I,j,k)
           gtot_W(i,j) = gtot_W(i,j) + pbce(i,j,k) * CS%frhatu(I-1,j,k)
           gtot_N(i,j) = gtot_N(i,j) + pbce(i,j,k) * CS%frhatv(i,J,k)
@@ -3130,10 +3455,12 @@ module procedure set_dtbt
       enddo
     enddo
   else
-    do concurrent (j=js:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js:je, i=is:ie)
+    do j=js,je ; do i=is,ie
       gtot_E(i,j) = gtot_est ; gtot_W(i,j) = gtot_est
       gtot_N(i,j) = gtot_est ; gtot_S(i,j) = gtot_est
-    enddo
+    enddo ; enddo
   endif
 
   min_max_dt2 = 1.0e38*US%s_to_T**2  ! A huge value for the permissible timestep squared.
@@ -4179,26 +4506,34 @@ module procedure set_local_BT_cont_types
   !$omp                               v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
 
   ! Copy the BT_cont arrays into symmetric, potentially wide haloed arrays.
-  do concurrent (j=js-hs:je+hs, i=is-hs-1:ie+hs)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-hs:je+hs, i=is-hs-1:ie+hs)
+  do j=js-hs,je+hs ; do i=is-hs-1,ie+hs
     u_polarity(i,j) = 1.0
     uBT_EE(i,j) = 0.0 ; uBT_WW(i,j) = 0.0
     FA_u_EE(i,j) = 0.0 ; FA_u_E0(i,j) = 0.0 ; FA_u_W0(i,j) = 0.0 ; FA_u_WW(i,j) = 0.0
-  enddo
-  do concurrent (j=js-hs-1:je+hs, i=is-hs:ie+hs)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-hs-1:je+hs, i=is-hs:ie+hs)
+  do j=js-hs-1,je+hs ; do i=is-hs,ie+hs
     v_polarity(i,j) = 1.0
     vBT_NN(i,j) = 0.0 ; vBT_SS(i,j) = 0.0
     FA_v_NN(i,j) = 0.0 ; FA_v_N0(i,j) = 0.0 ; FA_v_S0(i,j) = 0.0 ; FA_v_SS(i,j) = 0.0
-  enddo
-  do concurrent (j=js:je, I=is-1:ie)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js:je, I=is-1:ie)
+  do j=js,je ; do I=is-1,ie
     uBT_EE(I,j) = BT_cont%uBT_EE(I,j) ; uBT_WW(I,j) = BT_cont%uBT_WW(I,j)
     FA_u_EE(I,j) = BT_cont%FA_u_EE(I,j) ; FA_u_E0(I,j) = BT_cont%FA_u_E0(I,j)
     FA_u_W0(I,j) = BT_cont%FA_u_W0(I,j) ; FA_u_WW(I,j) = BT_cont%FA_u_WW(I,j)
-  enddo
-  do concurrent (J=js-1:je, i=is:ie)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1:je, i=is:ie)
+  do J=js-1,je ; do i=is,ie
     vBT_NN(i,J) = BT_cont%vBT_NN(i,J) ; vBT_SS(i,J) = BT_cont%vBT_SS(i,J)
     FA_v_NN(i,J) = BT_cont%FA_v_NN(i,J) ; FA_v_N0(i,J) = BT_cont%FA_v_N0(i,J)
     FA_v_S0(i,J) = BT_cont%FA_v_S0(i,J) ; FA_v_SS(i,J) = BT_cont%FA_v_SS(i,J)
-  enddo
+  enddo ; enddo
 
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
@@ -4227,7 +4562,9 @@ module procedure set_local_BT_cont_types
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
 
-  do concurrent (j=js-hs:je+hs, I=is-hs-1:ie+hs)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-hs:je+hs, I=is-hs-1:ie+hs)
+  do j=js-hs,je+hs ; do I=is-hs-1,ie+hs
     BTCL_u(I,j)%FA_u_EE = FA_u_EE(I,j) ; BTCL_u(I,j)%FA_u_E0 = FA_u_E0(I,j)
     BTCL_u(I,j)%FA_u_W0 = FA_u_W0(I,j) ; BTCL_u(I,j)%FA_u_WW = FA_u_WW(I,j)
     BTCL_u(I,j)%uBT_EE = dt*uBT_EE(I,j)   ; BTCL_u(I,j)%uBT_WW = dt*uBT_WW(I,j)
@@ -4256,8 +4593,10 @@ module procedure set_local_BT_cont_types
       (C1_3 * (BTCL_u(I,j)%FA_u_WW - BTCL_u(I,j)%FA_u_W0)) / BTCL_u(I,j)%uBT_WW**2
     if (abs(BTCL_u(I,j)%uBT_EE) > 0.0) BTCL_u(I,j)%uh_crvE = &
       (C1_3 * (BTCL_u(I,j)%FA_u_EE - BTCL_u(I,j)%FA_u_E0)) / BTCL_u(I,j)%uBT_EE**2
-  enddo
-  do concurrent (J=js-hs-1:je+hs, i=is-hs:ie+hs)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-hs-1:je+hs, i=is-hs:ie+hs)
+  do J=js-hs-1,je+hs ; do i=is-hs,ie+hs
     BTCL_v(i,J)%FA_v_NN = FA_v_NN(i,J) ; BTCL_v(i,J)%FA_v_N0 = FA_v_N0(i,J)
     BTCL_v(i,J)%FA_v_S0 = FA_v_S0(i,J) ; BTCL_v(i,J)%FA_v_SS = FA_v_SS(i,J)
     BTCL_v(i,J)%vBT_NN = dt*vBT_NN(i,J)   ; BTCL_v(i,J)%vBT_SS = dt*vBT_SS(i,J)
@@ -4286,7 +4625,7 @@ module procedure set_local_BT_cont_types
       (C1_3 * (BTCL_v(i,J)%FA_v_SS - BTCL_v(i,J)%FA_v_S0)) / BTCL_v(i,J)%vBT_SS**2
     if (abs(BTCL_v(i,J)%vBT_NN) > 0.0) BTCL_v(i,J)%vh_crvN = &
       (C1_3 * (BTCL_v(i,J)%FA_v_NN - BTCL_v(i,J)%FA_v_N0)) / BTCL_v(i,J)%vBT_NN**2
-  enddo
+  enddo ; enddo
 
   !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
   !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
@@ -4374,14 +4713,18 @@ module procedure BT_cont_to_face_areas
   !$omp target enter data map(to: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
   !$omp                          BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
   !$omp                          BT_cont%FA_v_S0, BT_cont%FA_v_SS)
-  do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+  do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
     Datu(I,j) = max(BT_cont%FA_u_EE(I,j), BT_cont%FA_u_E0(I,j), &
                     BT_cont%FA_u_W0(I,j), BT_cont%FA_u_WW(I,j))
-  enddo
-  do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+  enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  ! do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+  do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
     Datv(i,J) = max(BT_cont%FA_v_NN(i,J), BT_cont%FA_v_N0(i,J), &
                     BT_cont%FA_v_S0(i,J), BT_cont%FA_v_SS(i,J))
-  enddo
+  enddo ; enddo
   !$omp target exit data map(release: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
   !$omp                              BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
   !$omp                              BT_cont%FA_v_S0, BT_cont%FA_v_SS)
@@ -4406,65 +4749,81 @@ module procedure find_face_areas
     !$omp target enter data map(to: eta)
     ! The use of harmonic mean thicknesses ensure positive definiteness.
     if (GV%Boussinesq) then
-      do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+      do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
         H1 = CS%bathyT(i,j)*GV%Z_to_H + eta(i,j) ; H2 = CS%bathyT(i+1,j)*GV%Z_to_H + eta(i+1,j)
         Datu(I,j) = 0.0 ; if ((H1 > 0.0) .and. (H2 > 0.0)) &
         Datu(I,j) = CS%dy_Cu(I,j) * (2.0 * H1 * H2) / (H1 + H2)
         ! Datu(I,j) = CS%dy_Cu(I,j) * 0.5 * (H1 + H2)
-      enddo
+      enddo ; enddo
 
-      do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+      do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
         H1 = CS%bathyT(i,j)*GV%Z_to_H + eta(i,j) ; H2 = CS%bathyT(i,j+1)*GV%Z_to_H + eta(i,j+1)
         Datv(i,J) = 0.0 ; if ((H1 > 0.0) .and. (H2 > 0.0)) &
         Datv(i,J) = CS%dx_Cv(i,J) * (2.0 * H1 * H2) / (H1 + H2)
         ! Datv(i,J) = CS%dy_v(i,J) * 0.5 * (H1 + H2)
-      enddo
+      enddo ; enddo
     else
-      do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+      do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
         Datu(I,j) = 0.0 ; if ((eta(i,j) > 0.0) .and. (eta(i+1,j) > 0.0)) &
         Datu(I,j) = CS%dy_Cu(I,j) * (2.0 * eta(i,j) * eta(i+1,j)) / &
                                   (eta(i,j) + eta(i+1,j))
         ! Datu(I,j) = CS%dy_Cu(I,j) * 0.5 * (eta(i,j) + eta(i+1,j))
-      enddo
+      enddo ; enddo
 
-      do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      ! do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+      do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
         Datv(i,J) = 0.0 ; if ((eta(i,j) > 0.0) .and. (eta(i,j+1) > 0.0)) &
         Datv(i,J) = CS%dx_Cv(i,J) * (2.0 * eta(i,j) * eta(i,j+1)) / &
                                   (eta(i,j) + eta(i,j+1))
         ! Datv(i,J) = CS%dy_v(i,J) * 0.5 * (eta(i,j) + eta(i,j+1))
-      enddo
+      enddo ; enddo
     endif
     !$omp target exit data map(release: eta)
   elseif (present(add_max)) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
 
-    do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+    do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
       H1 = max((G%meanSL(i+1,j) + add_max) + G%bathyT(i+1,j), 0.0)
       H2 = max((G%meanSL(i,j) + add_max) + G%bathyT(i,j), 0.0)
       Datu(I,j) = CS%dy_Cu(I,j) * Z_to_H * max(H1, H2)
-    enddo
-    do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+    do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
       H1 = max((G%meanSL(i,j+1) + add_max) + G%bathyT(i,j+1), 0.0)
       H2 = max((G%meanSL(i,j) + add_max) + G%bathyT(i,j), 0.0)
       Datv(i,J) = CS%dx_Cv(i,J) * Z_to_H * max(H1, H2)
-    enddo
+    enddo ; enddo
   else
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
 
-    do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
+    do j=js-hs,je+hs ; do I=is-1-hs,ie+hs
       H1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * Z_to_H
       H2 = max(G%meanSL(i+1,j) + G%bathyT(i+1,j), 0.0) * Z_to_H
       Datu(I,j) = 0.0
       if ((H1 > 0.0) .and. (H2 > 0.0)) &
         Datu(I,j) = CS%dy_Cu(I,j) * (2.0 * H1 * H2) / (H1 + H2)
-    enddo
-    do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+    enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    ! do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
+    do J=js-1-hs,je+hs ; do i=is-hs,ie+hs
       H1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * Z_to_H
       H2 = max(G%meanSL(i,j+1) + G%bathyT(i,j+1), 0.0) * Z_to_H
       Datv(i,J) = 0.0
       if ((H1 > 0.0) .and. (H2 > 0.0)) &
         Datv(i,J) = CS%dx_Cv(i,J) * (2.0 * H1 * H2) / (H1 + H2)
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target exit data map(from: Datu, Datv)
@@ -4484,32 +4843,35 @@ module procedure bt_mass_source
 
   !$omp target enter data map(to: h, eta, G, G%bathyT, CS, CS%eta_cor) map(alloc: eta_h)
 
-  do concurrent (j=js:je)
-    if (GV%Boussinesq) then
-      do concurrent (i=is:ie)
+  ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) blocks (Boussinesq/set_cor branches
+  ! and the sequential do k=2,nz accumulation) -- GV%Boussinesq and set_cor are loop-invariant, so
+  ! each is its own parallel-do over i, with the k accumulation sequential per j-team in between.
+  !$omp target teams distribute
+  do j=js,je
+    !$omp parallel do num_threads(256)
+    do i=is,ie
+      if (GV%Boussinesq) then
         eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
-      enddo
-    else
-      do concurrent (i=is:ie)
+      else
         eta_h(i,j) = h(i,j,1)
-      enddo
-    endif
+      endif
+    enddo
     do k=2,nz
-      do concurrent (i=is:ie)
+      !$omp parallel do num_threads(256)
+      do i=is,ie
         eta_h(i,j) = eta_h(i,j) + h(i,j,k)
       enddo
     enddo
-    if (set_cor) then
-      do concurrent (i=is:ie)
+    !$omp parallel do num_threads(256)
+    do i=is,ie
+      if (set_cor) then
         d_eta = eta_h(i,j) - eta(i,j)
         CS%eta_cor(i,j) = d_eta
-      enddo
-    else
-      do concurrent (i=is:ie)
+      else
         d_eta = eta_h(i,j) - eta(i,j)
         CS%eta_cor(i,j) = CS%eta_cor(i,j) + d_eta
-      enddo
-    endif
+      endif
+    enddo
   enddo
 
   !$omp target exit data map(from: CS%eta_cor)
