@@ -546,13 +546,9 @@ module procedure btstep
       !$omp target update from(q, DCor_u, DCor_v)
       call start_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
     else
-      ! omp_offload=.true. is deliberately not used here: FMS2's group_update_pack.inc documents
-      ! an unresolved ROCm device-runtime race in the target-update copy-back that path relies on
-      ! (see the longer note on this same issue in btstep_timeloop's halo pass). Manual sync
-      ! around a plain call avoids it.
-      !!$omp target update from(q, DCor_u, DCor_v)
-      call do_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
-      !!$omp target update to(q, DCor_u, DCor_v)
+      ! q, DCor_u and DCor_v are device-resident here, so the exchange packs directly from the
+      ! device copies with omp_offload=.true. rather than round-tripping through the host.
+      call do_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre, omp_offload=.true.)
     endif
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
@@ -827,9 +823,9 @@ module procedure btstep
     call complete_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
     ! The update from(...) issued before start_group_pass (above) pulled q/DCor_u/DCor_v to host
     ! so this host-only MPI halo exchange could run; nothing has pushed the halo-completed host
-    ! values back to device until now. The blocking do_group_pass path (the other branch of the
-    ! enclosing if/else, not shown here) has its own target update to() right after that call
-    ! instead, so this one is reached, and needed, only in this (nonblock_setup) branch.
+    ! values back to device until now. The blocking branch (the other side of the enclosing
+    ! if/else, not shown here) passes omp_offload=.true. and exchanges the device copies
+    ! directly, so this update is reached, and needed, only in this (nonblock_setup) branch.
     !$omp target update to(q, DCor_u, DCor_v)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
@@ -1240,13 +1236,12 @@ module procedure btstep
     endif
     call complete_group_pass(CS%pass_gtot, CS%BT_Domain)
     call complete_group_pass(CS%pass_ubt_Cor, G%Domain)
+    ! This branch exchanges the host copies, so push the halo-completed values back to device.
+    !$omp target update to(gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
   else
-    !$omp target update from(gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
-    call do_group_pass(CS%pass_gtot, CS%BT_Domain)
-    call do_group_pass(CS%pass_ubt_Cor, G%Domain)
+    call do_group_pass(CS%pass_gtot, CS%BT_Domain, omp_offload=.true.)
+    call do_group_pass(CS%pass_ubt_Cor, G%Domain, omp_offload=.true.)
   endif
-  ! covers group passes
-  !$omp target update to(gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
@@ -1514,19 +1509,19 @@ module procedure btstep
 
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
-  ! The pass_eta_bt_rem, pass_Dat_uv and pass_force_hbt0_Cor_ref halo updates work on host copies.
-  !$omp target update from(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
-  !$omp                   Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
-  !$omp target update from(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
-  !$omp target update from(Datu, Datv) if(.not.use_BT_cont)
   if (nonblock_setup) then
+    ! The nonblocking path exchanges host copies, so pull the device copies back first.
+    !$omp target update from(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
+    !$omp                   Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
+    !$omp target update from(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
+    !$omp target update from(Datu, Datv) if(.not.use_BT_cont)
     call start_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain)
     ! The following halo update is not needed without wide halos.  RWH
   else
-    call do_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain)
+    call do_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain, omp_offload=.true.)
     if (.not.use_BT_cont) &
-      call do_group_pass(CS%pass_Dat_uv, CS%BT_Domain)
-    call do_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain)
+      call do_group_pass(CS%pass_Dat_uv, CS%BT_Domain, omp_offload=.true.)
+    call do_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain, omp_offload=.true.)
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
@@ -1540,13 +1535,14 @@ module procedure btstep
     call complete_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain)
     call complete_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain)
 
+    !$omp target update to(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
+    !$omp                 Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
+    !$omp target update to(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
+    !$omp target update to(Datu, Datv) if(.not.use_BT_cont)
+
     if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
-  !$omp target update to(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
-  !$omp                 Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
-  !$omp target update to(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
-  !$omp target update to(Datu, Datv) if(.not.use_BT_cont)
 
   if (CS%debug) then
     !$omp target update from(uhbt, vhbt)
@@ -1783,13 +1779,12 @@ module procedure btstep
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
-  !$omp target update from(e_anom)
   if (G%nonblocking_updates) then
+    !$omp target update from(e_anom)
     call start_group_pass(CS%pass_e_anom, G%Domain)
   else
-    if (find_etaav) call do_group_pass(CS%pass_etaav, G%Domain)
-    call do_group_pass(CS%pass_e_anom, G%Domain)
-    !$omp target update to(e_anom)
+    if (find_etaav) call do_group_pass(CS%pass_etaav, G%Domain, omp_offload=.true.)
+    call do_group_pass(CS%pass_e_anom, G%Domain, omp_offload=.true.)
   endif
   if (id_clock_pass_post > 0) call cpu_clock_end(id_clock_pass_post)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
@@ -1836,15 +1831,19 @@ module procedure btstep
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
-  ! The host copies of uhbtav and vhbtav are used from here on, starting with pass_ubta_uhbta.
-  !$omp target update from(uhbtav, vhbtav)
   if (G%nonblocking_updates) then
     call complete_group_pass(CS%pass_e_anom, G%Domain)
     !$omp target update to(e_anom)
     if (find_etaav) call start_group_pass(CS%pass_etaav, G%Domain)
+    ! This path exchanges the host copies, so they are pulled back before the pass starts.
+    !$omp target update from(CS%ubtav, CS%vbtav, uhbtav, vhbtav)
     call start_group_pass(CS%pass_ubta_uhbta, G%DoMain)
   else
-    call do_group_pass(CS%pass_ubta_uhbta, G%Domain)
+    call do_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
+    ! CS%ubtav, CS%vbtav, uhbtav and vhbtav are read on the host from here on (the diagnostics
+    ! below, and uhbtav/vhbtav are returned to the caller), and the teardown only releases them,
+    ! so the halo-updated device copies are brought back here.
+    !$omp target update from(CS%ubtav, CS%vbtav, uhbtav, vhbtav)
   endif
   if (id_clock_pass_post > 0) call cpu_clock_end(id_clock_pass_post)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
@@ -2388,17 +2387,12 @@ module procedure btstep_timeloop
     ! Update the range of valid points, either by doing a halo update or by marching inward.
     if ((iev - stencil < ie) .or. (jev - stencil < je)) then
       if (id_clock_calc > 0) call cpu_clock_end(id_clock_calc)
-      ! eta, ubt and vbt are device-resident for the whole routine (see the map at the top).
-      ! do_group_pass's omp_offload=.true. path (GPU-aware MPI packing directly from the device
-      ! copies) is not used here: FMS2's group_update_pack.inc documents an unresolved ROCm
-      ! device-runtime race in its target-update copy-back ("observed to copy back correctly
-      ! for some ranks/k-slices and silently not for others"), and this call is the one that
-      ! actually exercises it for a real cross-rank exchange in the three validated configs
-      ! (benchmark's periodic domain is the only one of the three with genuine self-communication
-      ! here). Manual host-mediated sync around the plain call avoids that path entirely.
-      !$omp target update from(eta, ubt, vbt)
-      call do_group_pass(CS%pass_eta_ubt, CS%BT_Domain, clock=id_clock_pass_step)
-      !$omp target update to(eta, ubt, vbt)
+      ! eta, ubt and vbt are device-resident for the whole routine (see the map at the top), so
+      ! this exchange uses do_group_pass's omp_offload=.true. path, packing directly from the
+      ! device copies instead of round-tripping through the host.  This is the halo pass that
+      ! runs every sub-step, and benchmark's periodic domain is the only one of the three
+      ! validated configs with genuine cross-rank self-communication here.
+      call do_group_pass(CS%pass_eta_ubt, CS%BT_Domain, clock=id_clock_pass_step, omp_offload=.true.)
       isv = isvf ; iev = ievf ; jsv = jsvf ; jev = jevf
       if (id_clock_calc > 0) call cpu_clock_begin(id_clock_calc)
     else
@@ -4345,17 +4339,10 @@ module procedure set_local_BT_cont_types
   call create_group_pass(BT_cont%pass_FA_uv, FA_u_WW, FA_v_SS, BT_Domain, To_All+Scalar_Pair)
 !--- end setup for group halo update
   ! Do halo updates on BT_cont. u_polarity/v_polarity/uBT_EE/... and FA_u_EE/... are device-
-  ! resident for the whole routine (see the map at the top). omp_offload=.true. is deliberately
-  ! not used: these are vector-pair passes, and FMS2's group_update_pack.inc documents an
-  ! unresolved ROCm device-runtime race in the target-update copy-back that path relies on (see
-  ! the longer note on this same issue in btstep_timeloop's halo pass). Manual sync around plain
-  ! calls avoids it.
-  !$omp target update from(u_polarity, v_polarity, uBT_EE, vBT_NN, uBT_WW, vBT_SS, &
-  !$omp                    FA_u_EE, FA_v_NN, FA_u_E0, FA_v_N0, FA_u_W0, FA_v_S0, FA_u_WW, FA_v_SS)
-  call do_group_pass(BT_cont%pass_polarity_BT, BT_Domain)
-  call do_group_pass(BT_cont%pass_FA_uv, BT_Domain)
-  !$omp target update to(u_polarity, v_polarity, uBT_EE, vBT_NN, uBT_WW, vBT_SS, &
-  !$omp                  FA_u_EE, FA_v_NN, FA_u_E0, FA_v_N0, FA_u_W0, FA_v_S0, FA_u_WW, FA_v_SS)
+  ! resident for the whole routine (see the map at the top), so these vector-pair passes use
+  ! omp_offload=.true. and exchange the device copies directly.
+  call do_group_pass(BT_cont%pass_polarity_BT, BT_Domain, omp_offload=.true.)
+  call do_group_pass(BT_cont%pass_FA_uv, BT_Domain, omp_offload=.true.)
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
 
