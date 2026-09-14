@@ -366,25 +366,14 @@ module procedure btstep
   !$omp target enter data map(to: CS%BT_OBC%v_OBC_type) if(CS%BT_OBC%v_OBCs_on_PE)
   !$omp target enter data map(to: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
   !$omp target enter data map(alloc: etaav) if(find_etaav)
-  ! The optional and pointer arguments below are only mapped when they are present or associated.
-  if (add_uh0) then
-    !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0)
-  endif
-  if (apply_bottom_drag) then
-    !$omp target enter data map(to: taux_bot, tauy_bot)
-  endif
-  if (interp_eta_PF) then
-    !$omp target enter data map(to: eta_PF_start)
-  endif
-  if (use_BT_cont) then
-    !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
-    !$omp                          BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
-    !$omp                          BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
-    !$omp                          BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS)
-  endif
-  if (CS%dynamic_psurf) then ; if (associated(forces%rigidity_ice_u) .and. associated(forces%rigidity_ice_v)) then
-    !$omp target enter data map(to: forces%rigidity_ice_u, forces%rigidity_ice_v)
-  endif ; endif
+  !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0) if (add_uh0)
+  !$omp target enter data map(to: taux_bot, tauy_bot) if(apply_bottom_drag)
+  !$omp target enter data map(to: eta_PF_start) if(interp_eta_PF)
+  !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+  !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+  !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
+  !$omp   if(use_BT_cont)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -859,9 +848,6 @@ module procedure btstep
     endif
   endif
 
-  !$omp target enter data map(to: CS)
-  !$omp target exit data map(release: CS)
-
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
   ! must occur on all PEs when there are open boundary conditions anywhere.
   if (apply_OBCs) then
@@ -1097,7 +1083,6 @@ module procedure btstep
   else
     BT_force_v(i,J) = 0.0
   endif ; enddo ; enddo
-  !$omp target exit data map(release: CS)
 
   if (apply_bottom_drag) then
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -1424,7 +1409,6 @@ module procedure btstep
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
-  !$omp target enter data map(to: CS)
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
   do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
@@ -1482,7 +1466,6 @@ module procedure btstep
   enddo ; enddo
   ! The bounded CS%eta_cor persists beyond this call (bt_mass_source and the eta_cor diagnostic).
   !$omp target update from(CS%eta_cor)
-  !$omp target exit data map(release: CS)
 
   if (CS%dynamic_psurf) then
     ice_is_rigid = (associated(forces%rigidity_ice_u) .and. &
@@ -1496,7 +1479,6 @@ module procedure btstep
       else
         H_to_Z = GV%H_to_RZ / CS%Rho_BT_lin
       endif
-      !$omp target enter data map(to: CS)
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=js:je, i=is:ie)
       do j=js,je ; do i=is,ie
@@ -1527,7 +1509,6 @@ module procedure btstep
         ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
         dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
       enddo ; enddo
-      !$omp target exit data map(release: CS)
     endif
   endif
 
@@ -1815,7 +1796,6 @@ module procedure btstep
 
   ! Find or store the weighted time-mean velocities and transports.
   if (CS%answer_date < 20190101) then
-    !$omp target enter data map(to: CS)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie)
     do j=js,je ; do I=is-1,ie
@@ -1832,7 +1812,6 @@ module procedure btstep
     enddo ; enddo
     ! The host copies of CS%ubtav and CS%vbtav are used from here on.
     !$omp target update from(CS%ubtav, CS%vbtav)
-    !$omp target exit data map(release: CS)
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
@@ -1894,7 +1873,6 @@ module procedure btstep
   if (apply_OBCs) then
     ! Correct the accelerations at OBC velocity points, but only in the
     ! symmetric-memory computational domain, not in the wide halo regions.
-    !$omp target enter data map(to: CS)
     if (CS%BT_OBC%u_OBCs_on_PE) then
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
@@ -1919,7 +1897,6 @@ module procedure btstep
         endif
       enddo ; enddo
     endif
-    !$omp target exit data map(release: CS)
   endif
 
   ! Refresh the host copies needed by the diagnostics below, then release everything that was
@@ -1941,24 +1918,14 @@ module procedure btstep
   !$omp target exit data map(release: CS%BT_OBC) if (CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
   !$omp target exit data map(release: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
   !$omp target exit data map(release: etaav) if(find_etaav)
-  if (add_uh0) then
-    !$omp target exit data map(release: uh0, vh0, u_uh0, v_vh0)
-  endif
-  if (apply_bottom_drag) then
-    !$omp target exit data map(release: taux_bot, tauy_bot)
-  endif
-  if (interp_eta_PF) then
-    !$omp target exit data map(release: eta_PF_start)
-  endif
-  if (use_BT_cont) then
-    !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
-    !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
-    !$omp                              BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
-    !$omp                              BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS)
-  endif
-  if (CS%dynamic_psurf) then ; if (associated(forces%rigidity_ice_u) .and. associated(forces%rigidity_ice_v)) then
-    !$omp target exit data map(release: forces%rigidity_ice_u, forces%rigidity_ice_v)
-  endif ; endif
+  !$omp target exit data map(release: uh0, vh0, u_uh0, v_vh0) if(add_uh0)
+  !$omp target exit data map(release: taux_bot, tauy_bot) if(apply_bottom_drag)
+  !$omp target exit data map(release: eta_PF_start) if(interp_eta_PF)
+  !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+  !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+  !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
+  !$omp   if(use_BT_cont)
   !$omp target exit data &
   !$omp   map(release: q, DCor_u, DCor_v, U_Cor, V_Cor, pbce, uhbt, vhbt, ubt, vbt, BTCL_u, &
   !$omp     BTCL_v, Datu, Datv, u_accel_bt, v_accel_bt, forces, forces%taux, forces%tauy, &
@@ -1973,7 +1940,7 @@ module procedure btstep
   !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, U_in, V_in, &
   !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%ubtav, CS%vbtav, uhbtav, vhbtav, eta_sum, &
   !$omp     eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, ubt_st, vbt_st, &
-  !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans)
+  !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans, CS)
   !$omp target exit data map(from: ubt_wtd, vbt_wtd, accel_layer_u, accel_layer_v, eta_out)
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
@@ -2284,7 +2251,6 @@ module procedure btstep_timeloop
 
   ! All of the dummy arguments used on the device here and in the btloop_* helpers were mapped by
   ! btstep; only the local work arrays of this routine are mapped here, for the whole sub-cycle.
-  !$omp target enter data map(to: CS)
   !$omp target enter data map(alloc: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
   !$omp                             p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
 
@@ -2850,7 +2816,6 @@ module procedure btstep_timeloop
 
   ! The host copies of CS%ubtav and CS%vbtav are used from here on.
   !$omp target update from(CS%ubtav, CS%vbtav)
-  !$omp target exit data map(release: CS)
   !$omp target exit data map(release: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
   !$omp                              p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
 
@@ -2993,8 +2958,6 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
-  !$omp target enter data map(to: CS)
-
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js_u:je_u, I=isv-1:iev)
   do j=js_u,je_u ; do I=isv-1,iev
@@ -3018,8 +2981,6 @@ module procedure btloop_find_PF
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
     enddo ; enddo
   endif
-
-  !$omp target exit data map(release: CS)
 
 end procedure btloop_find_PF
 module procedure btloop_add_dyn_PF
@@ -3192,8 +3153,6 @@ module procedure btstep_layer_accel
   Idt = 1.0 / dt
   accel_underflow = CS%vel_underflow * Idt
 
-  !$omp target enter data map(to: CS)
-
   ! Now calculate each layer's accelerations.
   !$omp target teams distribute parallel do collapse(3) num_threads(256)
   ! do concurrent (k=1:nz, j=js:je, I=is-1:ie)
@@ -3211,8 +3170,6 @@ module procedure btstep_layer_accel
           ((pbce(i,j,k) - gtot_N(i,j)) * e_anom(i,j))) * CS%IdyCv(i,J) )
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
   enddo ; enddo ; enddo
-
-  !$omp target exit data map(release: CS)
 
 end procedure btstep_layer_accel
 module procedure set_dtbt
