@@ -338,19 +338,53 @@ module procedure btstep
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
 !--- end setup for group halo update
 
+  ! Every array used on the device by btstep and the routines it calls is mapped here, once, and
+  ! released in the teardown at the end of this routine (the only exceptions are wt_vel/wt_eta/
+  ! wt_trans, which are mapped as soon as they are allocated and filled, and the local arrays of
+  ! the called routines). Host code in between (unported loops, halo updates, diagnostics) keeps
+  ! the host copies current with target update from/to around it.
   !$omp target enter data &
   !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
   !$omp     CS%IDatu, CS%IDatv, CS%dy_Cu, CS%dx_Cv, CS%bathyT, forces, forces%taux, forces%tauy, &
-  !$omp     eta_in, eta_PF_in, CS%frhatu, CS%frhatv, &
+  !$omp     eta_in, eta_PF_in, CS%frhatu, CS%frhatv, CS%ua_polarity, CS%va_polarity, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, U_Cor, V_Cor, pbce, &
-  !$omp     G%OBCmaskCu, G%OBCmaskCv, bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC) &
+  !$omp     G%OBCmaskCu, G%OBCmaskCv, bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, &
+  !$omp     G%mask2dT, G%dxT, G%dyT, CS%eta_cor, CS%IareaT, CS%eta_cor_bound, &
+  !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, G%IareaT, G%meanSL, &
+  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%OBCmask_u, CS%OBCmask_v, U_in, V_in) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot, &
-  !$omp     ubt_Cor, vbt_Cor, BTCL_u, BTCL_v, uhbt, vhbt, u_accel_bt, v_accel_bt)
+  !$omp     ubt_Cor, vbt_Cor, BTCL_u, BTCL_v, uhbt, vhbt, u_accel_bt, v_accel_bt, f_4_u, f_4_v, &
+  !$omp     av_rem_u, av_rem_v, Rayleigh_u, Rayleigh_v, eta_src, e_anom, ubt_st, vbt_st, &
+  !$omp     eta_sum, eta_wtd, ubt_wtd, vbt_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, &
+  !$omp     CS%ubtav, CS%vbtav, uhbtav, vhbtav, accel_layer_u, accel_layer_v)
+  ! eta_out may be the same array as eta_in, so it is mapped after eta_in has been copied in.
+  !$omp target enter data map(alloc: eta_out)
   !$omp target enter data map(to: CS%BT_OBC) if(CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
-  !$omp target enter data map(to: CS%OBCmask_u, CS%BT_OBC%u_OBC_type) if(CS%BT_OBC%u_OBCs_on_PE)
-  !$omp target enter data map(to: CS%OBCmask_v, CS%BT_OBC%v_OBC_type) if(CS%BT_OBC%v_OBCs_on_PE)
+  !$omp target enter data map(to: CS%BT_OBC%u_OBC_type) if(CS%BT_OBC%u_OBCs_on_PE)
+  !$omp target enter data map(to: CS%BT_OBC%v_OBC_type) if(CS%BT_OBC%v_OBCs_on_PE)
+  !$omp target enter data map(to: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
+  !$omp target enter data map(alloc: etaav) if(find_etaav)
+  ! The optional and pointer arguments below are only mapped when they are present or associated.
+  if (add_uh0) then
+    !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0)
+  endif
+  if (apply_bottom_drag) then
+    !$omp target enter data map(to: taux_bot, tauy_bot)
+  endif
+  if (interp_eta_PF) then
+    !$omp target enter data map(to: eta_PF_start)
+  endif
+  if (use_BT_cont) then
+    !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+    !$omp                          BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+    !$omp                          BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+    !$omp                          BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS)
+  endif
+  if (CS%dynamic_psurf) then ; if (associated(forces%rigidity_ice_u) .and. associated(forces%rigidity_ice_v)) then
+    !$omp target enter data map(to: forces%rigidity_ice_u, forces%rigidity_ice_v)
+  endif ; endif
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -584,25 +618,19 @@ module procedure btstep
   endif
 
   if (CS%linear_wave_drag) then
-    !$OMP parallel do default(shared)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
     do j=CS%jsdw,CS%jedw ; do I=CS%isdw-1,CS%iedw
       Rayleigh_u(I,j) = 0.0
     enddo ; enddo
-    !$OMP parallel do default(shared)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
     do J=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
       Rayleigh_v(i,J) = 0.0
     enddo ; enddo
   endif
 
   ! Copy input arrays into their wide-halo counterparts.
-  ! eta, eta_PF, eta_PF_1, d_eta_PF, eta_IC, eta_in and eta_PF_in are already resident on device
-  ! from the bracket opened above (eta/eta_PF/eta_PF_1/d_eta_PF/eta_IC alloc'd there after being
-  ! zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo, eta_in/eta_PF_in mapped `to` since
-  ! eta_PF_in is read unconditionally below, in whichever branch runs); this loop only overwrites
-  ! the narrower G%isd:G%ied/G%jsd:G%jed range, so none of them need remapping here. Only
-  ! eta_PF_start, used solely by the interp_eta_PF branch, gets its own small enter/exit pair.
   if (interp_eta_PF) then
-    !$omp target teams distribute parallel do collapse(2) num_threads(256) map(to: eta_PF_start)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
     do j=G%jsd,G%jed ; do i=G%isd,G%ied
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
@@ -831,28 +859,8 @@ module procedure btstep
     endif
   endif
 
-  ! Most of what btstep's top-of-routine bracket entered (well above) now stays mapped straight
-  ! through to btstep's single final exit-data call (well below), rather than being round-tripped
-  ! or given its own local enter/exit pair at each use site through the routine -- CS%frhatu/
-  ! CS%frhatv, eta, q/DCor_u/DCor_v, CS%BT_OBC%u_OBC_type/v_OBC_type, wt_u/wt_v, and BT_force_u/v
-  ! among them. Each is either read again well after this point on device (q/DCor_u/DCor_v inside
-  ! btstep_find_Cor; CS%BT_OBC%*_OBC_type and wt_u/wt_v inside the add_uh0 block just below; eta
-  ! inside the host-only set_up_BT_OBC call just below and the later linear_wave_drag block) or is
-  ! a pure read-only input never written on host or device anywhere in this routine (CS%frhatu/
-  ! CS%frhatv), or is freshly overwritten rather than read (BT_force_u/v, by the wind-stress loop
-  ! well below, then flushed and released in one place right after the OBC masking) -- so nothing
-  ! is lost by leaving each of them resident rather than round-tripping here.
-  ! Only the few arrays below actually finish being used earlier than that, so this is their
-  ! release point instead: CS%q_D/CS%D_u_Cor/CS%D_v_Cor feed only the CS%linearized_BT_PV branch
-  ! of the q/DCor_u/DCor_v calculation above; G%CoriolisBu/CS%q_wt feed only its non-linearized
-  ! branch; eta_PF_in's last device read is the eta/eta_PF copy-in above (its only remaining
-  ! reader, the CS%debug hchksum well below, reads the unmodified host copy directly); and
-  ! Iwt_u_tot/Iwt_v_tot are purely local to the wt_u/wt_v normalization above and are never read
-  ! again after it.
   !$omp target enter data map(to: CS)
-  !$omp target exit data &
-  !$omp   map(release: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G%CoriolisBu, CS%q_wt, &
-  !$omp     eta_PF_in, Iwt_u_tot, Iwt_v_tot)
+  !$omp target exit data map(release: CS)
 
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
   ! must occur on all PEs when there are open boundary conditions anywhere.
@@ -861,9 +869,8 @@ module procedure btstep
       call complete_group_pass(CS%pass_SpV_avg, CS%BT_domain)
 
     dgeo_de_OBC = 1.0 ; if (CS%tidal_SAL_Flather) dgeo_de_OBC = dgeo_de
-    ! set_up_BT_OBC is host-only and only reads eta, so a plain refresh is enough -- no update-to
-    ! needed coming back out, since nothing writes eta here or anywhere later in this routine.
-    !$omp target update from(eta)
+    ! set_up_BT_OBC is host-only and only reads these arrays.
+    !$omp target update from(eta, Datu, Datv, BTCL_u, BTCL_v)
     call set_up_BT_OBC(OBC, eta, SpV_col_avg, CS%BT_OBC, CS%BT_Domain, G, GV, US, CS, MS, ievf-ie, &
                        use_BT_cont, integral_BT_cont, dt, Datu, Datv, BTCL_u, BTCL_v, dgeo_de_OBC)
   endif
@@ -871,18 +878,6 @@ module procedure btstep
   ! Determine the difference between the sum of the layer fluxes and the
   ! barotropic fluxes found from the same input velocities.
   if (add_uh0) then
-    ! ubt/vbt/uhbt/vhbt are all already mapped continuously (part of btstep's persistent set,
-    ! entered once at the very top of the routine and released once at its very end), so none of
-    ! the four need a bump here or from this block's matching exit below -- ubt/vbt were already
-    ! zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo above, and all four are about to
-    ! be (re)written by the zero-init loop just below regardless of their incoming device value.
-    ! wt_u/wt_v are likewise already mapped continuously from well before this block (they are
-    ! finished and flushed to host right after being computed, long before this point), so they
-    ! too need no bump here -- correspondingly dropped from this block's matching exit below too.
-    ! uh0/vh0/u_uh0/v_vh0 are pointer dummy args guaranteed associated inside this add_uh0 =
-    ! associated(uh0) branch; they are the only arrays this bracket and its matching exit map.
-    !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0)
-
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie)
     do j=js,je ; do I=is-1,ie
@@ -941,13 +936,11 @@ module procedure btstep
       enddo
     endif
 
-    !$omp target exit data map(release: uh0, vh0, u_uh0, v_vh0)
-
     if ((use_BT_cont .or. integral_BT_cont) .and. CS%adjust_BT_cont) then
       ! Use the additional input transports to broaden the fits
       ! over which the bt_cont_type applies.
 
-      !$omp target update from(uhbt, vhbt, ubt, vbt)
+      !$omp target update from(uhbt, vhbt, ubt, vbt, BTCL_u, BTCL_v)
 
       ! Fill in the halo data for ubt, vbt, uhbt, and vhbt.
       if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
@@ -1038,9 +1031,11 @@ module procedure btstep
 
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
     do j=js,je ; do I=is-1,ie ; ubt_st(I,j) = ubt(I,j) ; enddo ; enddo
+    !$omp target update to(ubt_st) if(apply_OBCs)
   endif
   if (apply_OBCs .or. (CS%id_vbtdt > 0)) then
     do J=js-1,je ; do i=is,ie ; vbt_st(i,J) = vbt(i,J) ; enddo ; enddo
+    !$omp target update to(vbt_st) if(apply_OBCs)
   endif
 
 !   Here the vertical average accelerations due to the Coriolis, advective,
@@ -1102,11 +1097,9 @@ module procedure btstep
   else
     BT_force_v(i,J) = 0.0
   endif ; enddo ; enddo
-  !$omp target exit data map(release: CS, GV, CS%bathyT, CS%dy_Cu, CS%dx_Cv)
+  !$omp target exit data map(release: CS)
 
   if (apply_bottom_drag) then
-    !$omp target enter data &
-    !$omp   map(to: taux_bot, tauy_bot)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
     do j=js,je ; do I=is-1,ie
@@ -1121,7 +1114,6 @@ module procedure btstep
         BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
       endif
     enddo ; enddo
-    !$omp target exit data map(release: taux_bot, tauy_bot)
   endif
 
   ! do concurrent (j=js:je) with inner do k=1,nz do concurrent (I=Isq:Ieq)
@@ -1173,9 +1165,7 @@ module procedure btstep
 
   if (CS%use_filter .and. CS%linear_freq_drag) then
     call wave_drag_calc(ufilt, vfilt, Drag_u, Drag_v, G, CS%Drag_CS)
-    ! BT_force_u/v are device-resident here; this block reads and writes them on the host, so
-    ! refresh the host copy first and push the result back before either is used on device again.
-    !$omp target update from(BT_force_u, BT_force_v)
+    !$omp target update from(BT_force_u, BT_force_v, eta)
     !$OMP do
     do j=js,je ; do I=is-1,ie
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
@@ -1203,8 +1193,7 @@ module procedure btstep
     !$omp target update to(BT_force_u, BT_force_v)
   endif
 
-  ! Mask out the forcing at OBC points. BT_force_u/v are already device-resident (part of
-  ! btstep's persistent set), so neither block below needs to map them in or flush them out.
+  ! Mask out the forcing at OBC points.
   if (CS%BT_OBC%u_OBCs_on_PE) then
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie)
@@ -1220,18 +1209,13 @@ module procedure btstep
     enddo ; enddo
   endif
 
-  ! BT_force_u/v have no further device use until btstep_timeloop re-maps them (its own bracket
-  ! well below): the non-symmetric-memory halo copy just below and the pass_force_hbt0_Cor_ref
-  ! halo pass further down are both host-only (MPI communication via the FMS domain layer), so
-  ! flush and release the mapping now rather than carrying it, unused, through that host-only span.
-  !$omp target exit data map(from: BT_force_u, BT_force_v)
-
   if ((Isq > is-1) .or. (Jsq > js-1)) then
     ! Non-symmetric memory is being used, so the edge values need to be
     ! filled in with a halo update of a non-symmetric array.
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
     tmp_u(:,:) = 0.0 ; tmp_v(:,:) = 0.0
+    !$omp target update from(BT_force_u, BT_force_v)
     do j=js,je ; do I=Isq,Ieq ; tmp_u(I,j) = BT_force_u(I,j) ; enddo ; enddo
     do J=Jsq,Jeq ; do i=is,ie ; tmp_v(i,J) = BT_force_v(i,J) ; enddo ; enddo
     if (nonblock_setup) then
@@ -1240,6 +1224,7 @@ module procedure btstep
       call do_group_pass(CS%pass_tmp_uv, G%Domain)
       do j=jsd,jed ; do I=IsdB,IedB ; BT_force_u(I,j) = tmp_u(I,j) ; enddo ; enddo
       do J=JsdB,JedB ; do i=isd,ied ; BT_force_v(i,J) = tmp_v(i,J) ; enddo ; enddo
+      !$omp target update to(BT_force_u, BT_force_v)
     endif
     if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
@@ -1266,6 +1251,7 @@ module procedure btstep
       call complete_group_pass(CS%pass_tmp_uv, G%Domain)
       do j=jsd,jed ; do I=IsdB,IedB ; BT_force_u(I,j) = tmp_u(I,j) ; enddo ; enddo
       do J=JsdB,JedB ; do i=isd,ied ; BT_force_v(i,J) = tmp_v(i,J) ; enddo ; enddo
+      !$omp target update to(BT_force_u, BT_force_v)
     endif
     call complete_group_pass(CS%pass_gtot, CS%BT_Domain)
     call complete_group_pass(CS%pass_ubt_Cor, G%Domain)
@@ -1274,17 +1260,9 @@ module procedure btstep
     call do_group_pass(CS%pass_gtot, CS%BT_Domain)
     call do_group_pass(CS%pass_ubt_Cor, G%Domain)
   endif
+  ! covers group passes
   !$omp target update to(gtot_E, gtot_W, gtot_N, gtot_S, ubt_Cor, vbt_Cor)
-  ! The various elements of gtot are positive definite but directional, so use
-  ! the polarity arrays to sort out when the directions have shifted.
-  ! Cor_ref_u/v were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:
-  ! CS%jedw halo above, so mapped with `to`, not `alloc`, to preserve that
-  ! zero. f_4_u/f_4_v (from btstep_find_Cor) and ubt_Cor/vbt_Cor (from the
-  ! earlier ubt_Cor/gtot bracket) were both released by their own brackets
-  ! and are re-mapped here with `to`, alongside the polarity swap's arrays
-  ! since nothing between the two loop groups needs a host round trip.
-  !$omp target enter data &
-  !$omp   map(to: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v)
+
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
   do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
@@ -1307,8 +1285,6 @@ module procedure btstep
          ((f_4_v(2,i,J) * ubt_Cor(I  ,j)) + (f_4_v(3,i,J) * ubt_Cor(I-1,j+1))))
   enddo ; enddo
 
-  !$omp target exit data map(release: CS, CS%ua_polarity, CS%va_polarity, f_4_u, f_4_v, ubt_Cor, vbt_Cor)
-
   ! Now start new halo updates.
   if (nonblock_setup) then
     if (.not.use_BT_cont) &
@@ -1319,13 +1295,7 @@ module procedure btstep
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
-  ! av_rem_u/v are freshly overwritten (not read) here, and stay mapped afterward: on into the
-  ! CS%strong_drag device branch below (no round trip needed there), and -- only when strong_drag
-  ! and rescale_strong_drag are both true -- further into the u_accel_bt/v_accel_bt rescaling
-  ! bracket much further down, which is now their true final release. Every other path releases
-  ! them right after this if/else (see below), since the host branch needs a host copy anyway and
-  ! the block further down that would otherwise consume them won't run.
-  !$omp target enter data map(to: CS) map(alloc: av_rem_u, av_rem_v)
+
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js-1:je+1, I=is-1:ie)
   do j=js-1,je+1 ; do I=is-1,ie
@@ -1356,13 +1326,8 @@ module procedure btstep
       enddo
     enddo
   enddo
-  !$omp target exit data map(release: CS, CS%frhatu, CS%frhatv)
-  ! bt_rem_u/v are part of btstep's persistent set from here on (dropped from the early-exit's
-  ! release list well above): the CS%strong_drag branch writes them fully on device with no round
-  ! trip needed, and the host branch below writes them fully on host, so it just needs an
-  ! update to() afterward to push the result back rather than a full round trip.
+
   if (CS%strong_drag) then
-    !$omp target enter data map(to: G)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie)
     do j=js,je ; do I=is-1,ie
@@ -1394,22 +1359,14 @@ module procedure btstep
     enddo ; enddo
     !$omp target update to(bt_rem_u, bt_rem_v)
   endif
-  ! Release av_rem_u/v now unless the strong_drag-and-rescale_strong_drag block much further down
-  ! is about to consume them again on device -- that block does the release instead, once it's
-  ! actually reached.
-  !$omp target exit data map(release: av_rem_u, av_rem_v) &
-  !$omp   if(.not. (CS%strong_drag .and. CS%rescale_strong_drag))
 
-  ! bt_rem_u/v hold correct host values here regardless of which CS%strong_drag
+  ! bt_rem_u/v hold correct device values here regardless of which CS%strong_drag
   ! branch ran above (the strong_drag=false branch is deliberately kept on
   ! host: av_rem**Instep uses exp/log, which disagree with the device
   ! versions in the last bit, so offloading it would change answers -- do not
   ! convert that branch). This block only does simple arithmetic on the
   ! result, which carries no such precision concern.
   if (CS%linear_wave_drag) then
-    !$omp target enter data &
-    !$omp   map(to: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, &
-    !$omp     eta, Rayleigh_u, Rayleigh_v)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
     do j=js,je ; do I=is-1,ie
@@ -1444,17 +1401,10 @@ module procedure btstep
       endif
       endif
     enddo ; enddo
-    !$omp target exit data &
-    !$omp   map(release: G, GV, CS, CS%bathyT, CS%lin_drag_u, CS%lin_drag_v, eta) &
-    !$omp   map(from: Rayleigh_u, Rayleigh_v)
-    ! bt_rem_u/v stay mapped (part of btstep's persistent set) rather than leaving the device here.
   endif
 
-  ! Avoid changing the velocities at OBC points due to non-OBC calculations. bt_rem_u/v are
-  ! already device-resident (part of btstep's persistent set), so this block neither maps them in
-  ! nor flushes them out.
+  ! Avoid changing the velocities at OBC points due to non-OBC calculations.
   if (CS%BT_OBC%u_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%BT_OBC%u_OBC_type)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
     do j=js,je ; do I=is-1,ie
@@ -1462,10 +1412,8 @@ module procedure btstep
         bt_rem_u(I,j) = 1.0
       endif
     enddo ; enddo
-    !$omp target exit data map(release: CS, CS%BT_OBC%u_OBC_type)
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
-    !$omp target enter data map(to: CS, CS%BT_OBC%v_OBC_type)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
     do J=js-1,je ; do i=is,ie
@@ -1473,19 +1421,10 @@ module procedure btstep
         bt_rem_v(i,J) = 1.0
       endif
     enddo ; enddo
-    !$omp target exit data map(release: CS, CS%BT_OBC%v_OBC_type)
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
-  ! eta_src is only ever written (zeroed over the wide jsvf/ievf halo here,
-  ! then unconditionally overwritten on the narrower js:je/is:ie domain
-  ! below), never read on device, so it stays mapped through both loops with
-  ! a single copy-back at this bracket's exit rather than round-tripping
-  ! through host in between.
-  !$omp target enter data &
-  !$omp   map(alloc: eta_src) &
-  !$omp   map(to: G, CS, GV, G%mask2dT, G%dxT, G%dyT, CS%eta_cor, &
-  !$omp     CS%IareaT, CS%bathyT, CS%eta_cor_bound)
+  !$omp target enter data map(to: CS)
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
   do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
@@ -1541,8 +1480,9 @@ module procedure btstep
   do j=js,je ; do i=is,ie
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
   enddo ; enddo
-  !$omp target exit data map(from: CS%eta_cor, eta_src) &
-  !$omp   map(release: CS, GV, CS%IareaT, CS%bathyT, CS%eta_cor_bound)
+  ! The bounded CS%eta_cor persists beyond this call (bt_mass_source and the eta_cor diagnostic).
+  !$omp target update from(CS%eta_cor)
+  !$omp target exit data map(release: CS)
 
   if (CS%dynamic_psurf) then
     ice_is_rigid = (associated(forces%rigidity_ice_u) .and. &
@@ -1556,14 +1496,7 @@ module procedure btstep
       else
         H_to_Z = GV%H_to_RZ / CS%Rho_BT_lin
       endif
-      ! dyn_coef_eta was already zeroed over the wider CS%isdw:CS%iedw/
-      ! CS%jsdw:CS%jedw halo above (under this same CS%dynamic_psurf guard),
-      ! so mapped with `to`, not `alloc`. forces%rigidity_ice_[uv] are mapped
-      ! alone, without a bare `forces`, matching the already-validated
-      ! forces%taux/tauy pattern earlier in this routine.
-      !$omp target enter data &
-      !$omp   map(to: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
-      !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu)
+      !$omp target enter data map(to: CS)
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=js:je, i=is:ie)
       do j=js,je ; do i=is,ie
@@ -1594,23 +1527,17 @@ module procedure btstep
         ! Units of dyn_coef: [L2 T-2 H-1 ~> m s-2 or m4 s-2 kg-1]
         dyn_coef_eta(i,j) = min(dyn_coef_max, ice_strength * H_to_Z)
       enddo ; enddo
-      !$omp target exit data &
-      !$omp   map(release: G, CS, GV, forces%rigidity_ice_u, forces%rigidity_ice_v, G%IareaT, &
-      !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu)
+      !$omp target exit data map(release: CS)
     endif
   endif
 
-  ! bt_rem_u/v have no further device use until btstep_timeloop re-maps them (its own bracket
-  ! well below) or the strong_drag-and-rescale_strong_drag rescaling bracket further down still:
-  ! the pass_eta_bt_rem halo pass just below is host-only (MPI communication via the FMS domain
-  ! layer, alongside eta_src/dyn_coef_eta/eta_PF*/eta_IC/Rayleigh_u/v), so flush and release the
-  ! mapping now rather than carrying it, unused, through that host-only span.
-  !$omp target exit data map(from: bt_rem_u, bt_rem_v)
-
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
+  ! The pass_eta_bt_rem, pass_Dat_uv and pass_force_hbt0_Cor_ref halo updates work on host copies.
   !$omp target update from(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
-  !$omp                   Cor_ref_u, Cor_ref_v)
+  !$omp                   Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
+  !$omp target update from(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
+  !$omp target update from(Datu, Datv) if(.not.use_BT_cont)
   if (nonblock_setup) then
     call start_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain)
     ! The following halo update is not needed without wide halos.  RWH
@@ -1636,19 +1563,19 @@ module procedure btstep
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
   !$omp target update to(eta_PF, eta_PF_1, d_eta_PF, eta_IC, dyn_coef_eta, uhbt0, vhbt0, &
-  !$omp                 Cor_ref_u, Cor_ref_v)
+  !$omp                 Cor_ref_u, Cor_ref_v, eta_src, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v)
+  !$omp target update to(Rayleigh_u, Rayleigh_v) if(CS%linear_wave_drag)
+  !$omp target update to(Datu, Datv) if(.not.use_BT_cont)
 
-  ! BT_force_u/v already hold correct host values here (flushed and released well above, right
-  ! after the OBC-point masking, and never mapped back onto the device since -- the
-  ! pass_force_hbt0_Cor_ref halo pass just completed above is host-only and writes their halo
-  ! region directly on host).
   if (CS%debug) then
     !$omp target update from(uhbt, vhbt)
     call uvchksum("BT [uv]hbt", uhbt, vhbt, CS%debug_BT_HI, haloshift=0, &
                   unscale=US%s_to_T*US%L_to_m**2*GV%H_to_m)
     !$omp target update from(ubt, vbt)
     call uvchksum("BT Initial [uv]bt", ubt, vbt, CS%debug_BT_HI, haloshift=0, unscale=US%L_T_to_m_s)
+    !$omp target update from(eta)
     call hchksum(eta, "BT Initial eta", CS%debug_BT_HI, haloshift=0, unscale=GV%H_to_MKS)
+    !$omp target update from(BT_force_u, BT_force_v)
     call uvchksum("BT BT_force_[uv]", BT_force_u, BT_force_v, &
                   CS%debug_BT_HI, haloshift=0, unscale=US%L_T2_to_m_s2)
     if (interp_eta_PF) then
@@ -1661,8 +1588,10 @@ module procedure btstep
     if (CS%linearized_BT_PV) then
       call Bchksum(CS%q_D, "BT PV (q_D)", CS%debug_BT_HI, haloshift=0, symmetric=.true., unscale=US%s_to_T/GV%H_to_MKS)
     else
+      !$omp target update from(q)
       call Bchksum(q, "BT PV (q)", CS%debug_BT_HI, haloshift=0, symmetric=.true., unscale=US%s_to_T/GV%H_to_MKS)
     endif
+    !$omp target update from(DCor_u, DCor_v)
     call uvchksum("BT DCor_[uv]", DCor_u, DCor_v, G%HI, haloshift=0, &
                   symmetric=.true., omit_corners=.true., scalar_pair=.true., unscale=GV%H_to_MKS)
     call uvchksum("BT Cor_ref_[uv]", Cor_ref_u, Cor_ref_v, CS%debug_BT_HI, haloshift=0, unscale=US%L_T2_to_m_s2)
@@ -1704,6 +1633,9 @@ module procedure btstep
   endif
 
   if (query_averaging_enabled(CS%diag)) then
+    !$omp target update from(eta) if(CS%id_eta_st > 0)
+    !$omp target update from(ubt) if(CS%id_ubt_st > 0)
+    !$omp target update from(vbt) if(CS%id_vbt_st > 0)
     if (CS%id_eta_st > 0) call post_data(CS%id_eta_st, eta(isd:ied,jsd:jed), CS%diag)
     if (CS%id_ubt_st > 0) call post_data(CS%id_ubt_st, ubt(IsdB:IedB,jsd:jed), CS%diag)
     if (CS%id_vbt_st > 0) call post_data(CS%id_vbt_st, vbt(isd:ied,JsdB:JedB), CS%diag)
@@ -1785,6 +1717,8 @@ module procedure btstep
   else
     I_sum_wt_vel = 1.0 ; I_sum_wt_eta = 1.0 ; I_sum_wt_accel = 1.0 ; I_sum_wt_trans = 1.0
   endif
+  ! These weights are only allocated just above, so they cannot be mapped at the top of btstep.
+  !$omp target enter data map(to: wt_vel, wt_eta, wt_trans)
 
   ! March the barotropic solver through all of its time steps.
   call btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL_v, eta_IC, &
@@ -1799,23 +1733,15 @@ module procedure btstep
   if (id_clock_calc > 0) call cpu_clock_end(id_clock_calc)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
-  ! etaav is an optional, intent(out) dummy arg; find_etaav = present(etaav),
-  ! so it is only ever mapped inside this guard.
   if (find_etaav) then
-    ! eta_sum is already device-resident here (btstep_timeloop's own exit deferred it exactly
-    ! because find_etaav is true), so it is not re-entered.
-    !$omp target enter data map(alloc: etaav)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, i=is:ie)
     do j=js,je ; do i=is,ie
       etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
     enddo ; enddo
-    !$omp target exit data map(release: eta_sum) map(from: etaav)
+    ! The host copy of etaav is used from here on, starting with the pass_etaav halo update.
+    !$omp target update from(etaav)
   endif
-
-  ! eta is already device-resident here (part of btstep's persistent set, deferred from
-  ! btstep_timeloop's own exit), so it is not re-entered.
-  !$omp target enter data map(alloc: e_anom)
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js-1:je+1, i=is-1:ie+1)
@@ -1837,11 +1763,10 @@ module procedure btstep
     enddo ; enddo
   endif
 
-  !$omp target exit data map(release: eta, eta_in, eta_PF_1, d_eta_PF, eta_PF) &
-  !$omp   map(from: e_anom)
   if (apply_OBCs) then
     ! This block of code may be unnecessary because e_anom is only used for accelerations that
     ! are then recalculated at OBC points.
+    !$omp target update from(e_anom)
     if (CS%BT_OBC%u_OBCs_on_PE) then  ! copy back the value for u-points on the boundary.
       !GOMP parallel do default(shared)
       do j=js,je ; do I=is-1,ie
@@ -1857,45 +1782,40 @@ module procedure btstep
         if (CS%BT_OBC%v_OBC_type(i,J) < 0) e_anom(i,j) = e_anom(i,j+1)  ! OBC_DIRECTION_S
       enddo ; enddo
     endif
+    !$omp target update to(e_anom)
   endif
 
   ! Note that it is possible that eta_out and eta_in are the same array.
-  ! eta_wtd is already device-resident here (deferred from btstep_timeloop's own exit), so it is
-  ! not re-entered.
-  !$omp target enter data map(alloc: eta_out)
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js:je, i=is:ie)
   do j=js,je ; do i=is,ie
     eta_out(i,j) = eta_wtd(i,j) * I_sum_wt_eta
   enddo ; enddo
-  !$omp target exit data map(release: eta_wtd) map(from: eta_out)
 
   ! Accumulator is updated at the end of every baroclinic time step.
   ! Harmonic analysis will not be performed of a field that is not registered.
   if (associated(CS%HA_CSp) .and. find_etaav) then
+    !$omp target update from(ubt, vbt)
     call HA_accum('ubt', ubt, CS%Time, G, CS%HA_CSp)
     call HA_accum('vbt', vbt, CS%Time, G, CS%HA_CSp)
   endif
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
+  !$omp target update from(e_anom)
   if (G%nonblocking_updates) then
     call start_group_pass(CS%pass_e_anom, G%Domain)
   else
     if (find_etaav) call do_group_pass(CS%pass_etaav, G%Domain)
     call do_group_pass(CS%pass_e_anom, G%Domain)
+    !$omp target update to(e_anom)
   endif
   if (id_clock_pass_post > 0) call cpu_clock_end(id_clock_pass_post)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   ! Find or store the weighted time-mean velocities and transports.
-  ! CS%ubtav/CS%vbtav hold correct host values here, accumulated by btstep_timeloop and left on
-  ! host by the time it returns (unchanged from before); uhbtav/vhbtav/ubt_wtd/vbt_wtd are
-  ! already device-resident instead (deferred, along with u_accel_bt/v_accel_bt below, all the
-  ! way from btstep_timeloop's own exit), so only CS%ubtav/CS%vbtav need a fresh `to` here.
   if (CS%answer_date < 20190101) then
-    !$omp target enter data &
-    !$omp   map(to: CS, CS%ubtav, CS%vbtav)
+    !$omp target enter data map(to: CS)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie)
     do j=js,je ; do I=is-1,ie
@@ -1910,13 +1830,13 @@ module procedure btstep
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
       vbt_wtd(i,J) = vbt_wtd(i,J) * I_sum_wt_vel
     enddo ; enddo
-    ! uhbtav/vhbtav/ubt_wtd/vbt_wtd stay mapped (not released here); a single common flush point
-    ! well downstream in btstep, after the apply_OBCs correction has had its chance to run too,
-    ! takes care of their eventual host copy instead.
-    !$omp target exit data map(release: CS, CS%ubtav, CS%vbtav)
+    ! The host copies of CS%ubtav and CS%vbtav are used from here on.
+    !$omp target update from(CS%ubtav, CS%vbtav)
+    !$omp target exit data map(release: CS)
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
+    !$omp target update from(u_accel_bt, v_accel_bt)
     !$OMP do
     do j=js,je ; do I=is-1,ie
       u_accel_bt(I,j) = u_accel_bt(I,j) - Drag_u(I,j)
@@ -1925,6 +1845,7 @@ module procedure btstep
     do J=js-1,je ; do i=is,ie
       v_accel_bt(i,J) = v_accel_bt(i,J) - Drag_v(i,J)
     enddo ; enddo
+    !$omp target update to(u_accel_bt, v_accel_bt)
 
     if ((CS%id_LDu_bt > 0) .or. (associated(ADp%bt_lwd_u))) then ; do j=js,je ; do I=is-1,ie
       LDu_avg(I,j) = LDu_avg(I,j) - Drag_u(I,j)
@@ -1936,8 +1857,11 @@ module procedure btstep
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
+  ! The host copies of uhbtav and vhbtav are used from here on, starting with pass_ubta_uhbta.
+  !$omp target update from(uhbtav, vhbtav)
   if (G%nonblocking_updates) then
     call complete_group_pass(CS%pass_e_anom, G%Domain)
+    !$omp target update to(e_anom)
     if (find_etaav) call start_group_pass(CS%pass_etaav, G%Domain)
     call start_group_pass(CS%pass_ubta_uhbta, G%DoMain)
   else
@@ -1947,14 +1871,6 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
   if (CS%strong_drag .and. CS%rescale_strong_drag) then
-    ! av_rem_u/v are already device-resident here -- this branch is exactly the condition under
-    ! which the av_rem_u/v computation above deliberately left them mapped instead of releasing
-    ! them. bt_rem_u/v were flushed and released after their own computation (well above, ahead
-    ! of the pass_eta_bt_rem halo pass), so need a fresh host-to-device copy here.
-    ! u_accel_bt/v_accel_bt are already device-resident too (deferred from btstep_timeloop's own
-    ! exit), so they are not named here.
-    !$omp target enter data &
-    !$omp   map(to: G, bt_rem_u, bt_rem_v)
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0)
     do j=js,je ; do I=is-1,ie
@@ -1969,11 +1885,6 @@ module procedure btstep
         v_accel_bt(i,J) = v_accel_bt(i,J) * min(bt_rem_v(i,J)**nstep / av_rem_v(i,J), 1.0)
       endif
     enddo ; enddo
-    ! u_accel_bt/v_accel_bt stay mapped (not released here); the single common flush point well
-    ! downstream in btstep, after the apply_OBCs correction has had its chance to run too, takes
-    ! care of their eventual host copy instead.
-    !$omp target exit data &
-    !$omp   map(release: G, av_rem_u, av_rem_v, bt_rem_u, bt_rem_v)
   endif
 
   ! Now calculate each layer's accelerations.
@@ -1983,11 +1894,7 @@ module procedure btstep
   if (apply_OBCs) then
     ! Correct the accelerations at OBC velocity points, but only in the
     ! symmetric-memory computational domain, not in the wide halo regions.
-    ! ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/accel_layer_u/accel_layer_v are all already
-    ! device-resident here (deferred from btstep_timeloop's own exit and/or
-    ! btstep_layer_accel's own exit just above), so none of them are named here.
-    !$omp target enter data &
-    !$omp   map(to: CS, ubt_st, vbt_st)
+    !$omp target enter data map(to: CS)
     if (CS%BT_OBC%u_OBCs_on_PE) then
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
@@ -2012,37 +1919,62 @@ module procedure btstep
         endif
       enddo ; enddo
     endif
-    ! ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/accel_layer_u/accel_layer_v all stay mapped (not
-    ! released here); the single common flush point right below, reached regardless of whether
-    ! this apply_OBCs correction ran, takes care of their host copy instead.
-    !$omp target exit data &
-    !$omp   map(release: CS, ubt_st, vbt_st)
+    !$omp target exit data map(release: CS)
   endif
 
-  ! uhbtav/vhbtav (btstep's own intent(out) args) and ubt_wtd/vbt_wtd/u_accel_bt/v_accel_bt/
-  ! accel_layer_u/accel_layer_v (all read again on host below, or are themselves intent(out) --
-  ! accel_layer_u/v) are all still device-resident at this point, deferred through whichever of
-  ! the renorm/strong_drag-rescale/apply_OBCs-correction blocks above did or did not run. Flush
-  ! and release all of them here in one place, unconditionally, rather than at each of those
-  ! optional blocks individually.
-  !$omp target update from(u_accel_bt, v_accel_bt) if (CS%id_uaccel>0)
+  ! Refresh the host copies needed by the diagnostics below, then release everything that was
+  ! mapped at the top of btstep. Arrays that are copied back as part of the teardown are
+  ! released first, so that an input that shares memory with an output (eta_in and eta_out may be
+  ! the same array) is still copied back when its last reference is dropped.
+  !$omp target update from(u_accel_bt, v_accel_bt) if (CS%id_uaccel>0 .or. CS%id_vaccel>0)
   !$omp target update from(visc_rem_u) if (CS%id_visc_rem_u>0 .or. associated(ADp%visc_rem_u))
   !$omp target update from(visc_rem_v) if (CS%id_visc_rem_v>0 .or. associated(ADp%visc_rem_v))
-  !$omp target update from(gtot_N) if (CS%id_gtotn > 0)
-  !$omp target update from(gtot_S) if (CS%id_gtots > 0)
-  !$omp target update from(gtot_E) if (CS%id_gtote > 0)
-  !$omp target update from(gtot_W) if (CS%id_gtotw > 0)
+  !$omp target update from(gtot_N) if (CS%id_gtotn > 0 .or. associated(ADp%bt_pgf_v))
+  !$omp target update from(gtot_S) if (CS%id_gtots > 0 .or. associated(ADp%bt_pgf_v))
+  !$omp target update from(gtot_E) if (CS%id_gtote > 0 .or. associated(ADp%bt_pgf_u))
+  !$omp target update from(gtot_W) if (CS%id_gtotw > 0 .or. associated(ADp%bt_pgf_u))
   !$omp target update from(CS%IDatu, CS%IDatv) if(CS%nonlin_stress)
-  !$omp target exit data map(release: CS%OBCmask_u, CS%BT_OBC%u_OBC_type) if (CS%BT_OBC%u_OBCs_on_PE)
-  !$omp target exit data map(release: CS%OBCmask_v, CS%BT_OBC%v_OBC_type) if (CS%BT_OBC%v_OBCs_on_PE)
+  !$omp target update from(e_anom) if(associated(ADp%bt_pgf_u) .or. associated(ADp%bt_pgf_v) .or. CS%id_etaPF_anom > 0)
+  !$omp target update from(BT_force_u, BT_force_v) if(CS%id_ubtforce > 0 .or. CS%id_vbtforce > 0)
+  !$omp target exit data map(release: CS%BT_OBC%u_OBC_type) if (CS%BT_OBC%u_OBCs_on_PE)
+  !$omp target exit data map(release: CS%BT_OBC%v_OBC_type) if (CS%BT_OBC%v_OBCs_on_PE)
   !$omp target exit data map(release: CS%BT_OBC) if (CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
-  !$omp target exit data map(from: uhbtav, vhbtav, ubt_wtd, vbt_wtd, &
-  !$omp     accel_layer_u, accel_layer_v) &
+  !$omp target exit data map(release: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
+  !$omp target exit data map(release: etaav) if(find_etaav)
+  if (add_uh0) then
+    !$omp target exit data map(release: uh0, vh0, u_uh0, v_vh0)
+  endif
+  if (apply_bottom_drag) then
+    !$omp target exit data map(release: taux_bot, tauy_bot)
+  endif
+  if (interp_eta_PF) then
+    !$omp target exit data map(release: eta_PF_start)
+  endif
+  if (use_BT_cont) then
+    !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+    !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+    !$omp                              BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+    !$omp                              BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS)
+  endif
+  if (CS%dynamic_psurf) then ; if (associated(forces%rigidity_ice_u) .and. associated(forces%rigidity_ice_v)) then
+    !$omp target exit data map(release: forces%rigidity_ice_u, forces%rigidity_ice_v)
+  endif ; endif
+  !$omp target exit data &
   !$omp   map(release: q, DCor_u, DCor_v, U_Cor, V_Cor, pbce, uhbt, vhbt, ubt, vbt, BTCL_u, &
   !$omp     BTCL_v, Datu, Datv, u_accel_bt, v_accel_bt, forces, forces%taux, forces%tauy, &
   !$omp     G%OBCmaskCu, G%OBCmaskCv, visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, &
   !$omp     gtot_N, gtot_S, gtot_E, gtot_W, eta_IC, dyn_coef_eta, Cor_ref_u, Cor_ref_v, &
-  !$omp     bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, CS%IDatu, CS%IDatv)
+  !$omp     bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, CS%IDatu, CS%IDatv, f_4_u, f_4_v, &
+  !$omp     CS%ua_polarity, CS%va_polarity, ubt_Cor, vbt_Cor, av_rem_u, av_rem_v, CS%frhatu, &
+  !$omp     CS%frhatv, Rayleigh_u, Rayleigh_v, eta, CS%bathyT, eta_src, e_anom, G%mask2dT, &
+  !$omp     G%dxT, G%dyT, CS%eta_cor, CS%IareaT, CS%eta_cor_bound, BT_force_u, BT_force_v, &
+  !$omp     CS%dy_Cu, CS%dx_Cv, G%IareaT, G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, &
+  !$omp     GV, G%bathyT, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G%CoriolisBu, CS%q_wt, eta_in, eta_PF_in, &
+  !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, U_in, V_in, &
+  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%ubtav, CS%vbtav, uhbtav, vhbtav, eta_sum, &
+  !$omp     eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, ubt_st, vbt_st, &
+  !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans)
+  !$omp target exit data map(from: ubt_wtd, vbt_wtd, accel_layer_u, accel_layer_v, eta_out)
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
 
@@ -2350,21 +2282,11 @@ module procedure btstep_timeloop
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
   err_count = 0
 
-  ! Map every array this routine (and the btloop_* helpers it calls once per substep) touches
-  ! onto the device for the whole of the barotropic sub-cycle, replacing the three separate
-  ! target-data pairs this used to open on every one of the nstep+nfilter substeps. CS's and
-  ! G's array components mapped here also satisfy the btloop_* helpers' own per-call target-data
-  ! pairs as no-op reference-count bumps rather than real transfers, since the arrays are
-  ! already present by the time those helpers run.
-  !$omp target enter data map(to: CS, CS%ubtav, CS%vbtav, CS%IareaT_OBCmask, CS%IdxCu, CS%IdyCv, &
-  !$omp                          G, G%bathyT, G%mask2dT, &
-  !$omp                          eta, eta_src, &
-  !$omp                          f_4_u, f_4_v, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v, &
-  !$omp                          wt_trans, wt_vel, wt_eta)
-  !$omp target enter data map(alloc: uhbtav, vhbtav, ubt_wtd, vbt_wtd, eta_sum, eta_wtd, &
-  !$omp                             PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, &
-  !$omp                             ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
-  !$omp                             p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v)
+  ! All of the dummy arguments used on the device here and in the btloop_* helpers were mapped by
+  ! btstep; only the local work arrays of this routine are mapped here, for the whole sub-cycle.
+  !$omp target enter data map(to: CS)
+  !$omp target enter data map(alloc: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
+  !$omp                             p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
 
   ! Figure out the fullest arrays that could be updated.
   stencil = max(1, CS%min_stencil)
@@ -2441,6 +2363,8 @@ module procedure btstep_timeloop
     PFv_avg(i,J) = 0.0 ; Corv_avg(i,J) = 0.0
     LDv_avg(i,J) = 0.0 ; vbt_wtd(i,J) = 0.0
   enddo ; enddo
+  ! The time-averaged accelerations are accumulated on the host.
+  !$omp target update from(PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg) if(do_ave)
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
   do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
@@ -2459,6 +2383,7 @@ module procedure btstep_timeloop
   cfl_ltd_vol(:,:) = huge( GV%Z_to_H )
   if (CS%bt_limit_integral_transport) then
     ! Issue warnings if there are unphysical values of the initial sea surface height or total water column mass.
+    !$omp target update from(eta)
     if (GV%Boussinesq) then
       do j=js,je ; do i=is,ie
         if ((eta_IC(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)) then
@@ -2558,9 +2483,6 @@ module procedure btstep_timeloop
       do j=jsv-1,jev+1 ; do i=isv-1,iev+1
         eta_PF(i,j) = eta_PF_1(i,j) + wt_end*d_eta_PF(i,j)
       enddo ; enddo
-      ! eta_PF is already device-resident (part of btstep_timeloop's persistent bracket), so the
-      ! host loop just above leaves the device copy stale; btloop_find_PF's do-concurrent kernel
-      ! reads eta_PF right below, so push this substep's freshly interpolated value to device now.
       !$omp target update to(eta_PF)
     endif
 
@@ -2607,6 +2529,7 @@ module procedure btstep_timeloop
 
     ! Determine the transports based on the updated velocities when no OBCs are applied
     if (integral_BT_cont) then
+      !$omp target update from(ubt, vbt, ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, BTCL_u, BTCL_v)
       if (CS%bt_limit_integral_transport) then
         ! Calculate the volume that could be used for divergent transport to use for a limter. This applies to
         ! uhbt_int and vhbt_int at each BT step. It does not allow for temporary flooding during the BT cycling.
@@ -2645,6 +2568,7 @@ module procedure btstep_timeloop
         ! Estimate the mass flux within a single timestep to take the filtered average.
         vhbt(i,J) = (vhbt_int(i,J) - vhbt_int_prev(i,J)) * Idtbt
       enddo ; enddo
+      !$omp target update to(ubt_trans, vbt_trans, uhbt, vhbt)
     elseif (use_BT_cont) then
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=jsv:jev, I=isv-1:iev)
@@ -2659,6 +2583,7 @@ module procedure btstep_timeloop
         vhbt(i,J) = find_vhbt(vbt_trans(i,J), BTCL_v(i,J)) + vhbt0(i,J)
       enddo ; enddo
     else
+      !$omp target update from(ubt, vbt, ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, Datu, Datv)
       !$OMP do schedule(static)
       do j=jsv,jev ; do I=isv-1,iev
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
@@ -2670,10 +2595,12 @@ module procedure btstep_timeloop
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = Datv(i,J)*vbt_trans(i,J) + vhbt0(i,J)
       enddo ; enddo
+      !$omp target update to(ubt_trans, vbt_trans, uhbt, vhbt)
     endif
 
     ! This might need to be moved outside of the OMP do loop directives.
     if (CS%debug_bt) then
+      !$omp target update from(PFu, PFv, Cor_u, Cor_v, ubt, vbt, ubt_trans, vbt_trans, uhbt, vhbt)
       write(mesg,'("BT vel update ",I0)') n
       debug_halo = 0 ; if  (CS%debug_wide_halos) debug_halo = iev - ie
       call uvchksum(trim(mesg)//" PF[uv]", PFu, PFv, CS%debug_BT_HI, haloshift=debug_halo, &
@@ -2697,19 +2624,23 @@ module procedure btstep_timeloop
 
     ! Apply open boundary condition considerations to revise the updated velocities and transports.
     if (CS%BT_OBC%u_OBCs_on_PE) then
+      !$omp target update from(ubt, uhbt, ubt_trans, eta, ubt_prev, Datu, BTCL_u)
       !$OMP single
       call apply_u_velocity_OBCs(ubt, uhbt, ubt_trans, eta, SpV_col_avg, ubt_prev, BT_OBC, &
              G, MS, GV, US, CS, iev-ie, dtbt, CS%bebt, use_BT_cont, integral_BT_cont, n*dtbt, &
              Datu, BTCL_u, uhbt0, ubt_int, ubt_int_prev, uhbt_int, uhbt_int_prev)
       !$OMP end single
+      !$omp target update to(ubt, uhbt, ubt_trans)
     endif
 
     if (CS%BT_OBC%v_OBCs_on_PE) then
+      !$omp target update from(vbt, vhbt, vbt_trans, eta, vbt_prev, Datv, BTCL_v)
       !$OMP single
       call apply_v_velocity_OBCs(vbt, vhbt, vbt_trans, eta, SpV_col_avg, vbt_prev, BT_OBC, &
              G, MS, GV, US, CS, iev-ie, dtbt, CS%bebt, use_BT_cont, integral_BT_cont, n*dtbt, &
              Datv, BTCL_v, vhbt0, vbt_int, vbt_int_prev, vhbt_int, vhbt_int_prev)
       !$OMP end single
+      !$omp target update to(vbt, vhbt, vbt_trans)
     endif
 
     ! Contribute to the running sums of the transports and velocities.
@@ -2729,6 +2660,7 @@ module procedure btstep_timeloop
     enddo ; enddo
 
     if (CS%debug_bt) then
+      !$omp target update from(uhbt, vhbt)
       call uvchksum("BT [uv]hbt just after OBC", uhbt, vhbt, CS%debug_BT_HI, haloshift=debug_halo, &
                     symmetric=.true., unscale=US%s_to_T*US%L_to_m**2*GV%H_to_m)
       if (integral_BT_cont) &
@@ -2746,6 +2678,7 @@ module procedure btstep_timeloop
           eta_cor_multiplier = nstep
         endif
       endif
+      !$omp target update from(eta, eta_wtd)
       !$OMP do
       do j=jsv,jev ; do i=isv,iev
         eta(i,j) = (eta_IC(i,j) + eta_cor_multiplier*eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
@@ -2766,6 +2699,7 @@ module procedure btstep_timeloop
             call MOM_error(FATAL, "btstep: eta has dropped below bathyT: "//trim(mesg))
         endif
       enddo ; enddo
+      !$omp target update to(eta, eta_wtd)
     else
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
       ! do concurrent (j=jsv:jev, i=isv:iev)
@@ -2778,6 +2712,7 @@ module procedure btstep_timeloop
 
     if (CS%debug_bt) then
       write(mesg,'("BT step ",I0)') n
+      !$omp target update from(ubt, vbt, eta)
       call uvchksum(trim(mesg)//" [uv]bt", ubt, vbt, CS%debug_BT_HI, haloshift=debug_halo, &
                     symmetric=.true., unscale=US%L_T_to_m_s)
       call hchksum(eta, trim(mesg)//" eta", CS%debug_BT_HI, haloshift=debug_halo, unscale=GV%H_to_MKS)
@@ -2789,17 +2724,14 @@ module procedure btstep_timeloop
       ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
       ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
       ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
-      !$omp target teams distribute parallel do map(to: G, G%bathyT, G%mask2dT) map(from: submerged) &
-      !$omp                                     reduction(.or.: eta_is_submerged)
+      !$omp target teams distribute parallel do reduction(.or.: eta_is_submerged)
       do j=js,je ; do i=is,ie
         submerged(i,j) = (eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
       enddo ; enddo
 
       if (eta_is_submerged) then
-        ! This is a rare/error path: eta is device-resident for the routine's lifetime (see the
-        ! map at the top), so the host copy needs an explicit refresh before it can be reported.
-        !$omp target update from(eta)
+        !$omp target update from(eta, submerged)
         do j=js,je ; do i=is,ie ; if (submerged(i,j)) then
           write(mesg,'(ES24.16," vs. ",ES24.16, " at ", ES12.4, ES12.4, i7, i7)') GV%H_to_m*eta(i,j), &
                -US%Z_to_m*G%bathyT(i,j), G%geoLonT(i,j), G%geoLatT(i,j), i + G%HI%idg_offset, j + G%HI%jdg_offset
@@ -2811,6 +2743,7 @@ module procedure btstep_timeloop
         endif ; enddo ; enddo
       endif
     else
+      !$omp target update from(eta)
       do j=js,je ; do i=is,ie
         if ((eta(i,j) < 0.0) .and. (G%mask2dT(i,j) > 0.0)) then
           write(mesg,'(" at ", ES12.4, ES12.4, i7, i7)') &
@@ -2828,6 +2761,7 @@ module procedure btstep_timeloop
     ! Accumulate some diagnostics of time-averaged barotropic accelerations.
     if (do_ave) then
       if ((CS%id_PFu_bt > 0) .or. associated(ADp%bt_pgf_u)) then
+        !$omp target update from(PFu)
         !$OMP do
         do j=js,je ; do I=is-1,ie
           PFu_avg(I,j)  = PFu_avg(I,j) + wt_accel2(n) * PFu(I,j)
@@ -2835,6 +2769,7 @@ module procedure btstep_timeloop
         !$OMP end do nowait
       endif
       if ((CS%id_PFv_bt > 0) .or. associated(ADp%bt_pgf_v)) then
+        !$omp target update from(PFv)
         !$OMP do
         do J=js-1,je ; do i=is,ie
           PFv_avg(i,J)  = PFv_avg(i,J) + wt_accel2(n) * PFv(i,J)
@@ -2842,6 +2777,7 @@ module procedure btstep_timeloop
         !$OMP end do nowait
       endif
       if ((CS%id_Coru_bt > 0) .or. associated(ADp%bt_cor_u)) then
+        !$omp target update from(Cor_u)
         !$OMP do
         do j=js,je ; do I=is-1,ie
           Coru_avg(I,j) = Coru_avg(I,j) + wt_accel2(n) * Cor_u(I,j)
@@ -2849,6 +2785,7 @@ module procedure btstep_timeloop
         !$OMP end do nowait
       endif
       if ((CS%id_Corv_bt > 0) .or. associated(ADp%bt_cor_v)) then
+        !$omp target update from(Cor_v)
         !$OMP do
         do J=js-1,je ; do i=is,ie
           Corv_avg(i,J) = Corv_avg(i,J) + wt_accel2(n) * Cor_v(i,J)
@@ -2858,6 +2795,7 @@ module procedure btstep_timeloop
 
       if (CS%linear_wave_drag) then
         if ((CS%id_LDu_bt > 0) .or. (associated(ADp%bt_lwd_u))) then
+          !$omp target update from(ubt)
           !$OMP do
           do j=js,je ; do I=is-1,ie
             LDu_avg(I,j) = LDu_avg(I,j) - wt_accel2(n) * (ubt(I,j) * Rayleigh_u(I,j))
@@ -2865,6 +2803,7 @@ module procedure btstep_timeloop
           !$OMP end do nowait
         endif
         if ((CS%id_LDv_bt > 0) .or. (associated(ADp%bt_lwd_v))) then
+          !$omp target update from(vbt)
           !$OMP do
           do J=js-1,je ; do i=is,ie
             LDv_avg(i,J) = LDv_avg(i,J) - wt_accel2(n) * (vbt(i,J) * Rayleigh_v(i,J))
@@ -2879,6 +2818,7 @@ module procedure btstep_timeloop
       ! extra timesteps for filtering, fit within dt.
       time_step_end = time_bt_start + real_to_time(n*dtbt_diag, unscale=US%T_to_s)
       call enable_averages(dtbt, time_step_end, CS%diag)
+      !$omp target update from(ubt, vbt, eta, uhbt, vhbt)
       if (CS%id_ubt_hifreq > 0) call post_data(CS%id_ubt_hifreq, ubt(IsdB:IedB,jsd:jed), CS%diag)
       if (CS%id_vbt_hifreq > 0) call post_data(CS%id_vbt_hifreq, vbt(isd:ied,JsdB:JedB), CS%diag)
       if (CS%id_eta_hifreq > 0) call post_data(CS%id_eta_hifreq, eta(isd:ied,jsd:jed), CS%diag)
@@ -2908,29 +2848,15 @@ module procedure btstep_timeloop
   ! Reset the time information in the diag type.
   if (do_hifreq_output) call enable_averaging(time_int_in, time_end_in, CS%diag)
 
-  ! eta, eta_sum, eta_wtd, uhbtav, vhbtav, ubt_wtd, vbt_wtd, u_accel_bt, and v_accel_bt are all
-  ! consumed again on device by btstep's own post-time-loop blocks (etaav/e_anom/eta_out, the
-  ! CS%answer_date<20190101 renorm, the strong_drag-and-rescale_strong_drag rescaling, and the
-  ! apply_OBCs correction), so none of them are flushed or released here -- each stays mapped for
-  ! whichever of those blocks needs it next, with a single common flush point (or, for eta/
-  ! eta_sum/eta_wtd, that block's own exit) well downstream in btstep taking care of the eventual
-  ! host copy instead of round-tripping here first. eta_sum specifically is btstep_timeloop's own
-  ! local accumulator with no further use at all unless find_etaav (etaav is the only consumer),
-  ! so it still needs releasing here in the one case where that block won't run.
-  !$omp target exit data map(from: CS%ubtav, CS%vbtav, &
-  !$omp                            PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg)
-  !$omp target exit data map(release: eta_sum) if(.not. find_etaav)
-  !$omp target exit data map(release: CS, CS%IareaT_OBCmask, CS%IdxCu, CS%IdyCv, G, G%bathyT, G%mask2dT, &
-  !$omp                              eta_src, &
-  !$omp                              f_4_u, f_4_v, bt_rem_u, bt_rem_v, BT_force_u, BT_force_v, &
-  !$omp                              wt_trans, wt_vel, wt_eta, &
-  !$omp                              ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
-  !$omp                              p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v)
+  ! The host copies of CS%ubtav and CS%vbtav are used from here on.
+  !$omp target update from(CS%ubtav, CS%vbtav)
+  !$omp target exit data map(release: CS)
+  !$omp target exit data map(release: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
+  !$omp                              p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
 
 end procedure btstep_timeloop
 module procedure btstep_find_Cor
   integer :: i, j
-  !$omp target enter data map(to: f_4_u, f_4_v)
 
   if (CS%Sadourny) then
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -2982,12 +2908,11 @@ module procedure btstep_find_Cor
   !   enddo ; enddo
   endif
 
-  !$omp target exit data map(from: f_4_u, f_4_v)
-
 end procedure btstep_find_Cor
 module procedure truncate_velocities
   integer :: i, j
   if (CS%clip_velocity) then
+    !$omp target update from(ubt, vbt)
     do j=jsv,jev ; do I=isv-1,iev
       if ((ubt(I,j) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
         ! Add some error reporting later.
@@ -3006,11 +2931,15 @@ module procedure truncate_velocities
         vbt(i,J) = (0.9*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dx_Cv(i,J)))
       endif
     enddo ; enddo
+    !$omp target update to(ubt, vbt)
   endif
 
 end procedure truncate_velocities
 module procedure btloop_eta_predictor
   integer :: i, j
+  ! This routine runs on the host, so refresh the host copies of the device arrays it reads and
+  ! push back the ones it writes. These are outside the parallel region so that they happen once.
+  !$omp target update from(ubt, vbt, eta, BTCL_u, BTCL_v, Datu, Datv)
   !$OMP parallel default(shared)
   if (integral_BT_cont) then
     !$OMP do
@@ -3052,6 +2981,8 @@ module procedure btloop_eta_predictor
     enddo ; enddo
   endif
   !$OMP end parallel
+  !$omp target update to(eta_pred)
+  !$omp target update to(uhbt, vhbt) if((.not.integral_BT_cont) .and. use_BT_cont)
 
 end procedure btloop_eta_predictor
 module procedure btloop_find_PF
@@ -3062,11 +2993,7 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
-  ! gtot_N/gtot_S/gtot_E/gtot_W are read-only throughout btstep_timeloop and never touched by any
-  ! host code, so they stay mapped continuously from its own top-level bracket rather than being
-  ! bumped and debumped on every one of these per-substep calls.
-  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, PFu, PFv, eta_PF_BT, eta_PF, &
-  !$omp                          eta_sum)
+  !$omp target enter data map(to: CS)
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js_u:je_u, I=isv-1:iev)
@@ -3092,8 +3019,7 @@ module procedure btloop_find_PF
     enddo ; enddo
   endif
 
-  !$omp target exit data map(from: PFu, PFv, eta_sum)
-  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, eta_PF_BT, eta_PF)
+  !$omp target exit data map(release: CS)
 
 end procedure btloop_find_PF
 module procedure btloop_add_dyn_PF
@@ -3103,6 +3029,9 @@ module procedure btloop_add_dyn_PF
   else
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
+
+  ! This routine runs on the host.
+  !$omp target update from(eta, PFu, PFv)
 
   ! Use the change in eta to estimate the flow divergence and dynamic pressure.
   !$OMP do
@@ -3120,6 +3049,7 @@ module procedure btloop_add_dyn_PF
     PFv(i,J) = PFv(i,J) + (p_surf_dyn(i,j) - p_surf_dyn(i,j+1)) * CS%IdyCv(i,J)
   enddo ; enddo
   !$OMP end do nowait
+  !$omp target update to(PFu, PFv, p_surf_dyn)
 
 end procedure btloop_add_dyn_PF
 module procedure btloop_update_v
@@ -3127,20 +3057,16 @@ module procedure btloop_update_v
   integer :: i, j
   use_bracket_bug = .false. ; if (present(Cor_bracket_bug)) use_bracket_bug = Cor_bracket_bug
 
-  ! f_4_v/bt_rem_v/BT_force_v/Cor_ref_v are read-only throughout btstep_timeloop and never
-  ! touched by any host code, so they stay mapped continuously from its own top-level bracket
-  ! rather than being bumped and debumped on every one of these per-substep calls.
-  !$omp target enter data map(to: ubt, PFv, &
-  !$omp                          vbt, Cor_v)
-
   ! The bracket bug only applies if v is second, use ioff to check.
   if (use_bracket_bug) then
+   !$omp target update from(ubt, f_4_v, Cor_v)
    !$OMP do schedule(static)
    do J=Js_v,Je_v ; do i=is_v,ie_v
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(2,i,J) * ubt(I,j))) + &
              ((f_4_v(4,i,J) * ubt(I,j+1)) + (f_4_v(3,i,J) * ubt(I-1,j+1)))) - Cor_ref_v(i,J)
    enddo ; enddo
    !$OMP end do nowait
+   !$omp target update to(Cor_v)
   else
    !$omp target teams distribute parallel do collapse(2) num_threads(256)
    ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
@@ -3160,11 +3086,13 @@ module procedure btloop_update_v
   enddo ; enddo
 
   if (CS%linear_wave_drag) then
+    !$omp target update from(v_accel_bt, Cor_v, PFv, vbt)
     !$OMP do schedule(static)
     do J=Js_v,Je_v ; do i=is_v,ie_v
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * &
           ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
     enddo ; enddo
+    !$omp target update to(v_accel_bt)
   else
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
@@ -3173,14 +3101,9 @@ module procedure btloop_update_v
     enddo ; enddo
   endif
 
-  !$omp target exit data map(from: vbt, Cor_v)
-  !$omp target exit data map(release: ubt, PFv)
-
 end procedure btloop_update_v
 module procedure btloop_update_u
   integer :: i, j
-  !$omp target enter data map(to: vbt, PFu, &
-  !$omp                          ubt, Cor_u)
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
@@ -3195,12 +3118,14 @@ module procedure btloop_update_u
   enddo ; enddo
 
   if (CS%linear_wave_drag) then
+    !$omp target update from(u_accel_bt, Cor_u, PFu, ubt)
     !$OMP do schedule(static)
     do j=js_u,je_u ; do I=Is_u,Ie_u
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * &
           ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j))
     enddo ; enddo
     !$OMP end do nowait
+    !$omp target update to(u_accel_bt)
   else
     !$omp target teams distribute parallel do collapse(2) num_threads(256)
     ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
@@ -3209,20 +3134,10 @@ module procedure btloop_update_u
     enddo ; enddo
   endif
 
-  !$omp target exit data map(from: ubt, Cor_u)
-  !$omp target exit data map(release: vbt, PFu)
-
 end procedure btloop_update_u
 module procedure btstep_ubt_from_layer
   integer :: i, j, k, is, ie, js, je, nz
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
-
-  ! wt_u/wt_v/ubt/vbt are already mapped continuously from the caller (btstep) by this point, so
-  ! only U_in/V_in need mapping here. U_in/V_in cannot join that caller-side persistent bracket:
-  ! in the predictor-step call they alias u_uh0/v_vh0 (a pointer pair with its own, narrower
-  ! mapped lifetime scoped to the add_uh0 block above, which has already closed by the time this
-  ! is called) -- see the aliasing note in btstep's add_uh0 block for the full explanation.
-  !$omp target enter data map(to: U_in, V_in)
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
   ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
@@ -3264,11 +3179,8 @@ module procedure btstep_ubt_from_layer
     enddo
   enddo
 
-  ! ubt/vbt stay mapped (they're part of btstep's persistent bracket), but the plain host loop
-  ! right after this call (ubt_st(I,j) = ubt(I,j)) needs their just-computed value on host, so an
-  ! explicit refresh replaces the old release+later-refetch round trip.
+  ! The host loop after this call (ubt_st(I,j) = ubt(I,j)) uses the host copies of ubt and vbt.
   !$omp target update from(ubt, vbt)
-  !$omp target exit data map(release: U_in, V_in)
 
 end procedure btstep_ubt_from_layer
 module procedure btstep_layer_accel
@@ -3280,10 +3192,7 @@ module procedure btstep_layer_accel
   Idt = 1.0 / dt
   accel_underflow = CS%vel_underflow * Idt
 
-  ! u_accel_bt/v_accel_bt are already device-resident here -- part of btstep's persistent set for
-  ! this call, deferred all the way from btstep_timeloop's own exit -- so they are not named here.
-  !$omp target enter data map(to: CS, CS%IdxCu, CS%IdyCv, e_anom) &
-  !$omp                      map(alloc: accel_layer_u, accel_layer_v)
+  !$omp target enter data map(to: CS)
 
   ! Now calculate each layer's accelerations.
   !$omp target teams distribute parallel do collapse(3) num_threads(256)
@@ -3303,12 +3212,7 @@ module procedure btstep_layer_accel
     if (abs(accel_layer_v(i,J,k)) < accel_underflow) accel_layer_v(i,J,k) = 0.0
   enddo ; enddo ; enddo
 
-  ! accel_layer_u/v are btstep's own intent(out) dummy args and u_accel_bt/v_accel_bt may still be
-  ! read again by the apply_OBCs correction back in btstep, so refresh the host copy of
-  ! accel_layer_u/v here without releasing either array -- both are released together, in one
-  ! place, well downstream in btstep once that optional correction has had its chance to run.
-  !$omp target update from(accel_layer_u, accel_layer_v)
-  !$omp target exit data map(release: CS, CS%IdxCu, CS%IdyCv, e_anom)
+  !$omp target exit data map(release: CS)
 
 end procedure btstep_layer_accel
 module procedure set_dtbt
@@ -3348,7 +3252,12 @@ module procedure set_dtbt
   use_BT_cont = .false.
   if (present(BT_cont)) use_BT_cont = (associated(BT_cont))
 
-  !$omp target enter data map(alloc: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
+  ! The arrays used on the device by find_face_areas are mapped here, as well as the local arrays.
+  !$omp target enter data map(to: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !$omp   map(alloc: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
+  if (present(eta)) then
+    !$omp target enter data map(to: eta)
+  endif
 
   if (use_BT_cont) then
     call BT_cont_to_face_areas(BT_cont, Datu, Datv, G, US, MS, halo=0)
@@ -3407,7 +3316,11 @@ module procedure set_dtbt
        (G%Coriolis2Bu(I-1,J) + G%Coriolis2Bu(I,J-1))) * CS%BT_Coriolis_scale**2 )
     if (Idt_max2 * min_max_dt2 > 1.0) min_max_dt2 = 1.0 / Idt_max2
   enddo ; enddo
-  !$omp target exit data map(release: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
+  if (present(eta)) then
+    !$omp target exit data map(release: eta)
+  endif
+  !$omp target exit data map(release: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT, &
+  !$omp                              gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
   dtbt_max = sqrt(min_max_dt2 / dgeo_de)
   if (id_clock_sync > 0) call cpu_clock_begin(id_clock_sync)
   call min_across_PEs(dtbt_max)
@@ -4428,12 +4341,9 @@ module procedure set_local_BT_cont_types
   hs = max(halo,0)
   dt = 1.0 ; if (present(dt_baroclinic)) dt = dt_baroclinic
 
-  !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
-  !$omp                          BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
-  !$omp                          BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
-  !$omp                          BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
-  !$omp                    map(alloc: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
-  !$omp                               v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
+  ! BT_cont and its arrays are mapped by btstep, the only caller; only the local arrays are mapped here.
+  !$omp target enter data map(alloc: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
+  !$omp                              v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
 
   ! Copy the BT_cont arrays into symmetric, potentially wide haloed arrays.
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -4557,11 +4467,7 @@ module procedure set_local_BT_cont_types
       (C1_3 * (BTCL_v(i,J)%FA_v_NN - BTCL_v(i,J)%FA_v_N0)) / BTCL_v(i,J)%vBT_NN**2
   enddo ; enddo
 
-  !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
-  !$omp                              BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
-  !$omp                              BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
-  !$omp                              BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS, &
-  !$omp                              u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
+  !$omp target exit data map(release: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
   !$omp                              v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
 
 end procedure set_local_BT_cont_types
@@ -4671,11 +4577,9 @@ module procedure find_face_areas
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   hs = max(halo,0)
 
-  !$omp target enter data map(to: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, G%meanSL, G%bathyT)
-
+  ! The arrays used on the device here are mapped by the callers (btstep, set_dtbt and
+  ! barotropic_init), which also map Datu and Datv.
   if (present(eta)) then
-    ! eta is optional, so its map is scoped to this branch rather than the routine-wide one.
-    !$omp target enter data map(to: eta)
     ! The use of harmonic mean thicknesses ensure positive definiteness.
     if (GV%Boussinesq) then
       !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -4714,7 +4618,6 @@ module procedure find_face_areas
         ! Datv(i,J) = CS%dy_v(i,J) * 0.5 * (eta(i,j) + eta(i,j+1))
       enddo ; enddo
     endif
-    !$omp target exit data map(release: eta)
   elseif (present(add_max)) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
 
@@ -4755,8 +4658,6 @@ module procedure find_face_areas
     enddo ; enddo
   endif
 
-  !$omp target exit data map(release: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, G%meanSL, G%bathyT)
-
 end procedure find_face_areas
 module procedure bt_mass_source
   real :: eta_h(SZI_(G),SZJ_(G))      ! The free surface height determined from
@@ -4769,7 +4670,7 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !$omp target enter data map(to: h, eta, G, G%bathyT, CS, CS%eta_cor) map(alloc: eta_h)
+  !$omp target enter data map(to: h, eta, G, G%bathyT, CS) map(alloc: eta_h)
 
   ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) blocks (Boussinesq/set_cor branches
   ! and the sequential do k=2,nz accumulation) -- GV%Boussinesq and set_cor are loop-invariant, so
@@ -4802,7 +4703,6 @@ module procedure bt_mass_source
     enddo
   enddo
 
-  !$omp target exit data map(from: CS%eta_cor)
   !$omp target exit data map(release: h, eta, G, G%bathyT, CS, eta_h)
 
 end procedure bt_mass_source
@@ -5740,7 +5640,11 @@ module procedure barotropic_init
     enddo ; enddo
   endif
 
+  !$omp target enter data map(to: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !$omp   map(alloc: Datu, Datv)
   call find_face_areas(Datu, Datv, G, GV, US, CS, MS, 1)
+  !$omp target exit data map(release: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !$omp   map(from: Datu, Datv)
   if ((CS%bound_BT_corr) .and. .not.(use_BT_Cont_type .and. CS%BT_cont_bounds)) then
     ! This is not used in most test cases.  Were it ever to become more widely used, consider
     ! replacing maxvel with min(G%dxT(i,j),G%dyT(i,j)) * (CS%maxCFL_BT_cont*Idt) .
