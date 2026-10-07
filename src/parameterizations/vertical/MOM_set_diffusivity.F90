@@ -447,17 +447,20 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     endif
     call cpu_clock_begin(id_clock_kappaShear)
     if (CS%Vertex_shear) then
-      call full_convection(G, GV, US, h, tv, T_f, S_f, fluxes%p_surf, &
-                           kappa_dt_fill, halo=1)
-
-      !$omp target enter data map(to: T_f, S_f, tv, tv%T, tv%S, tv%eqn_of_state)
+      !$omp target enter data map(to: tv, tv%T, tv%S, tv%eqn_of_state) map(alloc: T_f, S_f)
       !$omp target enter data map(to: fluxes%p_surf) if (associated(fluxes%p_surf))
       !$omp target enter data map(alloc: visc%Kd_shear, visc%TKE_turb)
+      ! A block size of 0 is a single block spanning the computational domain plus the 1-point halo.
+      call full_convection(G, GV, US, h, tv, T_f, S_f, fluxes%p_surf, &
+                           kappa_dt_fill, halo=1, &
+                           nii=merge(G%iec-G%isc+3, CS%niblock, CS%niblock==0), &
+                           njj=merge(G%jec-G%jsc+3, CS%njblock, CS%njblock==0))
+
       call calc_kappa_shear_vertex(u, v, h, T_f, S_f, tv, fluxes%p_surf, visc%Kd_shear, &
                                    visc%TKE_turb, visc%Kv_shear_Bu, dt, G, GV, US, CS%kappaShear_CSp)
       !$omp target update from(visc%Kv_shear_Bu) if (associated(visc%Kv_shear_Bu))
       !$omp target exit data map(from: visc%Kd_shear, visc%TKE_turb)
-      !$omp target exit data map(release: T_f, S_f, tv, tv%T, tv%S, tv%eqn_of_state)
+      !$omp target exit data map(release: tv, tv%T, tv%S, tv%eqn_of_state) map(from: T_f, S_f)
       !$omp target exit data map(release: fluxes%p_surf) if (associated(fluxes%p_surf))
       ! TODO: tile/port whole-domain Kv_shear initialization.
       if (associated(visc%Kv_shear)) visc%Kv_shear(:,:,:) = 0.0 ! needed for other parameterizations
