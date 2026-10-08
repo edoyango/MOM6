@@ -707,15 +707,17 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   !$omp                          ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
 
   if (associated(ADp%du_dt_visc_gl90)) then
-    do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       ADp%du_dt_visc_gl90(I,j,k) = u(I,j,k)
-    enddo
+    enddo ; enddo ; enddo
   endif
 
   if (associated(ADp%du_dt_str)) then
-    do concurrent (k=1:nz, j=G%jsc:G%jec, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       ADp%du_dt_str(I,j,k) = 0.0
-    enddo
+    enddo ; enddo ; enddo
   endif
 
   !   The grid, forcing and coupling state below is read by every device region between here
@@ -858,6 +860,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! use ADp%du_dt_visc_gl90 as a placeholder for updated u (due to GL90) until last do loop
   if ((CS%id_du_dt_visc_gl90 > 0) .or. (CS%id_GLwork > 0)) then
     if (associated(ADp%du_dt_visc_gl90)) then
+      !   This GL90 solve runs on the host, but its seed is set on the device above, and the
+      ! device copy is the one that goes back to the caller, so the seed is fetched first and
+      ! the result is sent back to the device when the solve is done.
+      !$omp target update from(ADp%du_dt_visc_gl90)
       do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
         b_denom_1 = CS%h_u(I,j,1)  ! CS%a_u_gl90(I,j,1) is zero
         b1 = 1.0 / (b_denom_1 + dt * CS%a_u_gl90(I,j,2))
@@ -901,18 +907,20 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
           enddo
         endif
       endif ; enddo ; enddo
+      !$omp target update to(ADp%du_dt_visc_gl90)
     endif
   endif
 
   if (associated(ADp%du_dt_visc)) then
-    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(2)
+    do j=js,je ; do I=Isq,Ieq
       do k=1,nz
         ADp%du_dt_visc(I,j,k) = (u(I,j,k) - ADp%du_dt_visc(I,j,k)) * Idt
 
         if (abs(ADp%du_dt_visc(I,j,k)) < accel_underflow) &
           ADp%du_dt_visc(I,j,k) = 0.0
       enddo
-    enddo
+    enddo ; enddo
   endif
 
   if (allocated(visc%taux_shelf)) then
@@ -926,16 +934,18 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(taux_bot)) then
-    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(2) map(tofrom: taux_bot)
+    do j=js,je ; do I=Isq,Ieq
       taux_bot(I,j) = GV%H_to_RZ * (u(I,j,nz) * CS%a_u(I,j,nz+1))
-    enddo
+    enddo ; enddo
 
     if (allocated(visc%Ray_u)) then
-      do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: taux_bot)
+      do j=js,je ; do I=Isq,Ieq
         do k=1,nz
           taux_bot(I,j) = taux_bot(I,j) + GV%H_to_RZ * (visc%Ray_u(I,j,k) * u(I,j,k))
         enddo
-      enddo
+      enddo ; enddo
     endif
   endif
 
@@ -977,21 +987,24 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   !$omp target enter data map(to: v)
 
   if (associated(ADp%dv_dt_visc)) then
-    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       ADp%dv_dt_visc(i,J,k) = v(i,J,k)
-    enddo
+    enddo ; enddo ; enddo
   endif
 
   if (associated(ADp%dv_dt_visc_gl90)) then
+    !$omp target teams distribute parallel do collapse(3)
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       ADp%dv_dt_visc_gl90(i,J,k) = v(i,J,k)
     enddo ; enddo ; enddo
   endif
 
   if (associated(ADp%dv_dt_str)) then
-    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       ADp%dv_dt_str(i,J,k) = 0.0
-    enddo
+    enddo ; enddo ; enddo
   endif
 
   !   One option is to have the wind stress applied as a body force
@@ -1080,6 +1093,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! use ADp%dv_dt_visc_gl90 as a placeholder for updated v (due to GL90) until last do loop
   if ((CS%id_dv_dt_visc_gl90 > 0) .or. (CS%id_GLwork > 0)) then
     if (associated(ADp%dv_dt_visc_gl90)) then
+      !   As on the u side, this GL90 solve runs on the host, but both of the seeds it reads are
+      ! set on the device above, so they are fetched first and the result is sent back after.
+      !$omp target update from(ADp%dv_dt_visc_gl90, ADp%dv_dt_visc)
       do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
         b_denom_1 = CS%h_v(i,J,1)  ! CS%a_v_gl90(i,J,1) is zero
         b1 = 1.0 / (b_denom_1 + dt*CS%a_v_gl90(i,J,2))
@@ -1123,16 +1139,18 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
           endif ; enddo ; enddo
         enddo
       endif
+      !$omp target update to(ADp%dv_dt_visc_gl90)
     endif
   endif
 
   if (associated(ADp%dv_dt_visc)) then
-    do concurrent (J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2)
+    do J=Jsq,Jeq ; do i=is,ie
       do k=1,nz
         ADp%dv_dt_visc(i,J,k) = (v(i,J,k) - ADp%dv_dt_visc(i,J,k))*Idt
         if (abs(ADp%dv_dt_visc(i,J,k)) < accel_underflow) ADp%dv_dt_visc(i,J,k) = 0.0
       enddo
-    enddo
+    enddo ; enddo
   endif
 
   if (allocated(visc%tauy_shelf)) then
@@ -1144,16 +1162,18 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(tauy_bot)) then
-    do concurrent (J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) map(tofrom: tauy_bot)
+    do J=Jsq,Jeq ; do i=is,ie
       tauy_bot(i,J) = GV%H_to_RZ * (v(i,J,nz) * CS%a_v(i,J,nz+1))
-    enddo
+    enddo ; enddo
 
     if (allocated(visc%Ray_v)) then
-      do concurrent (J=Jsq:Jeq, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: tauy_bot)
+      do J=Jsq,Jeq ; do i=is,ie
         do k=1,nz
           tauy_bot(i,J) = tauy_bot(i,J) + GV%H_to_RZ * (visc%Ray_v(i,J,k)*v(i,J,k))
         enddo
-      enddo
+      enddo ; enddo
     endif
   endif
 
@@ -3333,10 +3353,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     do_any_write = .false.
     trunc_any = .false.
 
-    do concurrent (j=js:je, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(2) map(tofrom: dowrite, vel_report)
+    do j=js,je ; do I=Isq,Ieq
       dowrite(I,j) = .false.
       vel_report(I,j) = 3.0e8 * US%m_s_to_L_T
-    enddo
+    enddo ; enddo
 
     !   k stays sequential inside the kernel instead of being collapsed into it: the body takes
     ! a running minimum into vel_report(I,j) and sets dowrite(I,j), which every layer of a
@@ -3362,9 +3383,16 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       enddo
     enddo ; enddo
 
-    do concurrent (j=js:je, I=Isq:Ieq, dowrite(I,j))
-      u_old(I,j,:) = u(I,j,:)
-    enddo
+    !   u_old is only read by write_u_accel, which is only called when there is something to
+    ! report, so it is only filled then rather than moving all of u to the device on every call.
+    if (do_any_write) then
+      !$omp target teams distribute parallel do collapse(2) map(to: u, dowrite) map(tofrom: u_old)
+      do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
+        do k=1,nz
+          u_old(I,j,k) = u(I,j,k)
+        enddo
+      endif ; enddo ; enddo
+    endif
 
     if (trunc_any) then
       ntrunc = 0
@@ -3415,10 +3443,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     trunc_any = .false.
 
 
-    do concurrent (J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) map(tofrom: dowrite, vel_report)
+    do J=Jsq,Jeq ; do i=is,ie
       dowrite(i,J) = .false.
       vel_report(i,J) = 3.0e8 * US%m_s_to_L_T
-    enddo
+    enddo ; enddo
 
     ! As on the u-points above, k stays sequential so that the running minimum into
     ! vel_report(i,J) and the write to dowrite(i,J) are not raced on by a column's layers.
@@ -3442,9 +3471,15 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       enddo
     enddo ; enddo
 
-    do concurrent (J=Jsq:Jeq, i=is:ie, dowrite(i,J))
-      v_old(i,J,:) = v(i,J,:)
-    enddo
+    ! As for u_old above, v_old is only filled when there is something to report.
+    if (do_any_write) then
+      !$omp target teams distribute parallel do collapse(2) map(to: v, dowrite) map(tofrom: v_old)
+      do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
+        do k=1,nz
+          v_old(i,J,k) = v(i,J,k)
+        enddo
+      endif ; enddo ; enddo
+    endif
 
     if (trunc_any) then
       ntrunc = 0
