@@ -1956,7 +1956,7 @@ module procedure btstep
   !$omp     eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, ubt_st, vbt_st, &
   !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans)
   ! Released after, and apart from, their components, as they were mapped at the start of btstep.
-  !$omp target exit data map(release: CS, forces)
+  !$omp target exit data map(release: CS, G, forces)
   !$omp target exit data map(from: ubt_wtd, vbt_wtd, accel_layer_u, accel_layer_v, eta_out)
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
