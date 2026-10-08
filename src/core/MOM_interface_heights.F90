@@ -169,7 +169,7 @@ subroutine find_eta_3d(h, tv, G, GV, US, eta, eta_bt, halo_size, dZref)
       ! Dilate the water column to agree with the free surface height
       ! that is used for the dynamics.
       !$OMP do
-      do j=jsv,jev    !$OMP parallel do default(shared)
+      do j=jsv,jev
 
         do i=isv,iev
           dilate(i) = (eta_bt(i,j)*GV%H_to_Z + G%bathyT(i,j)) / &
