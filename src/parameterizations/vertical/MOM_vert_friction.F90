@@ -1313,8 +1313,14 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   ! are written and the rest keep the values they arrived with.
   ! Ray_[uv] only exist under Rayleigh drag, and are named regardless: mapping an unallocated
   ! allocatable transfers nothing and still leaves allocated() false inside the kernel.
-  !$omp target enter data map(to: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, CS%a_v, &
-  !$omp                          visc, visc%Ray_u, visc%Ray_v, visc_rem_u, visc_rem_v)
+  !   G, CS and visc are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! They are released in a directive of their own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: G, CS, visc)
+  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, CS%h_u, CS%a_u, CS%h_v, CS%a_v, &
+  !$omp                          visc%Ray_u, visc%Ray_v, visc_rem_u, visc_rem_v)
 
   ! Find the zonal viscous remnant using a modification of a standard tridagonal solver.
 
@@ -1382,8 +1388,10 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   ! rest of the mapping.  What matters is that no exit data below names visc_rem_[uv] or
   ! storage covering them, not the order of the directives as such.
   !$omp target exit data map(from: visc_rem_u, visc_rem_v)
-  !$omp target exit data map(release: G, G%mask2dCu, G%mask2dCv, CS, CS%h_u, CS%a_u, CS%h_v, &
-  !$omp                              CS%a_v, visc, visc%Ray_u, visc%Ray_v)
+  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, CS%h_u, CS%a_u, CS%h_v, &
+  !$omp                              CS%a_v, visc%Ray_u, visc%Ray_v)
+  ! Released after, and apart from, their components, as they were mapped above.
+  !$omp target exit data map(release: G, CS, visc)
 
   if (CS%debug) then
     call uvchksum("visc_rem_[uv]", visc_rem_u, visc_rem_v, G%HI, haloshift=0, &

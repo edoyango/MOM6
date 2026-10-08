@@ -1280,7 +1280,13 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
     call MOM_error(FATAL, "find_ustar_mech requires that either ustar or tau_mag be associated.")
 
   if (associated(forces%ustar) .and. (GV%Boussinesq .or. .not.associated(forces%tau_mag))) then
-    !$omp target enter data map(to: forces, forces%ustar)
+    !   forces is mapped in a directive of its own, ahead of its components: when a
+    ! structure shares a directive with some of its components, amdflang copies only the span
+    ! between the first and last of those components, and the rest of it is undefined on the device.
+    ! It is released in a directive of its own as well, because mapping the components takes
+    ! another reference to the structure, and a release shared with them would drop only one.
+    !$omp target enter data map(to: forces)
+    !$omp target enter data map(to: forces%ustar)
     if (Z_T_units) then
       do concurrent (j=js:je, i=is:ie)
         U_star(i,j) = forces%ustar(i,j)
@@ -1290,13 +1296,16 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
         U_star(i,j) = GV%Z_to_H * forces%ustar(i,j)
       enddo
     endif
-    !$omp target exit data map(release: forces, forces%ustar)
+    !$omp target exit data map(release: forces%ustar)
+    !$omp target exit data map(release: forces)
   elseif (allocated(tv%SpV_avg)) then
     if (tv%valid_SpV_halo < 0) call MOM_error(FATAL, &
         "find_ustar_mech called in non-Boussinesq mode with invalid values of SpV_avg.")
     if (tv%valid_SpV_halo < hs) call MOM_error(FATAL, &
         "find_ustar_mech called in non-Boussinesq mode with insufficient valid values of SpV_avg.")
-    !$omp target enter data map(to: forces, forces%tau_mag, tv, tv%SpV_avg)
+    ! forces and tv are mapped and released apart from their components, as in the branch above.
+    !$omp target enter data map(to: forces, tv)
+    !$omp target enter data map(to: forces%tau_mag, tv%SpV_avg)
     if (Z_T_units) then
       do concurrent (j=js:je, i=is:ie)
         U_star(i,j) = sqrt(forces%tau_mag(i,j) * tv%SpV_avg(i,j,1))
@@ -1306,15 +1315,19 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
         U_star(i,j) = GV%RZ_to_H * sqrt(forces%tau_mag(i,j) / tv%SpV_avg(i,j,1))
       enddo
     endif
-    !$omp target exit data map(release: forces, forces%tau_mag, tv, tv%SpV_avg)
+    !$omp target exit data map(release: forces%tau_mag, tv%SpV_avg)
+    !$omp target exit data map(release: forces, tv)
   else
     I_rho = GV%Z_to_H * GV%RZ_to_H
     if (Z_T_units) I_rho = GV%H_to_Z * GV%RZ_to_H ! == 1.0 / GV%Rho0
-    !$omp target enter data map(to: forces, forces%tau_mag)
+    ! forces is mapped and released apart from its components, as in the first branch above.
+    !$omp target enter data map(to: forces)
+    !$omp target enter data map(to: forces%tau_mag)
     do concurrent (j=js:je, i=is:ie)
       U_star(i,j) = sqrt(forces%tau_mag(i,j) * I_rho)
     enddo
-    !$omp target exit data map(release: forces, forces%tau_mag)
+    !$omp target exit data map(release: forces%tau_mag)
+    !$omp target exit data map(release: forces)
   endif
 
 end subroutine find_ustar_mech_forcing

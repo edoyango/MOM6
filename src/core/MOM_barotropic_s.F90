@@ -343,9 +343,15 @@ module procedure btstep
   ! wt_trans, which are mapped as soon as they are allocated and filled, and the local arrays of
   ! the called routines). Host code in between (unported loops, halo updates, diagnostics) keeps
   ! the host copies current with target update from/to around it.
+  !   CS, G and forces are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! They are released in a directive of their own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: CS, G, forces)
   !$omp target enter data &
-  !$omp   map(to: CS, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%IDatu, CS%IDatv, CS%dy_Cu, CS%dx_Cv, CS%bathyT, forces, forces%taux, forces%tauy, &
+  !$omp   map(to: CS%q_D, CS%D_u_Cor, CS%D_v_Cor, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%IDatu, CS%IDatv, CS%dy_Cu, CS%dx_Cv, CS%bathyT, forces%taux, forces%tauy, &
   !$omp     eta_in, eta_PF_in, CS%frhatu, CS%frhatv, CS%ua_polarity, CS%va_polarity, &
   !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, U_Cor, V_Cor, pbce, &
   !$omp     G%OBCmaskCu, G%OBCmaskCv, bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, &
@@ -369,7 +375,10 @@ module procedure btstep
   !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0) if (add_uh0)
   !$omp target enter data map(to: taux_bot, tauy_bot) if(apply_bottom_drag)
   !$omp target enter data map(to: eta_PF_start) if(interp_eta_PF)
-  !$omp target enter data map(to: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  ! BT_cont is mapped, and later released, apart from its components for the same reason as
+  ! CS, G and forces above.
+  !$omp target enter data map(to: BT_cont) if(use_BT_cont)
+  !$omp target enter data map(to: BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
   !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
   !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
   !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
@@ -1920,14 +1929,16 @@ module procedure btstep
   !$omp target exit data map(release: uh0, vh0, u_uh0, v_vh0) if(add_uh0)
   !$omp target exit data map(release: taux_bot, tauy_bot) if(apply_bottom_drag)
   !$omp target exit data map(release: eta_PF_start) if(interp_eta_PF)
-  !$omp target exit data map(release: BT_cont, BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp target exit data map(release: BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
   !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
   !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
   !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
   !$omp   if(use_BT_cont)
+  ! Released after, and apart from, its components, as it was mapped at the start of btstep.
+  !$omp target exit data map(release: BT_cont) if(use_BT_cont)
   !$omp target exit data &
   !$omp   map(release: q, DCor_u, DCor_v, U_Cor, V_Cor, pbce, uhbt, vhbt, ubt, vbt, BTCL_u, &
-  !$omp     BTCL_v, Datu, Datv, u_accel_bt, v_accel_bt, forces, forces%taux, forces%tauy, &
+  !$omp     BTCL_v, Datu, Datv, u_accel_bt, v_accel_bt, forces%taux, forces%tauy, &
   !$omp     G%OBCmaskCu, G%OBCmaskCv, visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, &
   !$omp     gtot_N, gtot_S, gtot_E, gtot_W, eta_IC, dyn_coef_eta, Cor_ref_u, Cor_ref_v, &
   !$omp     bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, CS%IDatu, CS%IDatv, f_4_u, f_4_v, &
@@ -1939,7 +1950,9 @@ module procedure btstep
   !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, U_in, V_in, &
   !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%ubtav, CS%vbtav, uhbtav, vhbtav, eta_sum, &
   !$omp     eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, ubt_st, vbt_st, &
-  !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans, CS)
+  !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans)
+  ! Released after, and apart from, their components, as they were mapped at the start of btstep.
+  !$omp target exit data map(release: CS, forces)
   !$omp target exit data map(from: ubt_wtd, vbt_wtd, accel_layer_u, accel_layer_v, eta_out)
 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
@@ -3204,7 +3217,13 @@ module procedure set_dtbt
   if (present(BT_cont)) use_BT_cont = (associated(BT_cont))
 
   ! The arrays used on the device by find_face_areas are mapped here, as well as the local arrays.
-  !$omp target enter data map(to: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !   CS and G are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! They are released in a directive of their own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: CS, G)
+  !$omp target enter data map(to: CS%bathyT, CS%dy_Cu, CS%dx_Cv, GV, G%meanSL, G%bathyT) &
   !$omp   map(alloc: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
   if (present(eta)) then
     !$omp target enter data map(to: eta)
@@ -3270,8 +3289,10 @@ module procedure set_dtbt
   if (present(eta)) then
     !$omp target exit data map(release: eta)
   endif
-  !$omp target exit data map(release: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT, &
+  !$omp target exit data map(release: CS%bathyT, CS%dy_Cu, CS%dx_Cv, GV, G%meanSL, G%bathyT, &
   !$omp                              gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
+  ! Released after, and apart from, their components, as they were mapped above.
+  !$omp target exit data map(release: CS, G)
   dtbt_max = sqrt(min_max_dt2 / dgeo_de)
   if (id_clock_sync > 0) call cpu_clock_begin(id_clock_sync)
   call min_across_PEs(dtbt_max)
@@ -4490,7 +4511,13 @@ module procedure BT_cont_to_face_areas
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   hs = 1 ; if (present(halo)) hs = max(halo,0)
 
-  !$omp target enter data map(to: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !   BT_cont is mapped in a directive of its own, ahead of its components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! It is released in a directive of its own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: BT_cont)
+  !$omp target enter data map(to: BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
   !$omp                          BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
   !$omp                          BT_cont%FA_v_S0, BT_cont%FA_v_SS)
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -4505,9 +4532,11 @@ module procedure BT_cont_to_face_areas
     Datv(i,J) = max(BT_cont%FA_v_NN(i,J), BT_cont%FA_v_N0(i,J), &
                     BT_cont%FA_v_S0(i,J), BT_cont%FA_v_SS(i,J))
   enddo ; enddo
-  !$omp target exit data map(release: BT_cont, BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !$omp target exit data map(release: BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
   !$omp                              BT_cont%FA_u_WW, BT_cont%FA_v_NN, BT_cont%FA_v_N0, &
   !$omp                              BT_cont%FA_v_S0, BT_cont%FA_v_SS)
+  ! Released after, and apart from, its components, as it was mapped above.
+  !$omp target exit data map(release: BT_cont)
 
 end procedure BT_cont_to_face_areas
 module procedure swap
@@ -4614,7 +4643,13 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !$omp target enter data map(to: h, eta, G, G%bathyT, CS) map(alloc: eta_h)
+  !   G is mapped in a directive of its own, ahead of its components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! It is released in a directive of its own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: G)
+  !$omp target enter data map(to: h, eta, G%bathyT, CS) map(alloc: eta_h)
 
   ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) blocks (Boussinesq/set_cor branches
   ! and the sequential do k=2,nz accumulation) -- GV%Boussinesq and set_cor are loop-invariant, so
@@ -4647,7 +4682,9 @@ module procedure bt_mass_source
     enddo
   enddo
 
-  !$omp target exit data map(release: h, eta, G, G%bathyT, CS, eta_h)
+  !$omp target exit data map(release: h, eta, G%bathyT, CS, eta_h)
+  ! Released after, and apart from, its components, as it was mapped above.
+  !$omp target exit data map(release: G)
 
 end procedure bt_mass_source
 module procedure barotropic_init
@@ -5584,11 +5621,19 @@ module procedure barotropic_init
     enddo ; enddo
   endif
 
-  !$omp target enter data map(to: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !   CS and G are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! They are released in a directive of their own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: CS, G)
+  !$omp target enter data map(to: CS%bathyT, CS%dy_Cu, CS%dx_Cv, GV, G%meanSL, G%bathyT) &
   !$omp   map(alloc: Datu, Datv)
   call find_face_areas(Datu, Datv, G, GV, US, CS, MS, 1)
-  !$omp target exit data map(release: CS, CS%bathyT, CS%dy_Cu, CS%dx_Cv, G, GV, G%meanSL, G%bathyT) &
+  !$omp target exit data map(release: CS%bathyT, CS%dy_Cu, CS%dx_Cv, GV, G%meanSL, G%bathyT) &
   !$omp   map(from: Datu, Datv)
+  ! Released after, and apart from, their components, as they were mapped above.
+  !$omp target exit data map(release: CS, G)
   if ((CS%bound_BT_corr) .and. .not.(use_BT_Cont_type .and. CS%BT_cont_bounds)) then
     ! This is not used in most test cases.  Were it ever to become more widely used, consider
     ! replacing maxvel with min(G%dxT(i,j),G%dyT(i,j)) * (CS%maxCFL_BT_cont*Idt) .
