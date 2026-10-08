@@ -752,8 +752,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   !   One option is to have the wind stress applied as a body force
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
+  !   These loops are explicit target loops rather than do concurrent so that they run on the
+  ! device in every build.  They update u and surface_stress inside the span where u is
+  ! resident on the device, so if a build kept them on the host (as -fdo-concurrent-to-openmp=none
+  ! does), their updates would be overwritten when u is copied back.
   if (CS%direct_stress) then
-    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq, G%mask2dCu(I,j) > 0.0)
+    !$omp target teams distribute parallel do collapse(2) private(zDS, h_a, hfr, stress)
+    do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.0) then
       surface_stress(I,j) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%taux(I,j)
@@ -764,11 +769,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         if (associated(ADp%du_dt_str)) ADp%du_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
         zDS = zDS + h_a
       endif ; enddo
-    enddo
+    endif ; enddo ; enddo
   else
-    do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
+    !$omp target teams distribute parallel do collapse(2)
+    do j=G%jsc,G%jec ; do I=Isq,Ieq
       surface_stress(I,j) = dt_Rho0 * (G%mask2dCu(I,j)*forces%taux(I,j))
-    enddo
+    enddo ; enddo
   endif
 
   ! perform forward elimination on the tridiagonal system
@@ -991,8 +997,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   !   One option is to have the wind stress applied as a body force
   ! over the topmost Hmix fluid.  If DIRECT_STRESS is not defined,
   ! the wind stress is applied as a stress boundary condition.
+  !   These loops are explicit target loops rather than do concurrent so that they run on the
+  ! device in every build.  They update v and surface_stress inside the span where v is
+  ! resident on the device, so if a build kept them on the host (as -fdo-concurrent-to-openmp=none
+  ! does), their updates would be overwritten when v is copied back.
   if (CS%direct_stress) then
-    do concurrent (J=Jsq:Jeq, i=is:ie, G%mask2dCv(i,J) > 0.0)
+    !$omp target teams distribute parallel do collapse(2) private(zDS, h_a, hfr, stress)
+    do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.0) then
       surface_stress(i,J) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%tauy(i,J)
@@ -1003,11 +1014,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         if (associated(ADp%dv_dt_str)) ADp%dv_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
         zDS = zDS + h_a
       endif ; enddo
-    enddo
+    endif ; enddo ; enddo
   else
-    do concurrent (J=Jsq:Jeq, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2)
+    do J=Jsq,Jeq ; do i=is,ie
       surface_stress(i,J) = dt_Rho0 * (G%mask2dCv(i,J) * forces%tauy(i,J))
-    enddo
+    enddo ; enddo
   endif
 
   !$omp target teams distribute parallel do collapse(2) &
