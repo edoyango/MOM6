@@ -1334,6 +1334,10 @@ module procedure btstep
     ! evaluated as exp(Instep*log(av_rem)), and the device exp and log do not agree
     ! with the host versions to the last bit, so offloading them changes answers.
     !$omp target update from(av_rem_u, av_rem_v)
+    !   These loops only cover the computational domain, but all of bt_rem_[uv] is sent back to
+    ! the device below, so the device values, including the halos zeroed at the start of btstep,
+    ! are fetched first rather than replaced by whatever the host arrays hold.
+    !$omp target update from(bt_rem_u, bt_rem_v)
     !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie
       bt_rem_u(I,j) = 0.0
