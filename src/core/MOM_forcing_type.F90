@@ -1267,6 +1267,10 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
   ! Local variables
   real :: I_rho        ! The inverse of the reference density [R-1 ~> m3 kg-1] or in some semi-Boussinesq cases
                        ! the rescaled reference density [H2 Z-2 R-1 ~> m3 kg-1 or kg m-3]
+  real :: Z_to_H       ! A copy of GV%Z_to_H, so that the device loop that uses it needs no copy of GV
+                       ! [H Z-1 ~> 1 or kg m-3]
+  real :: RZ_to_H      ! A copy of GV%RZ_to_H, so that the device loop that uses it needs no copy of GV
+                       ! [H R-1 Z-1 ~> m3 kg-2 or 1]
   logical :: Z_T_units ! If true, U_star is returned in units of [Z T-1 ~> m s-1], otherwise it is
                        ! returned in [H T-1 ~> m s-1 or kg m-2 s-1]
   integer :: i, j, is, ie, js, je, hs
@@ -1287,14 +1291,21 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
     ! another reference to the structure, and a release shared with them would drop only one.
     !$omp target enter data map(to: forces)
     !$omp target enter data map(to: forces%ustar)
+    !   The loops in this routine are explicit target loops rather than do concurrent, because
+    ! amdflang cannot convert a do concurrent loop that uses tv to device code: the type of tv
+    ! has derived-type components.  U_star is mapped tofrom on each of them, so a caller that
+    ! holds it only on the host gets the result there, as it did when these loops ran there.
     if (Z_T_units) then
-      do concurrent (j=js:je, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: U_star)
+      do j=js,je ; do i=is,ie
         U_star(i,j) = forces%ustar(i,j)
-      enddo
+      enddo ; enddo
     else
-      do concurrent (j=js:je, i=is:ie)
-        U_star(i,j) = GV%Z_to_H * forces%ustar(i,j)
-      enddo
+      Z_to_H = GV%Z_to_H
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: U_star)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = Z_to_H * forces%ustar(i,j)
+      enddo ; enddo
     endif
     !$omp target exit data map(release: forces%ustar)
     !$omp target exit data map(release: forces)
@@ -1307,13 +1318,16 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
     !$omp target enter data map(to: forces, tv)
     !$omp target enter data map(to: forces%tau_mag, tv%SpV_avg)
     if (Z_T_units) then
-      do concurrent (j=js:je, i=is:ie)
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: U_star)
+      do j=js,je ; do i=is,ie
         U_star(i,j) = sqrt(forces%tau_mag(i,j) * tv%SpV_avg(i,j,1))
-      enddo
+      enddo ; enddo
     else
-      do concurrent (j=js:je, i=is:ie)
-        U_star(i,j) = GV%RZ_to_H * sqrt(forces%tau_mag(i,j) / tv%SpV_avg(i,j,1))
-      enddo
+      RZ_to_H = GV%RZ_to_H
+      !$omp target teams distribute parallel do collapse(2) map(tofrom: U_star)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = RZ_to_H * sqrt(forces%tau_mag(i,j) / tv%SpV_avg(i,j,1))
+      enddo ; enddo
     endif
     !$omp target exit data map(release: forces%tau_mag, tv%SpV_avg)
     !$omp target exit data map(release: forces, tv)
@@ -1323,9 +1337,10 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
     ! forces is mapped and released apart from its components, as in the first branch above.
     !$omp target enter data map(to: forces)
     !$omp target enter data map(to: forces%tau_mag)
-    do concurrent (j=js:je, i=is:ie)
+    !$omp target teams distribute parallel do collapse(2) map(tofrom: U_star)
+    do j=js,je ; do i=is,ie
       U_star(i,j) = sqrt(forces%tau_mag(i,j) * I_rho)
-    enddo
+    enddo ; enddo
     !$omp target exit data map(release: forces%tau_mag)
     !$omp target exit data map(release: forces)
   endif
