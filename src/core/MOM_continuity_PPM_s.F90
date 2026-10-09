@@ -28,6 +28,9 @@ module procedure zonal_mass_flux
   logical, dimension(SZIB_(G),SZJ_(G)) :: &
     do_I, &       ! Indicates the points where the barotropic and baroclinic transports are reconciled
     simple_OBC_pt ! Indicates points with specified transport OBCs
+  integer, dimension(SZIB_(G),SZJ_(G)) :: &
+    open_dir      ! 1 or -1 at faces on open boundary segments where the flow is taken from the
+                  ! cell to the west or east of the face, or 0 elsewhere [nondim]
   real :: FA_u    ! A sum of zonal face areas [H L ~> m2 or kg m-1].
   real :: I_vrm   ! 1.0 / visc_rem_max [nondim]
   real :: CFL_dt  ! The maximum CFL ratio of the adjusted velocities divided by
@@ -35,17 +38,45 @@ module procedure zonal_mass_flux
   real :: I_dt    ! 1.0 / dt [T-1 ~> s-1].
   real :: du_lim  ! The velocity change that give a relative CFL of 1 [L T-1 ~> m s-1].
   real :: dx_E, dx_W ! Effective x-grid spacings to the east and west [L ~> m].
+  real :: h_marg_min ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
+  real :: H_subroundoff ! A copy of GV%H_subroundoff for use on the device [H ~> m or kg m-2]
   type(cont_loop_bounds_type) :: LB
   integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
+  integer :: IsdB, IedB, jsd, jed ! The data domain bounds at u points
   integer :: l_seg ! The OBC segment number
-  logical :: use_visc_rem, set_BT_cont
+  logical :: use_visc_rem, set_BT_cont, set_h_u
+  logical :: vol_CFL, aggress_adjust, use_visc_rem_max ! Copies of CS fields for use on the device
   logical :: local_specified_BC, local_Flather_OBC, local_open_BC, any_simple_OBC  ! OBC-related logicals
-
-  call cpu_clock_begin(id_clock_correct)
 
   use_visc_rem = present(visc_rem_u)
 
   set_BT_cont = .false. ; if (present(BT_cont)) set_BT_cont = (associated(BT_cont))
+  set_h_u = .false. ; if (set_BT_cont) set_h_u = allocated(BT_cont%h_u)
+
+  !   The arrays that are used on the device are copied in before the clock is started.  The output
+  ! arrays that are only partly set here are copied in too, so that the copies back to the host
+  ! leave the rest of them unchanged.
+  !$omp target enter data map(to: G)
+  !$omp target enter data map(to: G%dy_Cu, G%dxCu, G%IareaT, G%areaT, G%IdxT, G%dxT, G%mask2dCu)
+  !$omp target enter data map(to: u, h_in, h_W, h_E, por_face_areaU, uh)
+  if (use_visc_rem) then
+    !$omp target enter data map(to: visc_rem_u)
+  endif
+  if (present(uhbt)) then
+    !$omp target enter data map(to: uhbt)
+  endif
+  if (present(u_cor)) then
+    !$omp target enter data map(to: u_cor)
+  endif
+  if (present(du_cor)) then
+    !$omp target enter data map(alloc: du_cor)
+  endif
+  if (set_BT_cont) call zonal_BT_cont_to_device(BT_cont, set_h_u)
+
+  call cpu_clock_begin(id_clock_correct)
+
+  !$omp target enter data map(alloc: duhdu, visc_rem, du, du_min_CFL, du_max_CFL, duhdu_tot_0, &
+  !$omp                              uh_tot_0, visc_rem_max, FAuI, do_I, simple_OBC_pt, open_dir)
 
   local_specified_BC = .false. ; local_Flather_OBC = .false. ; local_open_BC = .false.
   if (associated(OBC)) then ; if (OBC%OBC_pe) then
@@ -54,73 +85,96 @@ module procedure zonal_mass_flux
     local_open_BC = OBC%open_u_BCs_exist_globally
   endif ; endif
 
-  if (present(du_cor)) then
-    do j=G%jsd,G%jed ; do I=G%IsdB,G%IedB
-      du_cor(I,j) = 0.0
-    enddo ; enddo
-  endif
-
   if (present(LB_in)) then
     LB = LB_in
   else
     LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
   endif
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  IsdB = G%IsdB ; IedB = G%IedB ; jsd = G%jsd ; jed = G%jed
+
+  vol_CFL = CS%vol_CFL ; aggress_adjust = CS%aggress_adjust ; use_visc_rem_max = CS%use_visc_rem_max
+  h_marg_min = CS%h_marg_min ; H_subroundoff = GV%H_subroundoff
+
+  if (present(du_cor)) then
+    !$omp target teams distribute parallel do collapse(2)
+    do j=jsd,jed ; do I=IsdB,IedB
+      du_cor(I,j) = 0.0
+    enddo ; enddo
+  endif
 
   CFL_dt = CS%CFL_limit_adjust / dt
   I_dt = 1.0 / dt
-  if (CS%aggress_adjust) CFL_dt = I_dt
+  if (aggress_adjust) CFL_dt = I_dt
+
+  if (local_open_BC) then
+    ! Note which faces are on open boundary segments, so that OBC need not be used on the device.
+    do j=jsh,jeh ; do I=ish-1,ieh
+      open_dir(I,j) = 0
+      if (OBC%segnum_u(I,j) /= 0) then
+        if (OBC%segment(abs(OBC%segnum_u(I,j)))%open) open_dir(I,j) = sign(1, OBC%segnum_u(I,j))
+      endif
+    enddo ; enddo
+    !$omp target update to(open_dir)
+  endif
 
   ! Set uh and duhdu.
-  do k=1,nz
-    if (use_visc_rem) then
-      do j=jsh,jeh ; do I=ish-1,ieh
-        visc_rem(I,j,k) = visc_rem_u(I,j,k)
-      enddo ; enddo
-    else
-      do j=jsh,jeh ; do I=ish-1,ieh
-        visc_rem(I,j,k) = 1.0
-      enddo ; enddo
-    endif
-    do j=jsh,jeh ; do I=ish-1,ieh
-      call flux_elem(u(I,j,k), h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
-                     h_E(i+1,j,k), uh(I,j,k), duhdu(I,j,k), visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, CS%vol_CFL, &
-                     por_face_areaU(I,j,k), CS%h_marg_min)
-      if (local_open_BC) &
-        call flux_elem_OBC(u(I,j,k), h_in(i,j,k), h_in(i+1,j,k), uh(I,j,k), duhdu(I,j,k), &
-                           visc_rem(I,j,k), por_face_areaU(I,j,k), G%dy_Cu(I,j), CS%h_marg_min, &
-                           OBC, OBC%segnum_u(I,j))
-    enddo ; enddo
-    if (local_specified_BC) then
-      do j=jsh,jeh ; do I=ish-1,ieh ; if (OBC%segnum_u(I,j) /= 0) then
-        l_seg = abs(OBC%segnum_u(I,j))
-        if (OBC%segment(l_seg)%specified) uh(I,j,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
-      endif ; enddo ; enddo
-    endif
-  enddo
+  if (use_visc_rem) then
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
+      visc_rem(I,j,k) = visc_rem_u(I,j,k)
+    enddo ; enddo ; enddo
+  else
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
+      visc_rem(I,j,k) = 1.0
+    enddo ; enddo ; enddo
+  endif
+  !$omp target teams distribute parallel do collapse(3)
+  do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
+    call flux_elem(u(I,j,k), h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
+                   h_E(i+1,j,k), uh(I,j,k), duhdu(I,j,k), visc_rem(I,j,k), G%dy_Cu(I,j), &
+                   G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, vol_CFL, &
+                   por_face_areaU(I,j,k), h_marg_min)
+    if (local_open_BC) &
+      call flux_elem_OBC(u(I,j,k), h_in(i,j,k), h_in(i+1,j,k), uh(I,j,k), duhdu(I,j,k), &
+                         visc_rem(I,j,k), por_face_areaU(I,j,k), G%dy_Cu(I,j), h_marg_min, &
+                         open_dir(I,j))
+  enddo ; enddo ; enddo
+  if (local_specified_BC) then
+    !$omp target teams distribute parallel do collapse(3) private(l_seg)
+    do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh ; if (OBC%segnum_u(I,j) /= 0) then
+      l_seg = abs(OBC%segnum_u(I,j))
+      if (OBC%segment(l_seg)%specified) uh(I,j,k) = OBC%segment(l_seg)%normal_trans(I,j,k)
+    endif ; enddo ; enddo ; enddo
+  endif
 
   if (present(uhbt) .or. set_BT_cont) then
-    if (use_visc_rem .and. CS%use_visc_rem_max) then
+    !$omp target teams
+    if (use_visc_rem .and. use_visc_rem_max) then
+      !$omp distribute parallel do collapse(2)
       do j=jsh,jeh ; do I=ish-1,ieh
         visc_rem_max(I,j) = 0.0
       enddo ; enddo
       do k=1,nz
+        !$omp distribute parallel do collapse(2)
         do j=jsh,jeh ; do I=ish-1,ieh
           visc_rem_max(I,j) = max(visc_rem_max(I,j), visc_rem(I,j,k))
         enddo ; enddo
       enddo
     else
+      !$omp distribute parallel do collapse(2)
       do j=jsh,jeh ; do I=ish-1,ieh
         visc_rem_max(I,j) = 1.0
       enddo ; enddo
     endif
     !   Set limits on du that will keep the CFL number between -1 and 1.
     ! This should be adequate to keep the root bracketed in all cases.
+    !$omp distribute parallel do collapse(2) private(I_vrm, dx_W, dx_E)
     do j=jsh,jeh ; do I=ish-1,ieh
       I_vrm = 0.0
       if (visc_rem_max(I,j) > 0.0) I_vrm = 1.0 / visc_rem_max(I,j)
-      if (CS%vol_CFL) then
+      if (vol_CFL) then
         dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
         dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
       else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
@@ -129,16 +183,16 @@ module procedure zonal_mass_flux
       uh_tot_0(I,j) = 0.0 ; duhdu_tot_0(I,j) = 0.0
     enddo ; enddo
     do k=1,nz
+      !$omp distribute parallel do collapse(2)
       do j=jsh,jeh ; do I=ish-1,ieh
         duhdu_tot_0(I,j) = duhdu_tot_0(I,j) + duhdu(I,j,k)
         uh_tot_0(I,j) = uh_tot_0(I,j) + uh(I,j,k)
       enddo ; enddo
-    enddo
-    if (use_visc_rem) then
-      if (CS%aggress_adjust) then
-        do k=1,nz
+      if (use_visc_rem) then
+        if (aggress_adjust) then
+          !$omp distribute parallel do collapse(2) private(dx_W, dx_E, du_lim)
           do j=jsh,jeh ; do I=ish-1,ieh
-            if (CS%vol_CFL) then
+            if (vol_CFL) then
               dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
               dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
             else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
@@ -151,11 +205,10 @@ module procedure zonal_mass_flux
             if (du_min_CFL(I,j) * visc_rem(I,j,k) < du_lim) &
               du_min_CFL(I,j) = du_lim / visc_rem(I,j,k)
           enddo ; enddo
-        enddo
-      else
-        do k=1,nz
+        else
+          !$omp distribute parallel do collapse(2) private(dx_W, dx_E)
           do j=jsh,jeh ; do I=ish-1,ieh
-            if (CS%vol_CFL) then
+            if (vol_CFL) then
               dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
               dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
             else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
@@ -165,13 +218,12 @@ module procedure zonal_mass_flux
             if (du_min_CFL(I,j) * visc_rem(I,j,k) < -dx_E*CFL_dt - u(I,j,k)*G%mask2dCu(I,j)) &
               du_min_CFL(I,j) = -(dx_E*CFL_dt + u(I,j,k)) / visc_rem(I,j,k)
           enddo ; enddo
-        enddo
-      endif
-    else
-      if (CS%aggress_adjust) then
-        do k=1,nz
+        endif
+      else
+        if (aggress_adjust) then
+          !$omp distribute parallel do collapse(2) private(dx_W, dx_E)
           do j=jsh,jeh ; do I=ish-1,ieh
-            if (CS%vol_CFL) then
+            if (vol_CFL) then
               dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
               dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
             else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
@@ -181,11 +233,10 @@ module procedure zonal_mass_flux
             du_min_CFL(I,j) = MAX(du_min_CFL(I,j), 0.499 * &
                         ((-dx_E*I_dt - u(I,j,k)) + MAX(0.0,u(I+1,j,k))) )
           enddo ; enddo
-        enddo
-      else
-        do k=1,nz
+        else
+          !$omp distribute parallel do collapse(2) private(dx_W, dx_E)
           do j=jsh,jeh ; do I=ish-1,ieh
-            if (CS%vol_CFL) then
+            if (vol_CFL) then
               dx_W = ratio_max(G%areaT(i,j), G%dy_Cu(I,j), 1000.0*G%dxT(i,j))
               dx_E = ratio_max(G%areaT(i+1,j), G%dy_Cu(I,j), 1000.0*G%dxT(i+1,j))
             else ; dx_W = G%dxT(i,j) ; dx_E = G%dxT(i+1,j) ; endif
@@ -193,16 +244,20 @@ module procedure zonal_mass_flux
             du_max_CFL(I,j) = MIN(du_max_CFL(I,j), dx_W*CFL_dt - u(I,j,k))
             du_min_CFL(I,j) = MAX(du_min_CFL(I,j), -(dx_E*CFL_dt + u(I,j,k)))
           enddo ; enddo
-        enddo
+        endif
       endif
-    endif
+    enddo
+    !$omp distribute parallel do collapse(2)
     do j=jsh,jeh ; do I=ish-1,ieh
       du_max_CFL(I,j) = max(du_max_CFL(I,j),0.0)
       du_min_CFL(I,j) = min(du_min_CFL(I,j),0.0)
     enddo ; enddo
+    !$omp end target teams
 
     any_simple_OBC = .false.
     if (local_specified_BC .or. local_Flather_OBC) then
+      !$omp target teams distribute parallel do collapse(2) private(l_seg) &
+      !$omp   reduction(.or.: any_simple_OBC) map(tofrom: any_simple_OBC)
       do j=jsh,jeh ; do I=ish-1,ieh
         l_seg = abs(OBC%segnum_u(I,j))
 
@@ -213,6 +268,7 @@ module procedure zonal_mass_flux
         any_simple_OBC = any_simple_OBC .or. simple_OBC_pt(I,j)
       enddo ; enddo
     else
+      !$omp target teams distribute parallel do collapse(2)
       do j=jsh,jeh ; do I=ish-1,ieh
         do_I(I,j) = .true.
       enddo ; enddo
@@ -222,22 +278,24 @@ module procedure zonal_mass_flux
       ! Find du and uh.
       call zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, du, &
                              du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             ish-1, ieh, jsh, jeh, do_I, por_face_areaU, uh, OBC=OBC)
+                             ish-1, ieh, jsh, jeh, do_I, por_face_areaU, uh, &
+                             local_open_BC, open_dir)
 
       if (present(u_cor)) then
-        do k=1,nz
-          do j=jsh,jeh ; do I=ish-1,ieh
-            u_cor(I,j,k) = u(I,j,k) + du(I,j) * visc_rem(I,j,k)
-          enddo ; enddo
-          if (any_simple_OBC) then
-            do j=jsh,jeh ; do I=ish-1,ieh ; if (simple_OBC_pt(I,j)) then
-              u_cor(I,j,k) = OBC%segment(abs(OBC%segnum_u(I,j)))%normal_vel(I,j,k)
-            endif ; enddo ; enddo
-          endif
-        enddo
+        !$omp target teams distribute parallel do collapse(3)
+        do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
+          u_cor(I,j,k) = u(I,j,k) + du(I,j) * visc_rem(I,j,k)
+        enddo ; enddo ; enddo
+        if (any_simple_OBC) then
+          !$omp target teams distribute parallel do collapse(3)
+          do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh ; if (simple_OBC_pt(I,j)) then
+            u_cor(I,j,k) = OBC%segment(abs(OBC%segnum_u(I,j)))%normal_vel(I,j,k)
+          endif ; enddo ; enddo ; enddo
+        endif
       endif ! u-corrected
 
       if (present(du_cor)) then
+        !$omp target teams distribute parallel do collapse(2)
         do j=jsh,jeh ; do I=ish-1,ieh
           du_cor(I,j) = du(I,j)
         enddo ; enddo
@@ -248,30 +306,38 @@ module procedure zonal_mass_flux
     if (set_BT_cont) then
       call set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, &
                              du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             visc_rem_max, ish-1, ieh, jsh, jeh, do_I, por_face_areaU)
+                             visc_rem_max, ish-1, ieh, jsh, jeh, do_I, por_face_areaU, open_dir)
       if (any_simple_OBC) then
+        !$omp target teams
+        !$omp distribute parallel do collapse(2)
         do j=jsh,jeh ; do I=ish-1,ieh
-          if (simple_OBC_pt(I,j)) FAuI(I,j) = GV%H_subroundoff*G%dy_Cu(I,j)
+          if (simple_OBC_pt(I,j)) FAuI(I,j) = H_subroundoff*G%dy_Cu(I,j)
         enddo ; enddo
         ! NOTE: simple_OBC_pt should prevent access to segment OBC_NONE
         do k=1,nz
+          !$omp distribute parallel do collapse(2) private(l_seg)
           do j=jsh,jeh ; do I=ish-1,ieh ; if (simple_OBC_pt(I,j)) then
             l_seg = abs(OBC%segnum_u(I,j))
             if ((abs(OBC%segment(l_seg)%normal_vel(I,j,k)) > 0.0) .and. (OBC%segment(l_seg)%specified)) &
               FAuI(I,j) = FAuI(I,j) + OBC%segment(l_seg)%normal_trans(I,j,k) / OBC%segment(l_seg)%normal_vel(I,j,k)
           endif ; enddo ; enddo
         enddo
+        !$omp distribute parallel do collapse(2)
         do j=jsh,jeh ; do I=ish-1,ieh ; if (simple_OBC_pt(I,j)) then
           BT_cont%FA_u_W0(I,j) = FAuI(I,j) ; BT_cont%FA_u_E0(I,j) = FAuI(I,j)
           BT_cont%FA_u_WW(I,j) = FAuI(I,j) ; BT_cont%FA_u_EE(I,j) = FAuI(I,j)
           BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
         endif ; enddo ; enddo
+        !$omp end target teams
       endif
     endif ! set_BT_cont
 
   endif ! present(uhbt) or set_BT_cont
 
   if (local_open_BC .and. set_BT_cont) then
+    ! This is done on the host, between copies of the face areas from and back to the device.
+    !$omp target update from(BT_cont%FA_u_W0, BT_cont%FA_u_E0, BT_cont%FA_u_WW, &
+    !$omp                    BT_cont%FA_u_EE, BT_cont%uBT_WW, BT_cont%uBT_EE)
     do n = 1, OBC%number_of_segments
       if (OBC%segment(n)%open .and. OBC%segment(n)%is_E_or_W) then
         I = OBC%segment(n)%HI%IsdB
@@ -294,19 +360,42 @@ module procedure zonal_mass_flux
         endif
       endif
     enddo
+    !$omp target update to(BT_cont%FA_u_W0, BT_cont%FA_u_E0, BT_cont%FA_u_WW, &
+    !$omp                  BT_cont%FA_u_EE, BT_cont%uBT_WW, BT_cont%uBT_EE)
   endif
 
-  if  (set_BT_cont) then ; if (allocated(BT_cont%h_u)) then
+  if (set_h_u) then
     if (present(u_cor)) then
       call zonal_flux_thickness(u_cor, h_in, h_W, h_E, BT_cont%h_u, dt, G, GV, US, LB, &
-                                CS%vol_CFL, CS%marginal_faces, OBC, por_face_areaU, visc_rem_u)
+                                vol_CFL, CS%marginal_faces, OBC, por_face_areaU, visc_rem_u)
     else
       call zonal_flux_thickness(u, h_in, h_W, h_E, BT_cont%h_u, dt, G, GV, US, LB, &
-                                CS%vol_CFL, CS%marginal_faces, OBC, por_face_areaU, visc_rem_u)
+                                vol_CFL, CS%marginal_faces, OBC, por_face_areaU, visc_rem_u)
     endif
-  endif ; endif
+  endif
+
+  !$omp target exit data map(release: duhdu, visc_rem, du, du_min_CFL, du_max_CFL, duhdu_tot_0, &
+  !$omp                               uh_tot_0, visc_rem_max, FAuI, do_I, simple_OBC_pt, open_dir)
 
   call cpu_clock_end(id_clock_correct)
+
+  ! The results are copied back to the host, and the inputs released, after the clock is stopped.
+  if (set_BT_cont) call zonal_BT_cont_from_device(BT_cont, set_h_u)
+  if (present(du_cor)) then
+    !$omp target exit data map(from: du_cor)
+  endif
+  if (present(u_cor)) then
+    !$omp target exit data map(from: u_cor)
+  endif
+  if (present(uhbt)) then
+    !$omp target exit data map(release: uhbt)
+  endif
+  if (use_visc_rem) then
+    !$omp target exit data map(release: visc_rem_u)
+  endif
+  !$omp target exit data map(from: uh) map(release: u, h_in, h_W, h_E, por_face_areaU)
+  !$omp target exit data map(release: G%dy_Cu, G%dxCu, G%IareaT, G%areaT, G%IdxT, G%dxT, G%mask2dCu)
+  !$omp target exit data map(release: G)
 
 end procedure zonal_mass_flux
 
@@ -320,7 +409,8 @@ module procedure zonal_flux_thickness
   integer :: i, j, k, ish, ieh, jsh, jeh, nz, n
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
 
-  !$OMP parallel do default(shared) private(CFL,curv_3,h_marg,h_avg)
+  !   This works on the device, with all of the arrays already there.
+  !$omp target teams distribute parallel do collapse(3) private(CFL, curv_3, h_marg, h_avg)
   do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
     if (u(I,j,k) > 0.0) then
       if (vol_CFL) then ; CFL = (u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i,j))
@@ -351,12 +441,12 @@ module procedure zonal_flux_thickness
     ! Scale back the thickness to account for the effects of viscosity and the fractional open
     ! thickness to give an appropriate non-normalized weight for each layer in determining the
     ! barotropic acceleration.
-    !$OMP parallel do default(shared)
+    !$omp target teams distribute parallel do collapse(3)
     do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
       h_u(I,j,k) = h_u(I,j,k) * (visc_rem_u(I,j,k) * por_face_areaU(I,j,k))
     enddo ; enddo ; enddo
   else
-    !$OMP parallel do default(shared)
+    !$omp target teams distribute parallel do collapse(3)
     do k=1,nz ; do j=jsh,jeh ; do I=ish-1,ieh
       h_u(I,j,k) = h_u(I,j,k) * por_face_areaU(I,j,k)
     enddo ; enddo ; enddo
@@ -365,6 +455,8 @@ module procedure zonal_flux_thickness
   local_open_BC = .false.
   if (associated(OBC)) local_open_BC = OBC%open_u_BCs_exist_globally
   if (local_open_BC) then
+    ! This is done on the host, between copies of h_u from and back to the device.
+    !$omp target update from(h_u)
     do n = 1, OBC%number_of_segments
       if (OBC%segment(n)%open .and. OBC%segment(n)%is_E_or_W) then
         I = OBC%segment(n)%HI%IsdB
@@ -391,15 +483,52 @@ module procedure zonal_flux_thickness
         endif
       endif
     enddo
+    !$omp target update to(h_u)
   endif
 
 end procedure zonal_flux_thickness
+
+
+!> Copies BT_cont and the components that zonal_mass_flux sets to the device.  This is done here,
+!! with BT_cont passed as a plain argument, because when amdflang maps the components of a structure
+!! that is reached through a pointer argument, it takes the structure to be as many times its size
+!! as there are elements in a component, and the mapping fails.
+subroutine zonal_BT_cont_to_device(BT_cont, set_h_u)
+  type(BT_cont_type), intent(inout) :: BT_cont !< A structure with elements that describe the
+                                               !! effective open face areas as a function of barotropic flow.
+  logical,            intent(in)    :: set_h_u !< If true, BT_cont%h_u is copied as well
+
+  ! BT_cont is mapped apart from, and before, its components.
+  !$omp target enter data map(to: BT_cont)
+  !$omp target enter data map(to: BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !$omp                           BT_cont%FA_u_WW, BT_cont%uBT_WW, BT_cont%uBT_EE)
+  if (set_h_u) then
+    !$omp target enter data map(to: BT_cont%h_u)
+  endif
+end subroutine zonal_BT_cont_to_device
+
+!> Copies the components of BT_cont that zonal_mass_flux sets back from the device, and releases
+!! BT_cont there.
+subroutine zonal_BT_cont_from_device(BT_cont, set_h_u)
+  type(BT_cont_type), intent(inout) :: BT_cont !< A structure with elements that describe the
+                                               !! effective open face areas as a function of barotropic flow.
+  logical,            intent(in)    :: set_h_u !< If true, BT_cont%h_u is copied as well
+
+  if (set_h_u) then
+    !$omp target exit data map(from: BT_cont%h_u)
+  endif
+  !$omp target exit data map(from: BT_cont%FA_u_EE, BT_cont%FA_u_E0, BT_cont%FA_u_W0, &
+  !$omp                          BT_cont%FA_u_WW, BT_cont%uBT_WW, BT_cont%uBT_EE)
+  ! Released after, and apart from, its components.
+  !$omp target exit data map(release: BT_cont)
+end subroutine zonal_BT_cont_from_device
 
 !> Returns the barotropic velocity adjustment that gives the
 !! desired barotropic (layer-summed) transport.
 subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
                              du, du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             i_start, i_end, j_start, j_end, do_I_in, por_face_areaU, uh_3d, OBC)
+                             i_start, i_end, j_start, j_end, do_I_in, por_face_areaU, uh_3d, &
+                             local_open_BC, open_dir)
   type(ocean_grid_type),                     intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type),                   intent(in)    :: GV   !< Ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)   :: u    !< Zonal velocity [L T-1 ~> m s-1].
@@ -440,7 +569,11 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: uh_3d !< Volume flux through zonal
                        !! faces = u*h*dy [H L2 T-1 ~> m3 s-1 or kg s-1], updated at the points that
                        !! are adjusted.
-  type(ocean_OBC_type),            optional, pointer       :: OBC !< Open boundaries control structure.
+  logical,                                   intent(in)    :: local_open_BC !< True if there are open
+                       !! boundary faces on this PE whose fluxes are set from open_dir.
+  integer, dimension(SZIB_(G),SZJ_(G)),      intent(in)    :: open_dir !< 1 or -1 at faces on open
+                       !! boundary segments where the flow is taken from the cell to the west or east
+                       !! of the face, or 0 elsewhere [nondim]
   ! Local variables
   real, dimension(SZIB_(G),SZJ_(G)) :: &
     uh_err, &  ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
@@ -456,19 +589,24 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   real :: ddu     ! The change in du from the previous iteration [L T-1 ~> m s-1].
   real :: tol_eta ! The tolerance for the current iteration [H ~> m or kg m-2].
   real :: tol_vel ! The tolerance for velocity in the current iteration [L T-1 ~> m s-1].
+  real :: tol_eta_ref ! A copy of CS%tol_eta for use on the device [H ~> m or kg m-2].
+  real :: h_marg_min  ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
+  logical :: vol_CFL, better_iter ! Copies of CS fields for use on the device
   integer :: i, j, k, nz, itt
-  logical :: local_open_BC ! True if there are open OBC points on this PE
 #ifndef _OPENMP
   logical :: domore ! True if any point still needs to be adjusted
 #endif
   integer, parameter :: max_itts = 20
 
   nz = GV%ke
-  local_open_BC = .false.
-  if (present(OBC)) then ; if (associated(OBC)) local_open_BC = OBC%open_u_BCs_exist_globally ; endif
 
-  tol_vel = CS%tol_vel
+  tol_vel = CS%tol_vel ; tol_eta_ref = CS%tol_eta ; better_iter = CS%better_iter
+  vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
+  !$omp target enter data map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+
+  !$omp target teams private(tol_eta)
+  !$omp distribute parallel do collapse(2)
   do j=j_start,j_end ; do I=i_start,i_end
     du(I,j) = 0.0 ; do_I(I,j) = do_I_in(I,j)
     du_max(I,j) = du_max_CFL(I,j) ; du_min(I,j) = du_min_CFL(I,j)
@@ -478,12 +616,13 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
 
   do itt=1,max_itts
     select case (itt)
-      case (:1) ; tol_eta = 1e-6 * CS%tol_eta
-      case (2)  ; tol_eta = 1e-4 * CS%tol_eta
-      case (3)  ; tol_eta = 1e-2 * CS%tol_eta
-      case default ; tol_eta = CS%tol_eta
+      case (:1) ; tol_eta = 1e-6 * tol_eta_ref
+      case (2)  ; tol_eta = 1e-4 * tol_eta_ref
+      case (3)  ; tol_eta = 1e-2 * tol_eta_ref
+      case default ; tol_eta = tol_eta_ref
     end select
 
+    !$omp distribute parallel do collapse(2)
     do j=j_start,j_end ; do I=i_start,i_end
       if (uh_err(I,j) > 0.0) then ; du_max(I,j) = du(I,j)
       elseif (uh_err(I,j) < 0.0) then ; du_min(I,j) = du(I,j)
@@ -492,9 +631,10 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
 #ifndef _OPENMP
     domore = .false.
 #endif
+    !$omp distribute parallel do collapse(2) private(ddu, du_prev)
     do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
       if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err(I,j)) > tol_eta) .or. &
-          (CS%better_iter .and. ((abs(uh_err(I,j)) > tol_vel * duhdu_tot(I,j)) .or. &
+          (better_iter .and. ((abs(uh_err(I,j)) > tol_vel * duhdu_tot(I,j)) .or. &
                                  (abs(uh_err(I,j)) > uh_err_best(I,j))) )) then
       !   Use Newton's method, provided it stays bounded.  Otherwise bisect
       ! the value with the appropriate bound.
@@ -528,24 +668,27 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
     if (.not.domore) exit
 #endif
 
+    !$omp distribute parallel do collapse(2)
     do j=j_start,j_end ; do I=i_start,i_end
       uh_err(I,j) = -uhbt(I,j) ; duhdu_tot(I,j) = 0.0
     enddo ; enddo
     do k=1,nz
+      !$omp distribute parallel do collapse(2) private(u_new, duhdu)
       do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
         u_new = u(I,j,k) + du(I,j) * visc_rem(I,j,k)
         call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
                        h_E(i+1,j,k), uh_3d(I,j,k), duhdu, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                       G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, CS%vol_CFL, &
-                       por_face_areaU(I,j,k), CS%h_marg_min)
+                       G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, vol_CFL, &
+                       por_face_areaU(I,j,k), h_marg_min)
         if (local_open_BC) &
           call flux_elem_OBC(u_new, h_in(i,j,k), h_in(i+1,j,k), uh_3d(I,j,k), duhdu, &
-                             visc_rem(I,j,k), por_face_areaU(I,j,k), G%dy_Cu(I,j), CS%h_marg_min, &
-                             OBC, OBC%segnum_u(I,j))
+                             visc_rem(I,j,k), por_face_areaU(I,j,k), G%dy_Cu(I,j), h_marg_min, &
+                             open_dir(I,j))
         uh_err(I,j) = uh_err(I,j) + uh_3d(I,j,k)
         duhdu_tot(I,j) = duhdu_tot(I,j) + duhdu
       endif ; enddo ; enddo
     enddo
+    !$omp distribute parallel do collapse(2)
     do j=j_start,j_end ; do I=i_start,i_end
       uh_err_best(I,j) = min(uh_err_best(I,j), abs(uh_err(I,j)))
     enddo ; enddo
@@ -553,6 +696,9 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   ! If there are any faces which have not converged to within the tolerance,
   ! so-be-it, or else use a final upwind correction?
   ! This never seems to happen with 20 iterations as max_itt.
+  !$omp end target teams
+
+  !$omp target exit data map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
 end subroutine zonal_flux_adjust
 
@@ -560,7 +706,8 @@ end subroutine zonal_flux_adjust
 !! function of barotropic flow to agree closely with the sum of the layer's transports.
 subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, &
                              du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                             visc_rem_max, i_start, i_end, j_start, j_end, do_I, por_face_areaU)
+                             visc_rem_max, i_start, i_end, j_start, j_end, do_I, por_face_areaU, &
+                             open_dir)
   type(ocean_grid_type),                     intent(in)    :: G    !< Ocean's grid structure.
   type(verticalGrid_type),                   intent(in)    :: GV   !< Ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)   :: u    !< Zonal velocity [L T-1 ~> m s-1].
@@ -598,6 +745,8 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
                        !! which points to work on.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(in)    :: por_face_areaU !< fractional open area
                        !! of U-faces [nondim]
+  integer, dimension(SZIB_(G),SZJ_(G)),      intent(in)    :: open_dir !< An array that is passed
+                       !! on to zonal_flux_adjust, but is not used there by this call [nondim]
   ! Local variables
   real, dimension(SZIB_(G),SZJ_(G)) :: &
     du0, &        ! The barotropic velocity increment that gives 0 transport [L T-1 ~> m s-1].
@@ -633,22 +782,32 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   real :: CFL_min ! A minimal increment in the CFL to try to ensure that the
                   ! flow is truly upwind [nondim]
   real :: Idt     ! The inverse of the time step [T-1 ~> s-1].
+  real :: h_marg_min ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
+  logical :: vol_CFL ! A copy of CS%vol_CFL for use on the device
   integer :: i, j, k, nz
 
   nz = GV%ke ; Idt = 1.0 / dt
   min_visc_rem = 0.1 ; CFL_min = 1e-6
+  vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
+
+  !$omp target enter data map(alloc: du0, zeros, duL, duR, du_CFL, FAmt_L, FAmt_R, FAmt_0, &
+  !$omp                              uhtot_L, uhtot_R, uh_tmp)
 
   ! Diagnose the zero-transport correction, du0.
+  !$omp target teams distribute parallel do collapse(2)
   do j=j_start,j_end ; do I=i_start,i_end
     zeros(I,j) = 0.0
   enddo ; enddo
   call zonal_flux_adjust(u, h_in, h_W, h_E, zeros, uh_tot_0, duhdu_tot_0, du0, &
                          du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                         i_start, i_end, j_start, j_end, do_I, por_face_areaU, uh_tmp)
+                         i_start, i_end, j_start, j_end, do_I, por_face_areaU, uh_tmp, &
+                         .false., open_dir)
 
   ! Determine the westerly- and easterly- fluxes.  Choose a sufficiently
   ! negative velocity correction for the easterly-flux, and a sufficiently
   ! positive correction for the westerly-flux.
+  !$omp target teams
+  !$omp distribute parallel do collapse(2)
   do j=j_start,j_end ; do I=i_start,i_end
     du_CFL(I,j) = (CFL_min * Idt) * G%dxCu(I,j)
     duR(I,j) = min(0.0,du0(I,j) - du_CFL(I,j))
@@ -658,6 +817,7 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   enddo ; enddo
 
   do k=1,nz
+    !$omp distribute parallel do collapse(2) private(visc_rem_lim)
     do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
       visc_rem_lim = max(visc_rem(I,j,k), min_visc_rem*visc_rem_max(I,j))
       if (visc_rem_lim > 0.0) then ! This is almost always true for ocean points.
@@ -670,22 +830,24 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   enddo
 
   do k=1,nz
+    !$omp distribute parallel do collapse(2) &
+    !$omp   private(u_L, u_R, u_0, duhdu_0, duhdu_L, duhdu_R, uh_0, uh_L, uh_R)
     do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
       u_L = u(I,j,k) + duL(I,j) * visc_rem(I,j,k)
       u_R = u(I,j,k) + duR(I,j) * visc_rem(I,j,k)
       u_0 = u(I,j,k) + du0(I,j) * visc_rem(I,j,k)
       call flux_elem(u_0, h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
                      h_E(i+1,j,k), uh_0, duhdu_0, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, CS%vol_CFL, &
-                     por_face_areaU(I,j,k), CS%h_marg_min)
+                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, vol_CFL, &
+                     por_face_areaU(I,j,k), h_marg_min)
       call flux_elem(u_L, h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
                      h_E(i+1,j,k), uh_L, duhdu_L, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, CS%vol_CFL, &
-                     por_face_areaU(I,j,k), CS%h_marg_min)
+                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, vol_CFL, &
+                     por_face_areaU(I,j,k), h_marg_min)
       call flux_elem(u_R, h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
                      h_E(i+1,j,k), uh_R, duhdu_R, visc_rem(I,j,k), G%dy_Cu(I,j), &
-                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, CS%vol_CFL, &
-                     por_face_areaU(I,j,k), CS%h_marg_min)
+                     G%IareaT(i,j), G%IareaT(i+1,j), G%IdxT(i,j), G%IdxT(i+1,j), dt, vol_CFL, &
+                     por_face_areaU(I,j,k), h_marg_min)
       FAmt_0(I,j) = FAmt_0(I,j) + duhdu_0
       FAmt_L(I,j) = FAmt_L(I,j) + duhdu_L
       FAmt_R(I,j) = FAmt_R(I,j) + duhdu_R
@@ -694,6 +856,7 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
     endif ; enddo ; enddo
   enddo
 
+  !$omp distribute parallel do collapse(2) private(FA_0, FA_avg)
   do j=j_start,j_end ; do I=i_start,i_end
     if (do_I(I,j)) then
       FA_0 = FAmt_0(I,j) ; FA_avg = FAmt_0(I,j)
@@ -725,6 +888,10 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
       BT_cont%uBT_WW(I,j) = 0.0 ; BT_cont%uBT_EE(I,j) = 0.0
     endif
   enddo ; enddo
+  !$omp end target teams
+
+  !$omp target exit data map(release: du0, zeros, duL, duR, du_CFL, FAmt_L, FAmt_R, FAmt_0, &
+  !$omp                               uhtot_L, uhtot_R, uh_tmp)
 
 end subroutine set_zonal_BT_cont
 
@@ -733,6 +900,7 @@ end subroutine set_zonal_BT_cont
 subroutine flux_elem(u, h, h_p1, h_L, h_L_p1, h_R, h_R_p1, uh, duhdu, visc_rem, &
                      G_dy_Cu, G_IareaT, G_IareaT_p1, G_IdxT, G_IdxT_p1, dt, &
                      vol_CFL, por_face_area, h_marg_min)
+  !$omp declare target
   real,    intent(in)  :: u        !< Zonal or meridional velocity [L T-1 ~> m s-1].
   real,    intent(in)  :: h        !< Layer thickness [H ~> m or kg m-2].
   real,    intent(in)  :: h_p1     !< Layer thickness, offset by 1 [H ~> m or kg m-2].
@@ -794,7 +962,8 @@ end subroutine flux_elem
 
 !> Replaces the transport through a single zonal or meridional face and its partial derivative
 !! with the face velocity with simple upwind estimates if the face is on an open boundary.
-subroutine flux_elem_OBC(u, h, h_p1, uh, duhdu, visc_rem, por_face_area, G_dy_Cu, h_marg_min, OBC, l_seg)
+subroutine flux_elem_OBC(u, h, h_p1, uh, duhdu, visc_rem, por_face_area, G_dy_Cu, h_marg_min, open_dir)
+  !$omp declare target
   real,                 intent(in)    :: u        !< Zonal or meridional velocity [L T-1 ~> m s-1].
   real,                 intent(in)    :: h        !< Layer thickness [H ~> m or kg m-2].
   real,                 intent(in)    :: h_p1     !< Layer thickness, offset by 1 [H ~> m or kg m-2].
@@ -808,24 +977,22 @@ subroutine flux_elem_OBC(u, h, h_p1, uh, duhdu, visc_rem, por_face_area, G_dy_Cu
   real,                 intent(in)    :: por_face_area !< fractional open area of the face [nondim].
   real,                 intent(in)    :: G_dy_Cu  !< The unblocked length of the face [L ~> m].
   real,                 intent(in)    :: h_marg_min !< Negligible floor on h_marg [H ~> m or kg m-2]
-  type(ocean_OBC_type), intent(in)    :: OBC      !< Open boundaries control structure.
-  integer,              intent(in)    :: l_seg    !< The signed segment number of the face, or 0.
+  integer,              intent(in)    :: open_dir !< 1 or -1 if the face is on an open boundary
+                                                  !! segment where the flow is taken from the cell on
+                                                  !! the low or high side of the face, or 0 [nondim]
 
-  if (l_seg /= 0) then
-    if (OBC%segment(abs(l_seg))%open) then
-      if (l_seg > 0) then !  OBC_DIRECTION_E or OBC_DIRECTION_N
-        uh = (G_dy_Cu * por_face_area) * u * h
-        duhdu = (G_dy_Cu * por_face_area) * max(h, h_marg_min) * visc_rem
-      else !  OBC_DIRECTION_W or OBC_DIRECTION_S
-        uh = (G_dy_Cu * por_face_area) * u * h_p1
-        duhdu = (G_dy_Cu * por_face_area) * max(h_p1, h_marg_min) * visc_rem
-      endif
-    endif
+  if (open_dir > 0) then !  OBC_DIRECTION_E or OBC_DIRECTION_N
+    uh = (G_dy_Cu * por_face_area) * u * h
+    duhdu = (G_dy_Cu * por_face_area) * max(h, h_marg_min) * visc_rem
+  elseif (open_dir < 0) then !  OBC_DIRECTION_W or OBC_DIRECTION_S
+    uh = (G_dy_Cu * por_face_area) * u * h_p1
+    duhdu = (G_dy_Cu * por_face_area) * max(h_p1, h_marg_min) * visc_rem
   endif
 
 end subroutine flux_elem_OBC
 
 module procedure ratio_max
+  !$omp declare target
   if (abs(a) > abs(maxrat*b)) then
     ratio = maxrat
   else
