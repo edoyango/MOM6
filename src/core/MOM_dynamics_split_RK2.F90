@@ -416,6 +416,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   logical :: lFPpost        ! Used to only post diagnostics in vertFPmix when fpmix=true and
                             ! in the  corrector step (not the predict)
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: isd, ied, jsd, jed
   integer :: cont_stencil, obc_stencil, vel_stencil
   integer :: cor_stencil
 
@@ -649,20 +650,34 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   endif
   call cpu_clock_end(id_clock_pass)
 
+  call bt_mass_source_device_in(h, eta, G, GV, CS%barotropic_CSp)
+  !$omp target enter data map(alloc: SpV_avg)
   call cpu_clock_begin(id_clock_btcalc)
   ! Calculate the relative layer weights for determining barotropic quantities.
   if (.not.BT_cont_BT_thick) &
     call btcalc(h, G, GV, CS%barotropic_CSp, OBC=CS%OBC)
   call bt_mass_source(h, eta, .true., G, GV, CS%barotropic_CSp)
 
-  SpV_avg(:,:) = 0.0
+  ! The bounds are copied to locals so that G is not referenced inside the target region.
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
+  !$omp target teams distribute parallel do collapse(2)
+  do j=jsd,jed ; do i=isd,ied
+    SpV_avg(i,j) = 0.0
+  enddo ; enddo
   if ((.not.GV%Boussinesq) .and. associated(CS%OBC)) then
     ! Determine the column average specific volume if it is needed due to the
     ! use of Flather open boundary conditions in non-Boussinesq mode.
-    if (open_boundary_query(CS%OBC, apply_Flather_OBC=.true.)) &
+    !   find_col_avg_SpV runs on the host, so the host copy is zeroed as well and the result is
+    ! copied to the device, where the map(from:) below would otherwise overwrite it.
+    if (open_boundary_query(CS%OBC, apply_Flather_OBC=.true.)) then
+      SpV_avg(:,:) = 0.0
       call find_col_avg_SpV(h, SpV_avg, tv, G, GV, US)
+      !$omp target update to(SpV_avg)
+    endif
   endif
   call cpu_clock_end(id_clock_btcalc)
+  !$omp target exit data map(from: SpV_avg)
+  call bt_mass_source_device_out(h, eta, G, GV, CS%barotropic_CSp)
 
   if (G%nonblocking_updates) &
     call complete_group_pass(CS%pass_visc_rem, G%Domain, clock=id_clock_pass)
@@ -853,9 +868,11 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   ! hp can be changed if CS%begw /= 0.
   ! eta_cor = ...                 (hidden inside CS%barotropic_CSp)
   if (CS%BT_adj_corr_mass_src) then
+    call bt_mass_source_device_in(hp, eta_pred, G, GV, CS%barotropic_CSp)
     call cpu_clock_begin(id_clock_btcalc)
     call bt_mass_source(hp, eta_pred, .false., G, GV, CS%barotropic_CSp)
     call cpu_clock_end(id_clock_btcalc)
+    call bt_mass_source_device_out(hp, eta_pred, G, GV, CS%barotropic_CSp)
   endif
 
   if (CS%begw /= 0.0) then
@@ -2134,6 +2151,46 @@ subroutine vertvisc_diags_device_out(ADp, taux_bot, tauy_bot)
   !$omp target exit data map(release: ADp)
 
 end subroutine vertvisc_diags_device_out
+
+
+!> Copy to the device the structures and arrays that bt_mass_source uses there, so that the copies are made
+!! outside the clock that times it.  bt_mass_source_device_out undoes this, and the two calls must
+!! bracket the same span.
+subroutine bt_mass_source_device_in(h, eta, G, GV, BCS)
+  type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in) :: h     !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G)), &
+                           intent(in) :: eta   !< Free surface height or column mass [H ~> m or kg m-2]
+  type(barotropic_CS),     intent(in) :: BCS   !< Barotropic control structure
+
+  !   G and its arrays are mapped for the whole run, by grid_device_in.
+  !   The structures are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  !   BCS%eta_cor is set or incremented by bt_mass_source, so it travels in both directions.
+  !$omp target enter data map(to: GV, BCS, h, eta)
+  !$omp target enter data map(to: BCS%eta_cor)
+
+end subroutine bt_mass_source_device_in
+
+
+!> Copy BCS%eta_cor back from the device and release everything that bt_mass_source_device_in mapped.
+subroutine bt_mass_source_device_out(h, eta, G, GV, BCS)
+  type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in) :: h     !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G)), &
+                           intent(in) :: eta   !< Free surface height or column mass [H ~> m or kg m-2]
+  type(barotropic_CS),     intent(inout) :: BCS !< Barotropic control structure
+
+  ! The components are released ahead of, and apart from, the structures, as they were mapped.
+  !$omp target exit data map(from: BCS%eta_cor)
+  !$omp target exit data map(release: GV, BCS, h, eta)
+
+end subroutine bt_mass_source_device_out
 
 
 !> Copy G and all of its arrays to the device once, at the end of initialize_dyn_split_RK2, for the

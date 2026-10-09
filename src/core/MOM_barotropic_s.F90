@@ -4651,13 +4651,10 @@ module procedure bt_mass_source
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
-  !   G is mapped in a directive of its own, ahead of its components: when a
-  ! structure shares a directive with some of its components, amdflang copies only the span
-  ! between the first and last of those components, and the rest of it is undefined on the device.
-  ! It is released in a directive of its own as well, because mapping the components takes
-  ! another reference to the structure, and a release shared with them would drop only one.
-  !$omp target enter data map(to: G)
-  !$omp target enter data map(to: h, eta, G%bathyT, CS) map(alloc: eta_h)
+  ! G and its arrays, GV, CS, CS%eta_cor, h and eta are mapped by the caller, outside the clock
+  ! that times this routine (see grid_device_in and bt_mass_source_device_in in
+  ! MOM_dynamics_split_RK2).
+  !$omp target enter data map(alloc: eta_h)
 
   ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) blocks (Boussinesq/set_cor branches
   ! and the sequential do k=2,nz accumulation) -- GV%Boussinesq and set_cor are loop-invariant, so
@@ -4690,9 +4687,7 @@ module procedure bt_mass_source
     enddo
   enddo
 
-  !$omp target exit data map(release: h, eta, G%bathyT, CS, eta_h)
-  ! Released after, and apart from, its components, as it was mapped above.
-  !$omp target exit data map(release: G)
+  !$omp target exit data map(release: eta_h)
 
 end procedure bt_mass_source
 module procedure barotropic_init

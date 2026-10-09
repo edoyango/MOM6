@@ -138,7 +138,7 @@ type, public :: barotropic_CS ; private
           !! condition for the next call to btstep [L T-1 ~> m s-1].
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: vbtav
           !< The barotropic meridional velocity averaged over the  baroclinic time step [L T-1 ~> m s-1].
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: eta_cor
+  real, public ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: eta_cor
           !< The difference between the free surface height from the barotropic calculation and the sum
           !! of the layer thicknesses. This difference is imposed as a forcing term in the barotropic
           !! calculation over a baroclinic timestep [H ~> m or kg m-2].
