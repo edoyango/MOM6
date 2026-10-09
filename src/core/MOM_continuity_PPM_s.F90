@@ -593,19 +593,21 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   real :: h_marg_min  ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL, better_iter ! Copies of CS fields for use on the device
   integer :: i, j, k, nz, itt
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
 #ifndef _OPENMP
   logical :: domore ! True if any point still needs to be adjusted
 #endif
   integer, parameter :: max_itts = 20
 
   nz = GV%ke
+  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
 
   tol_vel = CS%tol_vel ; tol_eta_ref = CS%tol_eta ; better_iter = CS%better_iter
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
   !$omp target enter data map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
 
-  !$omp target teams private(tol_eta)
+  !$omp target teams num_teams(nteams) private(tol_eta)
   !$omp distribute parallel do collapse(2)
   do j=j_start,j_end ; do I=i_start,i_end
     du(I,j) = 0.0 ; do_I(I,j) = do_I_in(I,j)
@@ -1570,19 +1572,21 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
   real :: h_marg_min  ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL, better_iter ! Copies of CS fields for use on the device
   integer :: i, j, k, nz, itt
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
 #ifndef _OPENMP
   logical :: domore ! True if any point still needs to be adjusted
 #endif
   integer, parameter :: max_itts = 20
 
   nz = GV%ke
+  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
 
   tol_vel = CS%tol_vel ; tol_eta_ref = CS%tol_eta ; better_iter = CS%better_iter
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
   !$omp target enter data map(alloc: vh_err, vh_err_best, dvhdv_tot, dv_min, dv_max, do_I)
 
-  !$omp target teams private(tol_eta)
+  !$omp target teams num_teams(nteams) private(tol_eta)
   !$omp distribute parallel do collapse(2)
   do J=j_start,j_end ; do i=i_start,i_end
     dv(i,J) = 0.0 ; do_I(i,J) = do_I_in(i,J)
