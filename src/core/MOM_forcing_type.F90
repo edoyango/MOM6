@@ -32,7 +32,7 @@ implicit none ; private
 
 public extractFluxes1d, extractFluxes2d, optics_type
 public MOM_forcing_chksum, MOM_mech_forcing_chksum
-public calculateBuoyancyFlux1d, calculateBuoyancyFlux2d, find_ustar
+public calculateBuoyancyFlux1d, calculateBuoyancyFlux2d, find_ustar, find_ustar_gpu
 public forcing_accumulate, fluxes_accumulate
 public forcing_SinglePointPrint, mech_forcing_diags, forcing_diagnostics
 public register_forcing_type_diags, allocate_forcing_type, deallocate_forcing_type
@@ -1346,6 +1346,84 @@ subroutine find_ustar_mech_forcing(forces, tv, U_star, G, GV, US, halo, H_T_unit
   endif
 
 end subroutine find_ustar_mech_forcing
+
+
+!> Determine the friction velocity from the contents of a mechanical forcing type, on the device.
+!! This is find_ustar_mech_forcing for callers that hold everything it uses on the device: forces,
+!! tv and the components of them that it reads (forces%ustar, forces%tau_mag and tv%SpV_avg) must
+!! already be mapped, and U_star must already have device storage.  U_star is filled only there.
+subroutine find_ustar_gpu(forces, tv, U_star, G, GV, US, halo, H_T_units)
+  type(ocean_grid_type),   intent(in)  :: G    !< The ocean's grid structure
+  type(verticalGrid_type), intent(in)  :: GV   !< The ocean's vertical grid structure
+  type(unit_scale_type),   intent(in)  :: US   !< A dimensional unit scaling type
+  type(mech_forcing),      intent(in)  :: forces !< Surface forces container
+  type(thermo_var_ptrs),   intent(in)  :: tv   !< Structure containing pointers to any
+                                               !! available thermodynamic fields.
+  real, dimension(SZI_(G),SZJ_(G)), &
+                           intent(out) :: U_star !< The surface friction velocity [Z T-1 ~> m s-1]
+  integer,       optional, intent(in)  :: halo !< The extra halo size to fill in, 0 by default
+  logical,       optional, intent(in)  :: H_T_units !< If present and true, return U_star in units
+                                               !! of [H T-1 ~> m s-1 or kg m-2 s-1]
+
+  ! Local variables
+  real :: I_rho        ! The inverse of the reference density [R-1 ~> m3 kg-1] or in some semi-Boussinesq cases
+                       ! the rescaled reference density [H2 Z-2 R-1 ~> m3 kg-1 or kg m-3]
+  real :: Z_to_H       ! A copy of GV%Z_to_H, so that the device loop that uses it needs no copy of GV
+                       ! [H Z-1 ~> 1 or kg m-3]
+  real :: RZ_to_H      ! A copy of GV%RZ_to_H, so that the device loop that uses it needs no copy of GV
+                       ! [H R-1 Z-1 ~> m3 kg-2 or 1]
+  logical :: Z_T_units ! If true, U_star is returned in units of [Z T-1 ~> m s-1], otherwise it is
+                       ! returned in [H T-1 ~> m s-1 or kg m-2 s-1]
+  integer :: i, j, is, ie, js, je, hs
+
+  hs = 0 ; if (present(halo)) hs = max(halo, 0)
+  is = G%isc - hs ; ie = G%iec + hs ; js = G%jsc - hs ; je = G%jec + hs
+
+  Z_T_units = .true. ; if (present(H_T_units)) Z_T_units = .not.H_T_units
+
+  if (.not.(associated(forces%ustar) .or. associated(forces%tau_mag))) &
+    call MOM_error(FATAL, "find_ustar_gpu requires that either ustar or tau_mag be associated.")
+
+  if (associated(forces%ustar) .and. (GV%Boussinesq .or. .not.associated(forces%tau_mag))) then
+    if (Z_T_units) then
+      !$omp target teams distribute parallel do collapse(2)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = forces%ustar(i,j)
+      enddo ; enddo
+    else
+      Z_to_H = GV%Z_to_H
+      !$omp target teams distribute parallel do collapse(2)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = Z_to_H * forces%ustar(i,j)
+      enddo ; enddo
+    endif
+  elseif (allocated(tv%SpV_avg)) then
+    if (tv%valid_SpV_halo < 0) call MOM_error(FATAL, &
+        "find_ustar_gpu called in non-Boussinesq mode with invalid values of SpV_avg.")
+    if (tv%valid_SpV_halo < hs) call MOM_error(FATAL, &
+        "find_ustar_gpu called in non-Boussinesq mode with insufficient valid values of SpV_avg.")
+    if (Z_T_units) then
+      !$omp target teams distribute parallel do collapse(2)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = sqrt(forces%tau_mag(i,j) * tv%SpV_avg(i,j,1))
+      enddo ; enddo
+    else
+      RZ_to_H = GV%RZ_to_H
+      !$omp target teams distribute parallel do collapse(2)
+      do j=js,je ; do i=is,ie
+        U_star(i,j) = RZ_to_H * sqrt(forces%tau_mag(i,j) / tv%SpV_avg(i,j,1))
+      enddo ; enddo
+    endif
+  else
+    I_rho = GV%Z_to_H * GV%RZ_to_H
+    if (Z_T_units) I_rho = GV%H_to_Z * GV%RZ_to_H ! == 1.0 / GV%Rho0
+    !$omp target teams distribute parallel do collapse(2)
+    do j=js,je ; do i=is,ie
+      U_star(i,j) = sqrt(forces%tau_mag(i,j) * I_rho)
+    enddo ; enddo
+  endif
+
+end subroutine find_ustar_gpu
 
 
 !> Write out chksums for thermodynamic fluxes.
