@@ -992,15 +992,19 @@ module procedure btstep
     vhbt(i,j) = 0.0 ; v_accel_bt(i,j) = 0.0
   enddo ; enddo
 
+  ! ubt_st and vbt_st are only read on the device, by the OBC corrections and the ubt_dt and
+  ! vbt_dt diagnostics at the end of btstep.
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
-    !$omp target update from(ubt)
-    do j=js,je ; do I=is-1,ie ; ubt_st(I,j) = ubt(I,j) ; enddo ; enddo
-    !$omp target update to(ubt_st) if(apply_OBCs)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    do j=js,je ; do I=is-1,ie
+      ubt_st(I,j) = ubt(I,j)
+    enddo ; enddo
   endif
   if (apply_OBCs .or. (CS%id_vbtdt > 0)) then
-    !$omp target update from(vbt)
-    do J=js-1,je ; do i=is,ie ; vbt_st(i,J) = vbt(i,J) ; enddo ; enddo
-    !$omp target update to(vbt_st) if(apply_OBCs)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    do J=js-1,je ; do i=is,ie
+      vbt_st(i,J) = vbt(i,J)
+    enddo ; enddo
   endif
 
 !   Here the vertical average accelerations due to the Coriolis, advective,
@@ -1889,9 +1893,12 @@ module procedure btstep
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
 
   ! Refresh the host copies needed by the diagnostics below, then release everything that was
-  ! allocated at the top of btstep. accel_layer_u, accel_layer_v and eta_out are copied back by
-  ! btstep_device_out, after the caller has stopped its clock.
+  ! allocated at the top of btstep, except ubt_wtd, vbt_wtd, ubt_st and vbt_st, which the
+  ! diagnostics below read on the device. accel_layer_u, accel_layer_v and eta_out are copied
+  ! back by btstep_device_out, after the caller has stopped its clock.
   !$omp target update from(eta_out) if (CS%id_eta_bt > 0)
+  !$omp target update from(ubt_wtd) if (CS%id_ubt > 0)
+  !$omp target update from(vbt_wtd) if (CS%id_vbt > 0)
   !$omp target update from(u_accel_bt, v_accel_bt) if (CS%id_uaccel>0 .or. CS%id_vaccel>0)
   !$omp target update from(visc_rem_u) if (CS%id_visc_rem_u>0 .or. associated(ADp%visc_rem_u))
   !$omp target update from(visc_rem_v) if (CS%id_visc_rem_v>0 .or. associated(ADp%visc_rem_v))
@@ -1910,19 +1917,25 @@ module procedure btstep
   !$omp     Rayleigh_u, Rayleigh_v, eta, eta_src, e_anom, BT_force_u, BT_force_v, &
   !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, &
   !$omp     uhbtav, vhbtav, eta_sum, eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, &
-  !$omp     LDv_avg, ubt_st, vbt_st, bt_rem_u, bt_rem_v, wt_vel, wt_eta, wt_trans)
+  !$omp     LDv_avg, bt_rem_u, bt_rem_v, wt_vel, wt_eta, wt_trans)
   !   CS%ubtav and CS%vbtav were allocated in a directive apart from the one that copied in the
   ! other components of CS, and each of those directives took a reference to CS, so they are
   ! released in a directive of their own to drop the second one.
   !$omp target exit data map(release: CS%ubtav, CS%vbtav)
-  !$omp target exit data map(from: ubt_wtd, vbt_wtd)
 
   ! Calculate diagnostic quantities.
   if (query_averaging_enabled(CS%diag)) then
 
+    ! CS%ubt_IC and CS%vbt_IC are copied back to the host by btstep_device_out.
     if (CS%gradual_BT_ICs) then
-      do j=js,je ; do I=is-1,ie ; CS%ubt_IC(I,j) = ubt_wtd(I,j) ; enddo ; enddo
-      do J=js-1,je ; do i=is,ie ; CS%vbt_IC(i,J) = vbt_wtd(i,J) ; enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      do j=js,je ; do I=is-1,ie
+        CS%ubt_IC(I,j) = ubt_wtd(I,j)
+      enddo ; enddo
+      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      do J=js-1,je ; do i=is,ie
+        CS%vbt_IC(i,J) = vbt_wtd(i,J)
+      enddo ; enddo
     endif
 
     ! Calculate various time-averaged barotropic diagnostics.
@@ -1960,14 +1973,17 @@ module procedure btstep
       endif
     endif
 
-    ! Diagnostics for time tendency
+    ! Diagnostics for time tendency. Only the points set here are posted, so ubt_dt and vbt_dt are
+    ! copied back whole without being copied in first.
     if (CS%id_ubtdt > 0) then
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) map(from: ubt_dt)
       do j=js,je ; do I=is-1,ie
         ubt_dt(I,j) = (ubt_wtd(I,j) - ubt_st(I,j))*Idt
       enddo ; enddo
       call post_data(CS%id_ubtdt, ubt_dt(IsdB:IedB,jsd:jed), CS%diag)
     endif
     if (CS%id_vbtdt > 0) then
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) map(from: vbt_dt)
       do J=js-1,je ; do i=is,ie
         vbt_dt(i,J) = (vbt_wtd(i,J) - vbt_st(i,J))*Idt
       enddo ; enddo
@@ -2118,6 +2134,7 @@ module procedure btstep
     if (CS%id_frhatu1 > 0) CS%frhatu1(:,:,:) = CS%frhatu(:,:,:)
     if (CS%id_frhatv1 > 0) CS%frhatv1(:,:,:) = CS%frhatv(:,:,:)
   endif
+  !$omp target exit data map(release: ubt_wtd, vbt_wtd, ubt_st, vbt_st)
 
   if (associated(ADp%diag_hfrac_u)) then
     do k=1,nz ; do j=js,je ; do I=is-1,ie
@@ -2212,6 +2229,8 @@ module procedure btstep_device_out
   add_uh0 = associated(uh0)
   apply_bottom_drag = associated(taux_bot) .and. associated(tauy_bot)
 
+  ! btstep sets CS%ubt_IC and CS%vbt_IC on the device when GRADUAL_BT_ICS is true.
+  !$omp target update from(CS%ubt_IC, CS%vbt_IC) if(CS%gradual_BT_ICs)
   !$omp target exit data map(release: CS%BT_OBC%u_OBC_type) if (CS%BT_OBC%u_OBCs_on_PE)
   !$omp target exit data map(release: CS%BT_OBC%v_OBC_type) if (CS%BT_OBC%v_OBCs_on_PE)
   !$omp target exit data map(release: CS%BT_OBC) if (CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
