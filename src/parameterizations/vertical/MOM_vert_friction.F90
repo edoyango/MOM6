@@ -16,7 +16,7 @@ use MOM_domains,       only : To_North, To_East
 use MOM_debugging,     only : uvchksum, hchksum
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, NOTE
 use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
-use MOM_forcing_type,  only : mech_forcing, find_ustar
+use MOM_forcing_type,  only : mech_forcing, find_ustar_gpu
 use MOM_get_input,     only : directories
 use MOM_grid,          only : ocean_grid_type
 use MOM_io,            only : MOM_read_data, slasher
@@ -65,7 +65,7 @@ public vertFPmix
 integer, parameter :: NK_MAX_DEV = 128
 
 !> The control structure with parameters and memory for the MOM_vert_friction module
-type, public :: vertvisc_CS ; private
+type, public :: vertvisc_CS
   logical :: initialized = .false. !< True if this control structure has been initialized.
   real    :: Hmix            !< The mixed layer thickness [Z ~> m].
   real    :: Hmix_stress     !< The mixed layer thickness over which the wind
@@ -680,31 +680,21 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif ; enddo ; enddo ; enddo
   endif
 
+  !   u, h, ADp and its tendency arrays, and the grid, forcing, viscosity and control structures
+  ! read on the device below are all mapped by the caller, around the clock that times this
+  ! routine, and are copied back there as well.  Host code in this routine that reads or writes
+  ! any of them fetches or sends them itself with target update, and only on the branches that
+  ! need it.
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update to(u)
+  endif
+
   if (associated(ADp%du_dt_visc)) then
+    !$omp target teams distribute parallel do collapse(3)
     do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
       ADp%du_dt_visc(I,j,k) = u(I,j,k)
     enddo ; enddo ; enddo
   endif
-
-  !   Every device region from here to the taux_bot loop reads or writes u, and left implicit
-  ! each of them maps it tofrom, so u makes six round trips per call.  Keep it resident for
-  ! that span instead.  The pair is to on the way in and from on the way out rather than a
-  ! single tofrom, because the solve only writes the columns where G%mask2dCu is positive and
-  ! the rest have to arrive holding what the caller passed.
-  !$omp target enter data map(to: u)
-
-  !   The tendency diagnostics hanging off ADp are filled on the device from here to the
-  ! dv_dt_visc loop: du_dt_visc is seeded by the host loop just above, du_dt_visc_gl90 and
-  ! du_dt_str by the loops just below, and all of them are then carried through the solves.
-  ! They travel in both directions because the loops that seed them cover only the
-  ! computational domain, so the halo values the caller supplied have to arrive and survive.
-  !   Each is named whether or not it is associated.  Only the ones whose diagnostic is
-  ! registered ever are, and the guards in the loop bodies test exactly that; mapping an
-  ! unassociated pointer component transfers nothing and leaves associated() false on the
-  ! device, whereas leaving one unnamed gives it no defined association status at all.
-  !$omp target enter data map(to: ADp)
-  !$omp target enter data map(to: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
-  !$omp                          ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
 
   if (associated(ADp%du_dt_visc_gl90)) then
     !$omp target teams distribute parallel do collapse(3)
@@ -718,30 +708,6 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       ADp%du_dt_str(I,j,k) = 0.0
     enddo ; enddo ; enddo
-  endif
-
-  !   The grid, forcing and coupling state below is read by every device region between here
-  ! and the tauy_bot loop, and written by none of them, so it is mapped once for that span
-  ! instead of once per region.  The span still ends before the vertvisc_limit_vel call, but
-  ! that is now a matter of there being nothing to gain from crossing it rather than a
-  ! constraint: every exit data in this file releases rather than deletes, so a callee's
-  ! teardown decrements its own reference and leaves a caller's mapping standing.
-  !   visc%Ray_[uv] are named unconditionally even though they only exist under Rayleigh drag.
-  ! Mapping an unallocated allocatable, or an unassociated pointer, is not an error and does
-  ! not put anything on the device: allocated() and associated() still read false inside the
-  ! kernel, which is the same answer the guarded form produced.
-  !   The derived types are mapped on their own and before anything else, so that every
-  ! component mapped below attaches to a parent that is already present and so that the solves
-  ! find the parents resident rather than mapping them for themselves.
-  !$omp target enter data map(to: G, GV, US, CS, visc, forces)
-  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, forces%taux, forces%tauy, &
-  !$omp                          CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc%Ray_u, visc%Ray_v)
-  !   h is intent(in) and reaches the device only through the two direct-stress loops, so it is
-  ! mapped under the same test that decides whether those loops run at all.  Left implicit it
-  ! is mapped tofrom by each of them, uploading and downloading a full three-dimensional field
-  ! twice per call in order to average a pair of layer thicknesses.
-  if (CS%direct_stress) then
-    !$omp target enter data map(to: h)
   endif
 
   !   surface_stress is a scratch array that is filled and then consumed entirely on the device,
@@ -863,7 +829,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       !   This GL90 solve runs on the host, but its seed is set on the device above, and the
       ! device copy is the one that goes back to the caller, so the seed is fetched first and
       ! the result is sent back to the device when the solve is done.
-      !$omp target update from(ADp%du_dt_visc_gl90)
+      !$omp target update from(ADp%du_dt_visc_gl90, CS%h_u, CS%a_u_gl90)
+      if (CS%id_GLwork > 0) then
+        !$omp target update from(ADp%du_dt_visc)
+      endif
       do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
         b_denom_1 = CS%h_u(I,j,1)  ! CS%a_u_gl90(I,j,1) is zero
         b1 = 1.0 / (b_denom_1 + dt * CS%a_u_gl90(I,j,2))
@@ -934,13 +903,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(taux_bot)) then
-    !$omp target teams distribute parallel do collapse(2) map(tofrom: taux_bot)
+    !$omp target teams distribute parallel do collapse(2)
     do j=js,je ; do I=Isq,Ieq
       taux_bot(I,j) = GV%H_to_RZ * (u(I,j,nz) * CS%a_u(I,j,nz+1))
     enddo ; enddo
 
     if (allocated(visc%Ray_u)) then
-      !$omp target teams distribute parallel do collapse(2) map(tofrom: taux_bot)
+      !$omp target teams distribute parallel do collapse(2)
       do j=js,je ; do I=Isq,Ieq
         do k=1,nz
           taux_bot(I,j) = taux_bot(I,j) + GV%H_to_RZ * (visc%Ray_u(I,j,k) * u(I,j,k))
@@ -949,10 +918,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
   endif
 
-  !   End u's span here rather than at the routine's end: nothing below reads it on the device,
-  ! and the Stokes and FPmix loops that follow update it on the host, so a copy-back any later
-  ! would put the pre-Stokes device values back over their work.
-  !$omp target exit data map(from: u)
+  !   The Stokes and FPmix loops below update u on the host, so they need the solve's result
+  ! first, and the device copy, which is the one that goes back to the caller, needs theirs.
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update from(u)
+  endif
 
   ! When mixing down Eulerian current + Stokes drift subtract after calling solver
   if (DoStokesMixing) then
@@ -965,6 +935,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
       u(I,j,k) = u(I,j,k) + Waves%Us_x(I,j,k)
     endif ; enddo ; enddo ; enddo
+  endif
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update to(u)
   endif
 
   ! == Now work on the meridional velocity component.
@@ -982,9 +955,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif ; enddo ; enddo ; enddo
   endif
 
-  !   The v-point mirror of u's span above, and for the same reason: every device region from
-  ! here to the tauy_bot loop touches v, and each would otherwise map it tofrom on its own.
-  !$omp target enter data map(to: v)
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update to(v)
+  endif
 
   if (associated(ADp%dv_dt_visc)) then
     !$omp target teams distribute parallel do collapse(3)
@@ -1095,7 +1068,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     if (associated(ADp%dv_dt_visc_gl90)) then
       !   As on the u side, this GL90 solve runs on the host, but both of the seeds it reads are
       ! set on the device above, so they are fetched first and the result is sent back after.
-      !$omp target update from(ADp%dv_dt_visc_gl90, ADp%dv_dt_visc)
+      !$omp target update from(ADp%dv_dt_visc_gl90, ADp%dv_dt_visc, CS%h_v, CS%a_v_gl90)
       do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
         b_denom_1 = CS%h_v(i,J,1)  ! CS%a_v_gl90(i,J,1) is zero
         b1 = 1.0 / (b_denom_1 + dt*CS%a_v_gl90(i,J,2))
@@ -1162,13 +1135,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   endif
 
   if (present(tauy_bot)) then
-    !$omp target teams distribute parallel do collapse(2) map(tofrom: tauy_bot)
+    !$omp target teams distribute parallel do collapse(2)
     do J=Jsq,Jeq ; do i=is,ie
       tauy_bot(i,J) = GV%H_to_RZ * (v(i,J,nz) * CS%a_v(i,J,nz+1))
     enddo ; enddo
 
     if (allocated(visc%Ray_v)) then
-      !$omp target teams distribute parallel do collapse(2) map(tofrom: tauy_bot)
+      !$omp target teams distribute parallel do collapse(2)
       do J=Jsq,Jeq ; do i=is,ie
         do k=1,nz
           tauy_bot(i,J) = tauy_bot(i,J) + GV%H_to_RZ * (visc%Ray_v(i,J,k)*v(i,J,k))
@@ -1177,14 +1150,10 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     endif
   endif
 
-  ! Ends here for the same reason u's does: the Stokes and FPmix loops below update v on the host.
-  !$omp target exit data map(from: v)
-
-  ! The last device region that touches ADp is above; everything that reads these below, in
-  ! this routine and in its caller, runs on the host.
-  !$omp target exit data map(from: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
-  !$omp                            ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
-  !$omp target exit data map(release: ADp)
+  ! As for u, the Stokes and FPmix loops below update v on the host.
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update from(v)
+  endif
 
   ! When mixing down Eulerian current + Stokes drift subtract after calling solver
   if (DoStokesMixing) then
@@ -1197,6 +1166,9 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
       v(i,J,k) = v(i,J,k) + Waves%Us_y(i,J,k)
     endif ; enddo ; enddo ; enddo
+  endif
+  if (DoStokesMixing .or. lfpmix) then
+    !$omp target update to(v)
   endif
 
   ! Calculate the KE source from GL90 vertical viscosity [H L2 T-3 ~> m3 s-3].
@@ -1216,18 +1188,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
     call post_data(CS%id_GLwork, KE_term, CS%diag)
   endif
 
-  ! None of this is written on the device here, so it is released without a copy back.
-  if (CS%direct_stress) then
-    !$omp target exit data map(release: h)
-  endif
-  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, forces%taux, forces%tauy, &
-  !$omp                              CS%h_u, CS%a_u, CS%h_v, CS%a_v, visc%Ray_u, visc%Ray_v)
-  !$omp target exit data map(release: G, GV, US, CS, visc, forces)
-
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS)
 
   ! Here the velocities associated with open boundary conditions are applied.
   if (associated(OBC)) then
+    !$omp target update from(u, v)
     do n=1,OBC%number_of_segments
       if (OBC%segment(n)%specified) then
         if (OBC%segment(n)%is_N_or_S) then
@@ -1243,10 +1208,38 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
         endif
       endif
     enddo
+    !$omp target update to(u, v)
   endif
 
   ! Offer diagnostic fields for averaging.
   if (query_averaging_enabled(CS%diag)) then
+    !   The tendencies and bottom stresses are held on the device until the caller copies them
+    ! back, so any that the diagnostics below might read are fetched first.  Each is only
+    ! associated when some diagnostic that reads it is registered.
+    if (associated(ADp%du_dt_visc)) then
+      !$omp target update from(ADp%du_dt_visc)
+    endif
+    if (associated(ADp%dv_dt_visc)) then
+      !$omp target update from(ADp%dv_dt_visc)
+    endif
+    if (associated(ADp%du_dt_visc_gl90)) then
+      !$omp target update from(ADp%du_dt_visc_gl90)
+    endif
+    if (associated(ADp%dv_dt_visc_gl90)) then
+      !$omp target update from(ADp%dv_dt_visc_gl90)
+    endif
+    if (associated(ADp%du_dt_str)) then
+      !$omp target update from(ADp%du_dt_str)
+    endif
+    if (associated(ADp%dv_dt_str)) then
+      !$omp target update from(ADp%dv_dt_str)
+    endif
+    if (present(taux_bot) .and. (CS%id_taux_bot > 0)) then
+      !$omp target update from(taux_bot)
+    endif
+    if (present(tauy_bot) .and. (CS%id_tauy_bot > 0)) then
+      !$omp target update from(tauy_bot)
+    endif
     if (CS%id_du_dt_visc > 0) &
       call post_data(CS%id_du_dt_visc, ADp%du_dt_visc, CS%diag)
     if (CS%id_du_dt_visc_gl90 > 0) &
@@ -1339,20 +1332,8 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
   if (.not.CS%initialized) call MOM_error(FATAL,"MOM_vert_friction(remnant): "// &
          "Module must be initialized before it is used.")
 
-  !   The two solves below read the same grid and viscosity state and each writes only its own
-  ! visc_rem array, so everything is mapped once for the routine instead of once per solve.
-  ! visc_rem_[uv] are mapped in as well as out because only the columns where G%mask2dC[uv] > 0
-  ! are written and the rest keep the values they arrived with.
-  ! Ray_[uv] only exist under Rayleigh drag, and are named regardless: mapping an unallocated
-  ! allocatable transfers nothing and still leaves allocated() false inside the kernel.
-  !   G, CS and visc are mapped in a directive of their own, ahead of their components: when a
-  ! structure shares a directive with some of its components, amdflang copies only the span
-  ! between the first and last of those components, and the rest of it is undefined on the device.
-  ! They are released in a directive of their own as well, because mapping the components takes
-  ! another reference to the structure, and a release shared with them would drop only one.
-  !$omp target enter data map(to: G, CS, visc)
-  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, CS%h_u, CS%a_u, CS%h_v, CS%a_v, &
-  !$omp                          visc%Ray_u, visc%Ray_v, visc_rem_u, visc_rem_v)
+  !   Everything the two solves below read and write on the device, visc_rem_[uv] included, is
+  ! mapped by the caller, around the clock that times this routine, and copied back there.
 
   ! Find the zonal viscous remnant using a modification of a standard tridagonal solver.
 
@@ -1416,14 +1397,9 @@ subroutine vertvisc_remnant(visc, visc_rem_u, visc_rem_v, dt, G, GV, US, CS)
     enddo
   endif ; enddo ; enddo
 
-  !   Copy the results back before anything on the host reads them, and only then release the
-  ! rest of the mapping.  What matters is that no exit data below names visc_rem_[uv] or
-  ! storage covering them, not the order of the directives as such.
-  !$omp target exit data map(from: visc_rem_u, visc_rem_v)
-  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, CS%h_u, CS%a_u, CS%h_v, &
-  !$omp                              CS%a_v, visc%Ray_u, visc%Ray_v)
-  ! Released after, and apart from, their components, as they were mapped above.
-  !$omp target exit data map(release: G, CS, visc)
+  if (CS%debug) then
+    !$omp target update from(visc_rem_u, visc_rem_v)
+  endif
 
   if (CS%debug) then
     call uvchksum("visc_rem_[uv]", visc_rem_u, visc_rem_v, G%HI, haloshift=0, &
@@ -1571,49 +1547,20 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     allocate(CS%a1_shelf_v(G%isd:G%ied,G%JsdB:G%JedB), source=0.0)
   endif
 
-  call find_ustar(forces, tv, Ustar_2d, G, GV, US, halo=1)
+  !   Ustar_2d is only used on the device, so it is given device storage and filled there.
+  !$omp target enter data map(alloc: Ustar_2d)
+  call find_ustar_gpu(forces, tv, Ustar_2d, G, GV, US, halo=1)
 
-  !   The two work loops below read the same grid, forcing and viscosity state and differ only
-  ! in the staggering of what they write, so all of it is mapped once for the routine.  Only
-  ! CS%a_[uv], CS%h_[uv] and CS%a_[uv]_gl90 are written on the device; everything else is
-  ! read-only here.  The GL90 coupling coefficients are allocated whether or not that scheme
-  ! runs and are read back for the Kv_gl90_[uv] diagnostics, so they travel in both directions.
-  !   hML_[uv], Kv_[uv] and Kv_gl90_[uv] are diagnostic arrays that only exist when the
+  !   The grid, forcing, viscosity and control structures, and u, v, h and dz, are mapped by the
+  ! caller, around the clock that times this routine, as are CS%a_[uv], CS%h_[uv] and
+  ! CS%a_[uv]_gl90, which are written here and stay on the device for the routines that read them
+  ! next.  The host code below that reads any of those fetches them itself.
+  !   hML_[uv], Kv_[uv] and Kv_gl90_[uv] are local diagnostic arrays that only exist when the
   ! diagnostic that reads them is registered, and are named here whether or not they do.  They
   ! travel in both directions because the loops write only the wet points, leaving the zeroes
   ! the host put under land to be preserved, and because the checksums and post_data calls at
   ! the end of the routine read them back.
-  !   The derived types are mapped on their own and before anything else, so that every
-  ! component mapped below attaches to a parent that is already present and so that both loops
-  ! find the parents resident rather than mapping them, which is what stops amdflang from
-  ! giving each component reference in their bodies an implicit tofrom mapping of its own.
-  !   u, v, h and dz are intent(in) here, so they are mapped to the device and never copied
-  ! back.  Left implicit they would each be mapped tofrom by the loop that reads them, which
-  ! downloads four arrays this routine cannot have modified, and uploads h and dz twice
-  ! because both loops read them.
-  !   visc%Kv_shear and visc%Kv_shear_Bu are only associated when a shear mixing scheme is
-  ! running, and are named here either way.  Mapping an unassociated pointer component transfers
-  ! nothing and leaves associated() false inside the kernel, which is what find_coupling_coef_k
-  ! tests, so the result is the same as not naming it and the code does not have to say so
-  ! twice.
-  !   The ice shelf components are named for a stronger reason.  Each loop tests
-  ! associated(forces%frac_shelf_u) and, if that is true, immediately writes CS%a1_shelf_u.  Both
-  ! are pointer components, so leaving them unnamed would give that test an undefined value to
-  ! branch on and put no array behind the write it guards.  Naming them makes the test read false
-  ! in a configuration without an ice shelf and costs nothing there, since mapping a disassociated
-  ! pointer transfers nothing.  visc%tbl_thick_shelf_[uv] and visc%Kv_tbl_shelf_[uv] are read on
-  ! the same branch, and find_coupling_coef reads the latter.
-  !$omp target enter data map(to: G, GV, US, CS, visc, forces, tv)
-  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
-  !$omp                          CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90, &
-  !$omp                          visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
-  !$omp                          visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                          visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz, &
-  !$omp                          CS%a1_shelf_u, CS%a1_shelf_v, &
-  !$omp                          forces%frac_shelf_u, forces%frac_shelf_v, &
-  !$omp                          visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
-  !$omp                          visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
-  !$omp                          hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
+  !$omp target enter data map(to: hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
 
   ! First do u-points
 
@@ -2234,19 +2181,33 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       enddo
     endif
   endif ; enddo ; enddo
-  !   Copy the coupling coefficients and thicknesses back before the checksums and diagnostics
-  ! below read them on the host, and only then discard the rest of the mapping.
-  !$omp target exit data map(from: CS%a_u, CS%h_u, CS%a_v, CS%h_v, CS%a_u_gl90, CS%a_v_gl90, &
-  !$omp                            CS%a1_shelf_u, CS%a1_shelf_v, &
-  !$omp                            hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
-  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
-  !$omp                              visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
-  !$omp                              visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
-  !$omp                              visc%Kv_shear, visc%Kv_shear_Bu, Ustar_2d, u, v, h, dz, &
-  !$omp                              forces%frac_shelf_u, forces%frac_shelf_v, &
-  !$omp                              visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
-  !$omp                              visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v)
-  !$omp target exit data map(release: G, GV, US, CS, visc, forces, tv)
+  !   Copy the local diagnostic arrays back before the checksums and diagnostics below read them
+  ! on the host, and fetch whichever of the coupling coefficients and thicknesses they read.
+  !$omp target exit data map(from: hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
+  !$omp target exit data map(release: Ustar_2d)
+  if (CS%debug) then
+    !$omp target update from(CS%a_u, CS%h_u, CS%a_v, CS%h_v)
+  endif
+  if (query_averaging_enabled(CS%diag)) then
+    if (CS%id_au_vv > 0) then
+      !$omp target update from(CS%a_u)
+    endif
+    if (CS%id_av_vv > 0) then
+      !$omp target update from(CS%a_v)
+    endif
+    if (CS%id_au_gl90_vv > 0) then
+      !$omp target update from(CS%a_u_gl90)
+    endif
+    if (CS%id_av_gl90_vv > 0) then
+      !$omp target update from(CS%a_v_gl90)
+    endif
+    if (CS%id_h_u > 0) then
+      !$omp target update from(CS%h_u)
+    endif
+    if (CS%id_h_v > 0) then
+      !$omp target update from(CS%h_v)
+    endif
+  endif
 
   if (CS%debug) then
     call uvchksum("vertvisc_coef h_[uv]", CS%h_u, CS%h_v, G%HI, haloshift=0, &
@@ -3338,16 +3299,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
   H_report = 3.0 * GV%Angstrom_H
 
-  !   The grid metrics and layer thicknesses below are read but never written by the kernels in
-  ! this routine, and most of them are wanted by more than one, so they are mapped once for the
-  ! routine.  Both branches of each [uv]_trunc_file test now run kernels, so this is no longer
-  ! conditional on either file being unset.
-  !   The velocities are deliberately left to the map clauses on the kernels themselves.  The
-  ! reporting branch interleaves device and host work on the same velocity -- the CFL scan
-  ! writes u on the device, then u_old and write_u_accel read it on the host -- so each kernel
-  ! carries the velocity it touches and hands it straight back.
-  !$omp target enter data map(to: G, GV, US, CS)
-  !$omp target enter data map(to: G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS%h_u, CS%h_v)
+  !   The grid metrics, layer thicknesses and velocities below are mapped by the caller of
+  ! vertvisc, around the clock that times it.  The reporting branches read u, v and the coupling
+  ! state on the host, so they fetch what they read first.
 
   if (len_trim(CS%u_trunc_file) > 0) then
     do_any_write = .false.
@@ -3365,7 +3319,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     ! host loop visited it in, so the reported velocity is the same one.
     !$omp target teams distribute parallel do collapse(2) private(CFL) &
     !$omp   reduction(.or.: trunc_any, do_any_write) &
-    !$omp   map(tofrom: u, dowrite, vel_report)
+    !$omp   map(tofrom: dowrite, vel_report)
     do j=js,je ; do I=Isq,Ieq
       do k=1,nz
         if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
@@ -3386,7 +3340,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     !   u_old is only read by write_u_accel, which is only called when there is something to
     ! report, so it is only filled then rather than moving all of u to the device on every call.
     if (do_any_write) then
-      !$omp target teams distribute parallel do collapse(2) map(to: u, dowrite) map(tofrom: u_old)
+      !$omp target teams distribute parallel do collapse(2) map(to: dowrite) map(tofrom: u_old)
       do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
         do k=1,nz
           u_old(I,j,k) = u(I,j,k)
@@ -3396,8 +3350,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
     if (trunc_any) then
       ntrunc = 0
-      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-      !$omp   map(tofrom: u)
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc)
       do k=1,nz ; do j=js,je ; do I=Isq,Ieq
         if ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
           u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
@@ -3413,6 +3366,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
 
     if (do_any_write) then
+      !   write_u_accel reads these on the host, and they are otherwise held on the device.
+      !$omp target update from(CS%a_u, CS%h_u)
+      if (associated(ADp%du_dt_visc)) then
+        !$omp target update from(ADp%du_dt_visc)
+      endif
       do j=js,je ; do I=Isq,Ieq ; if (dowrite(I,j)) then
         ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
         call write_u_accel(I, j, u_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
@@ -3421,8 +3379,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
-    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(tofrom: u)
+    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc)
     do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) then ; u(I,j,k) = 0.0
       elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
@@ -3453,7 +3410,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     ! vel_report(i,J) and the write to dowrite(i,J) are not raced on by a column's layers.
     !$omp target teams distribute parallel do collapse(2) private(CFL) &
     !$omp   reduction(.or.: trunc_any, do_any_write) &
-    !$omp   map(tofrom: v, dowrite, vel_report)
+    !$omp   map(tofrom: dowrite, vel_report)
     do J=Jsq,Jeq ; do i=is,ie
       do k=1,nz
         if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
@@ -3473,7 +3430,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
     ! As for u_old above, v_old is only filled when there is something to report.
     if (do_any_write) then
-      !$omp target teams distribute parallel do collapse(2) map(to: v, dowrite) map(tofrom: v_old)
+      !$omp target teams distribute parallel do collapse(2) map(to: dowrite) map(tofrom: v_old)
       do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
         do k=1,nz
           v_old(i,J,k) = v(i,J,k)
@@ -3483,8 +3440,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
     if (trunc_any) then
       ntrunc = 0
-      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-      !$omp   map(tofrom: v)
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc)
       do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
         if ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
           v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
@@ -3500,6 +3456,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
 
     if (do_any_write) then
+      !   write_v_accel reads these on the host, and they are otherwise held on the device.
+      !$omp target update from(CS%a_v, CS%h_v)
+      if (associated(ADp%dv_dt_visc)) then
+        !$omp target update from(ADp%dv_dt_visc)
+      endif
       do J=Jsq,Jeq ; do i=is,ie ; if (dowrite(i,J)) then
         ! Call a diagnostic reporting subroutines are called if unphysically large values are found.
         call write_v_accel(i, J, v_old, h, ADp, CDp, dt, G, GV, US, CS%PointAccel_CSp, &
@@ -3508,8 +3469,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
-    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) &
-    !$omp   map(tofrom: v)
+    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc)
     do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) then ; v(i,J,k) = 0.0
       elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
@@ -3525,9 +3485,6 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
 
-  ! Nothing mapped here is written on the device, so there is nothing to copy back.
-  !$omp target exit data map(release: G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, CS%h_u, CS%h_v)
-  !$omp target exit data map(release: G, GV, US, CS)
 
 end subroutine vertvisc_limit_vel
 

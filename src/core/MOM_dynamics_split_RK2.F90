@@ -56,7 +56,7 @@ use MOM_harmonic_analysis,     only : HA_init, harmonic_analysis_CS
 use MOM_hor_index,             only : hor_index_type
 use MOM_hor_visc,              only : horizontal_viscosity, hor_visc_CS, hor_visc_vel_stencil
 use MOM_hor_visc,              only : hor_visc_init, hor_visc_end
-use MOM_interface_heights,     only : thickness_to_dz, find_col_avg_SpV
+use MOM_interface_heights,     only : thickness_to_dz, thickness_to_dz_gpu, find_col_avg_SpV
 use MOM_lateral_mixing_coeffs, only : VarMix_CS
 use MOM_MEKE_types,            only : MEKE_type
 use MOM_open_boundary,         only : ocean_OBC_type, radiation_open_bdry_conds
@@ -597,28 +597,45 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     endif
   endif
 
+  !   What the vertical viscosity routines use on the device is copied there before their clock
+  ! starts, and back after it stops.  up, vp and dz are filled on the device, and are only read
+  ! there, so they are given device storage and never travel.
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  !$omp target enter data map(to: u_inst, v_inst, u_bc_accel, v_bc_accel) map(alloc: up, vp, dz)
   call cpu_clock_begin(id_clock_vertvisc)
-  !$OMP parallel do default(shared)
-  do k=1,nz
-    do j=js,je ; do I=Isq,Ieq
-      up(I,j,k) = G%mask2dCu(I,j) * (u_inst(I,j,k) + dt * u_bc_accel(I,j,k))
-    enddo ; enddo
-    do J=Jsq,Jeq ; do i=is,ie
-      vp(i,J,k) = G%mask2dCv(i,J) * (v_inst(i,J,k) + dt * v_bc_accel(i,J,k))
-    enddo ; enddo
-  enddo
+  !$omp target teams distribute parallel do collapse(3)
+  do k=1,nz ; do j=js,je ; do I=Isq,Ieq
+    up(I,j,k) = G%mask2dCu(I,j) * (u_inst(I,j,k) + dt * u_bc_accel(I,j,k))
+  enddo ; enddo ; enddo
+  !$omp target teams distribute parallel do collapse(3)
+  do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
+    vp(i,J,k) = G%mask2dCv(i,J) * (v_inst(i,J,k) + dt * v_bc_accel(i,J,k))
+  enddo ; enddo ; enddo
 
   call enable_averages(dt, Time_local, CS%diag)
   call set_viscous_ML(u_inst, v_inst, h, tv, forces, visc, dt, G, GV, US, CS%set_visc_CSp)
   call disable_averaging(CS%diag)
 
   if (CS%debug) then
+    !$omp target update from(up, vp)
     call uvchksum("before vertvisc: up", up, vp, G%HI, haloshift=0, symmetric=sym, unscale=US%L_T_to_m_s)
   endif
-  call thickness_to_dz(h, tv, dz, G, GV, US, halo_size=1)
+  call thickness_to_dz_gpu(h, tv, dz, G, GV, US, halo_size=1)
+  ! set_viscous_ML may have reset these, and they were copied to the device before it ran.
+  if (allocated(visc%nkml_visc_u)) then
+    !$omp target update to(visc%nkml_visc_u, visc%nkml_visc_v)
+  endif
+  if (allocated(visc%tbl_thick_shelf_u)) then
+    !$omp target update to(visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v)
+  endif
+  if (allocated(visc%Kv_tbl_shelf_u)) then
+    !$omp target update to(visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v)
+  endif
   call vertvisc_coef(up, vp, h, dz, forces, visc, tv, dt, G, GV, US, CS%vertvisc_CSp, CS%OBC, VarMix)
   call vertvisc_remnant(visc, CS%visc_rem_u, CS%visc_rem_v, dt, G, GV, US, CS%vertvisc_CSp)
   call cpu_clock_end(id_clock_vertvisc)
+  !$omp target exit data map(release: u_inst, v_inst, u_bc_accel, v_bc_accel, up, vp, dz)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
   if (showCallTree) call callTree_wayPoint("done with vertvisc_coef (step_MOM_dyn_split_RK2)")
 
 
@@ -724,6 +741,10 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
 ! up <- up + dt_pred d/dz visc d/dz up
 ! u_av  <- u_av  + dt_pred d/dz visc d/dz u_av
+  ! As above, the device copies are made outside the clock.  dz is filled and read on the device.
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_diags_device_in(CS%AD_pred, CS%taux_bot, CS%tauy_bot)
+  !$omp target enter data map(to: up, vp) map(alloc: dz)
   call cpu_clock_begin(id_clock_vertvisc)
   if (CS%debug) then
     call uvchksum("0 before vertvisc: [uv]p", up, vp, G%HI,haloshift=0, symmetric=sym, unscale=US%L_T_to_m_s)
@@ -746,7 +767,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     enddo
   endif
 
-  call thickness_to_dz(h, tv, dz, G, GV, US, halo_size=1)
+  call thickness_to_dz_gpu(h, tv, dz, G, GV, US, halo_size=1)
   call vertvisc_coef(up, vp, h, dz, forces, visc, tv, dt_pred, G, GV, US, CS%vertvisc_CSp, &
                      CS%OBC, VarMix)
 
@@ -760,6 +781,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     lFPpost = .false.
     call vertFPmix(up, vp, uold, vold, hbl, h, forces, dt_pred, lFPpost, CS%Cemp_NL,  &
                    G, GV, US, CS%vertvisc_CSp, CS%OBC, waves=waves)
+    !$omp target update to(up, vp)
     call vertvisc(up, vp, h, forces, visc, dt_pred, CS%OBC, CS%AD_pred, CS%CDp, G, &
                   GV, US, CS%vertvisc_CSp, CS%taux_bot, CS%tauy_bot, fpmix=CS%fpmix, waves=waves)
   else
@@ -770,6 +792,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   if (showCallTree) call callTree_wayPoint("done with vertvisc (step_MOM_dyn_split_RK2)")
   if (G%nonblocking_updates) then
     call cpu_clock_end(id_clock_vertvisc)
+    !$omp target update from(up, vp)
     call start_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass)
     call cpu_clock_begin(id_clock_vertvisc)
   endif
@@ -779,6 +802,9 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     call vertvisc_remnant(visc, CS%visc_rem_u, CS%visc_rem_v, dt, G, GV, US, CS%vertvisc_CSp)
   endif
   call cpu_clock_end(id_clock_vertvisc)
+  !$omp target exit data map(from: up, vp) map(release: dz)
+  call vertvisc_diags_device_out(CS%AD_pred, CS%taux_bot, CS%tauy_bot)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
 
   call do_group_pass(CS%pass_visc_rem, G%Domain, clock=id_clock_pass)
   if (G%nonblocking_updates) then
@@ -989,6 +1015,10 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   ! u <- u + dt d/dz visc d/dz u
   ! u_av <- u_av + dt d/dz visc d/dz u_av
+  ! As above, the device copies are made outside the clock.  dz is filled and read on the device.
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_diags_device_in(CS%ADp, CS%taux_bot, CS%tauy_bot)
+  !$omp target enter data map(to: u_inst, v_inst) map(alloc: dz)
   call cpu_clock_begin(id_clock_vertvisc)
 
   if (CS%fpmix) then
@@ -1008,13 +1038,14 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     enddo
   endif
 
-  call thickness_to_dz(h, tv, dz, G, GV, US, halo_size=1)
+  call thickness_to_dz_gpu(h, tv, dz, G, GV, US, halo_size=1)
   call vertvisc_coef(u_inst, v_inst, h, dz, forces, visc, tv, dt, G, GV, US, CS%vertvisc_CSp, CS%OBC, VarMix)
 
   if (CS%fpmix) then
     lFPpost = .true.
     call vertFPmix(u_inst, v_inst, uold, vold, hbl, h, forces, dt, lFPpost, CS%Cemp_NL, &
                    G, GV, US, CS%vertvisc_CSp, CS%OBC, Waves=Waves)
+    !$omp target update to(u_inst, v_inst)
     call vertvisc(u_inst, v_inst, h, forces, visc, dt, CS%OBC, CS%ADp, CS%CDp, G, GV, US, &
          CS%vertvisc_CSp, CS%taux_bot, CS%tauy_bot, fpmix=CS%fpmix, waves=waves)
 
@@ -1025,11 +1056,15 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   if (G%nonblocking_updates) then
     call cpu_clock_end(id_clock_vertvisc)
+    !$omp target update from(u_inst, v_inst)
     call start_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass)
     call cpu_clock_begin(id_clock_vertvisc)
   endif
   call vertvisc_remnant(visc, CS%visc_rem_u, CS%visc_rem_v, dt, G, GV, US, CS%vertvisc_CSp)
   call cpu_clock_end(id_clock_vertvisc)
+  !$omp target exit data map(from: u_inst, v_inst) map(release: dz)
+  call vertvisc_diags_device_out(CS%ADp, CS%taux_bot, CS%tauy_bot)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
   if (showCallTree) call callTree_wayPoint("done with vertvisc (step_MOM_dyn_split_RK2)")
 
 ! Later, h_av = (h_in + h_out)/2, but for now use h_av to store h_in.
@@ -1961,6 +1996,137 @@ subroutine end_dyn_split_RK2(CS)
 
   deallocate(CS)
 end subroutine end_dyn_split_RK2
+
+
+!> Copy to the device the state that vertvisc_coef, vertvisc, vertvisc_remnant and
+!! vertvisc_limit_vel use there, so that the copies are made outside the clock that times them.
+!! vertvisc_device_out undoes this, and the two calls must bracket the same span.
+subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS)
+  type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in) :: h     !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in) :: visc_rem_u !< Fraction of a time-step's worth of a
+                                               !! barotropic acceleration that a layer experiences
+                                               !! after viscosity is applied in the zonal direction [nondim]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
+                           intent(in) :: visc_rem_v !< Fraction of a time-step's worth of a
+                                               !! barotropic acceleration that a layer experiences
+                                               !! after viscosity is applied in the meridional direction [nondim]
+  type(mech_forcing),      intent(in) :: forces !< A structure with the driving mechanical forces
+  type(vertvisc_type),     intent(in) :: visc  !< Vertical viscosities, bottom drag, and related fields
+  type(thermo_var_ptrs),   intent(in) :: tv    !< Thermodynamic variables
+  type(unit_scale_type),   intent(in) :: US    !< A dimensional unit scaling type
+  type(vertvisc_CS),       intent(in) :: VCS   !< Vertical viscosity control structure
+
+  !   The structures are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  !   Components that are unallocated or unassociated in a configuration (the ice shelf, Rayleigh
+  ! drag, shear mixing, GL90 and non-Boussinesq fields) are named regardless: mapping one transfers
+  ! nothing and leaves allocated() or associated() false inside the kernels that test them.
+  !   The coupling coefficients and thicknesses in VCS are written by vertvisc_coef and read by the
+  ! other routines, and visc_rem_[uv] are written by vertvisc_remnant only in the columns where
+  ! G%mask2dC[uv] > 0, so all of these are copied in, and the rest have to arrive as they are.
+  !$omp target enter data map(to: G, GV, US, VCS, visc, forces, tv)
+  !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp     G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, &
+  !$omp     VCS%a_u, VCS%h_u, VCS%a_v, VCS%h_v, VCS%a_u_gl90, VCS%a_v_gl90, &
+  !$omp     VCS%a1_shelf_u, VCS%a1_shelf_v, &
+  !$omp     visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
+  !$omp     visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
+  !$omp     visc%Kv_shear, visc%Kv_shear_Bu, visc%Ray_u, visc%Ray_v, &
+  !$omp     visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
+  !$omp     visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
+  !$omp     forces%taux, forces%tauy, forces%ustar, forces%tau_mag, &
+  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, &
+  !$omp     h, visc_rem_u, visc_rem_v)
+
+end subroutine vertvisc_device_in
+
+
+!> Copy visc_rem_[uv] back from the device and release everything that vertvisc_device_in mapped.
+!! The coupling coefficients and thicknesses in VCS are not copied back: the vertical viscosity
+!! routines that read them on the host fetch them themselves, and each new span recomputes them.
+subroutine vertvisc_device_out(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS)
+  type(ocean_grid_type),   intent(in)    :: G     !< Ocean grid structure
+  type(verticalGrid_type), intent(in)    :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in)    :: h     !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
+                           intent(inout) :: visc_rem_u !< Fraction of a time-step's worth of a
+                                               !! barotropic acceleration that a layer experiences
+                                               !! after viscosity is applied in the zonal direction [nondim]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
+                           intent(inout) :: visc_rem_v !< Fraction of a time-step's worth of a
+                                               !! barotropic acceleration that a layer experiences
+                                               !! after viscosity is applied in the meridional direction [nondim]
+  type(mech_forcing),      intent(in)    :: forces !< A structure with the driving mechanical forces
+  type(vertvisc_type),     intent(in)    :: visc  !< Vertical viscosities, bottom drag, and related fields
+  type(thermo_var_ptrs),   intent(in)    :: tv    !< Thermodynamic variables
+  type(unit_scale_type),   intent(in)    :: US    !< A dimensional unit scaling type
+  type(vertvisc_CS),       intent(in)    :: VCS   !< Vertical viscosity control structure
+
+  ! The components are released ahead of, and apart from, the structures, as they were mapped.
+  !$omp target exit data map(from: visc_rem_u, visc_rem_v)
+  !$omp target exit data map(release: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
+  !$omp     G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, &
+  !$omp     VCS%a_u, VCS%h_u, VCS%a_v, VCS%h_v, VCS%a_u_gl90, VCS%a_v_gl90, &
+  !$omp     VCS%a1_shelf_u, VCS%a1_shelf_v, &
+  !$omp     visc%Kv_bbl_u, visc%bbl_thick_u, visc%nkml_visc_u, &
+  !$omp     visc%Kv_bbl_v, visc%bbl_thick_v, visc%nkml_visc_v, &
+  !$omp     visc%Kv_shear, visc%Kv_shear_Bu, visc%Ray_u, visc%Ray_v, &
+  !$omp     visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
+  !$omp     visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
+  !$omp     forces%taux, forces%tauy, forces%ustar, forces%tau_mag, &
+  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, h)
+  !$omp target exit data map(release: G, GV, US, VCS, visc, forces, tv)
+
+end subroutine vertvisc_device_out
+
+
+!> Copy to the device the viscous tendency diagnostics and bottom stresses that vertvisc fills
+!! there.  They travel in both directions because vertvisc writes only the computational domain
+!! (and only the wet points of some of them), so the rest have to arrive and survive.
+subroutine vertvisc_diags_device_in(ADp, taux_bot, tauy_bot)
+  type(accel_diag_ptrs),    intent(in) :: ADp      !< Accelerations in the momentum equations
+  real, dimension(:,:), pointer        :: taux_bot !< Zonal bottom stress [R L Z T-2 ~> Pa]
+  real, dimension(:,:), pointer        :: tauy_bot !< Meridional bottom stress [R L Z T-2 ~> Pa]
+
+  ! ADp is mapped apart from its components for the same reason as the structures above.  Its
+  ! components are only associated when a diagnostic that reads them is registered.
+  !$omp target enter data map(to: ADp)
+  !$omp target enter data map(to: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
+  !$omp                          ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
+  if (associated(taux_bot)) then
+    !$omp target enter data map(to: taux_bot)
+  endif
+  if (associated(tauy_bot)) then
+    !$omp target enter data map(to: tauy_bot)
+  endif
+
+end subroutine vertvisc_diags_device_in
+
+
+!> Copy back what vertvisc_diags_device_in mapped.
+subroutine vertvisc_diags_device_out(ADp, taux_bot, tauy_bot)
+  type(accel_diag_ptrs),    intent(in) :: ADp      !< Accelerations in the momentum equations
+  real, dimension(:,:), pointer        :: taux_bot !< Zonal bottom stress [R L Z T-2 ~> Pa]
+  real, dimension(:,:), pointer        :: tauy_bot !< Meridional bottom stress [R L Z T-2 ~> Pa]
+
+  if (associated(taux_bot)) then
+    !$omp target exit data map(from: taux_bot)
+  endif
+  if (associated(tauy_bot)) then
+    !$omp target exit data map(from: tauy_bot)
+  endif
+  !$omp target exit data map(from: ADp%du_dt_visc, ADp%du_dt_visc_gl90, ADp%du_dt_str, &
+  !$omp                           ADp%dv_dt_visc, ADp%dv_dt_visc_gl90, ADp%dv_dt_str)
+  ! Released after, and apart from, its components, as it was mapped.
+  !$omp target exit data map(release: ADp)
+
+end subroutine vertvisc_diags_device_out
 
 
 !> \namespace mom_dynamics_split_rk2
