@@ -254,6 +254,44 @@ module procedure btstep
   ! This can be changed to try to optimize the performance.
   nonblock_setup = G%nonblocking_updates
 
+  !   The copies to and from the device are made outside of the btstep clocks, so that the clocks
+  ! time only the calculations and halo updates.
+  ! Every array used on the device by btstep and the routines it calls is mapped here, once, and
+  ! released in the teardown at the end of this routine (the only exceptions are wt_vel/wt_eta/
+  ! wt_trans, which are mapped as soon as they are allocated and filled, and the local arrays of
+  ! the called routines). Host code in between (unported loops, halo updates, diagnostics) keeps
+  ! the host copies current with target update from/to around it.
+  !   CS, G and forces are mapped in a directive of their own, ahead of their components: when a
+  ! structure shares a directive with some of its components, amdflang copies only the span
+  ! between the first and last of those components, and the rest of it is undefined on the device.
+  ! They are released in a directive of their own as well, because mapping the components takes
+  ! another reference to the structure, and a release shared with them would drop only one.
+  !$omp target enter data map(to: CS, G, forces)
+  !$omp target enter data &
+  !$omp   map(to: CS%q_D, CS%D_u_Cor, CS%D_v_Cor, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
+  !$omp     CS%IDatu, CS%IDatv, CS%dy_Cu, CS%dx_Cv, CS%bathyT, forces%taux, forces%tauy, &
+  !$omp     eta_in, eta_PF_in, CS%frhatu, CS%frhatv, CS%ua_polarity, CS%va_polarity, &
+  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, U_Cor, V_Cor, pbce, &
+  !$omp     G%OBCmaskCu, G%OBCmaskCv, bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, &
+  !$omp     G%mask2dT, G%dxT, G%dyT, CS%eta_cor, CS%IareaT, CS%eta_cor_bound, &
+  !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, G%IareaT, G%meanSL, &
+  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%OBCmask_u, CS%OBCmask_v, U_in, V_in)
+  !$omp target enter data map(to: CS%BT_OBC) if(CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
+  !$omp target enter data map(to: CS%BT_OBC%u_OBC_type) if(CS%BT_OBC%u_OBCs_on_PE)
+  !$omp target enter data map(to: CS%BT_OBC%v_OBC_type) if(CS%BT_OBC%v_OBCs_on_PE)
+  !$omp target enter data map(to: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
+  !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0) if (add_uh0)
+  !$omp target enter data map(to: taux_bot, tauy_bot) if(apply_bottom_drag)
+  !$omp target enter data map(to: eta_PF_start) if(interp_eta_PF)
+  ! BT_cont is mapped, and later released, apart from its components for the same reason as
+  ! CS, G and forces above.
+  !$omp target enter data map(to: BT_cont) if(use_BT_cont)
+  !$omp target enter data map(to: BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
+  !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
+  !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
+  !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
+  !$omp   if(use_BT_cont)
+
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
 
   apply_OBC_flather = .false.
@@ -338,26 +376,9 @@ module procedure btstep
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
 !--- end setup for group halo update
 
-  ! Every array used on the device by btstep and the routines it calls is mapped here, once, and
-  ! released in the teardown at the end of this routine (the only exceptions are wt_vel/wt_eta/
-  ! wt_trans, which are mapped as soon as they are allocated and filled, and the local arrays of
-  ! the called routines). Host code in between (unported loops, halo updates, diagnostics) keeps
-  ! the host copies current with target update from/to around it.
-  !   CS, G and forces are mapped in a directive of their own, ahead of their components: when a
-  ! structure shares a directive with some of its components, amdflang copies only the span
-  ! between the first and last of those components, and the rest of it is undefined on the device.
-  ! They are released in a directive of their own as well, because mapping the components takes
-  ! another reference to the structure, and a release shared with them would drop only one.
-  !$omp target enter data map(to: CS, G, forces)
+  !   The arrays that btstep fills on the device are allocated here; those that it reads were
+  ! copied in above, before the clock was started.
   !$omp target enter data &
-  !$omp   map(to: CS%q_D, CS%D_u_Cor, CS%D_v_Cor, GV, G%bathyT, G%CoriolisBu, CS%q_wt, &
-  !$omp     CS%IDatu, CS%IDatv, CS%dy_Cu, CS%dx_Cv, CS%bathyT, forces%taux, forces%tauy, &
-  !$omp     eta_in, eta_PF_in, CS%frhatu, CS%frhatv, CS%ua_polarity, CS%va_polarity, &
-  !$omp     visc_rem_u, visc_rem_v, G%mask2dCu, G%mask2dCv, U_Cor, V_Cor, pbce, &
-  !$omp     G%OBCmaskCu, G%OBCmaskCv, bc_accel_u, bc_accel_v, CS%ubt_IC, CS%vbt_IC, &
-  !$omp     G%mask2dT, G%dxT, G%dyT, CS%eta_cor, CS%IareaT, CS%eta_cor_bound, &
-  !$omp     G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, G%IareaT, G%meanSL, &
-  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%OBCmask_u, CS%OBCmask_v, U_in, V_in) &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot, &
@@ -367,22 +388,7 @@ module procedure btstep
   !$omp     CS%ubtav, CS%vbtav, uhbtav, vhbtav, accel_layer_u, accel_layer_v)
   ! eta_out may be the same array as eta_in, so it is mapped after eta_in has been copied in.
   !$omp target enter data map(alloc: eta_out)
-  !$omp target enter data map(to: CS%BT_OBC) if(CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
-  !$omp target enter data map(to: CS%BT_OBC%u_OBC_type) if(CS%BT_OBC%u_OBCs_on_PE)
-  !$omp target enter data map(to: CS%BT_OBC%v_OBC_type) if(CS%BT_OBC%v_OBCs_on_PE)
-  !$omp target enter data map(to: CS%lin_drag_u, CS%lin_drag_v) if(CS%linear_wave_drag)
   !$omp target enter data map(alloc: etaav) if(find_etaav)
-  !$omp target enter data map(to: uh0, vh0, u_uh0, v_vh0) if (add_uh0)
-  !$omp target enter data map(to: taux_bot, tauy_bot) if(apply_bottom_drag)
-  !$omp target enter data map(to: eta_PF_start) if(interp_eta_PF)
-  ! BT_cont is mapped, and later released, apart from its components for the same reason as
-  ! CS, G and forces above.
-  !$omp target enter data map(to: BT_cont) if(use_BT_cont)
-  !$omp target enter data map(to: BT_cont%uBT_EE, BT_cont%uBT_WW, BT_cont%FA_u_EE, &
-  !$omp   BT_cont%FA_u_E0, BT_cont%FA_u_W0, BT_cont%FA_u_WW, &
-  !$omp   BT_cont%vBT_NN, BT_cont%vBT_SS, BT_cont%FA_v_NN, &
-  !$omp   BT_cont%FA_v_N0, BT_cont%FA_v_S0, BT_cont%FA_v_SS) &
-  !$omp   if(use_BT_cont)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -1631,9 +1637,6 @@ module procedure btstep
     if (CS%id_vbt_st > 0) call post_data(CS%id_vbt_st, vbt(isd:ied,JsdB:JedB), CS%diag)
   endif
 
-  if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
-  if (id_clock_calc > 0) call cpu_clock_begin(id_clock_calc)
-
   if (CS%dt_bt_filter >= 0.0) then
     dt_filt = 0.5 * max(0.0, min(CS%dt_bt_filter, 2.0*dt))
   else
@@ -1708,7 +1711,10 @@ module procedure btstep
     I_sum_wt_vel = 1.0 ; I_sum_wt_eta = 1.0 ; I_sum_wt_accel = 1.0 ; I_sum_wt_trans = 1.0
   endif
   ! These weights are only allocated just above, so they cannot be mapped at the top of btstep.
+  ! They are copied in between the pre-calculation and stepping clocks.
+  if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   !$omp target enter data map(to: wt_vel, wt_eta, wt_trans)
+  if (id_clock_calc > 0) call cpu_clock_begin(id_clock_calc)
 
   ! March the barotropic solver through all of its time steps.
   call btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL_v, eta_IC, &
@@ -1911,6 +1917,8 @@ module procedure btstep
     endif
   endif
 
+  if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
+
   ! Refresh the host copies needed by the diagnostics below, then release everything that was
   ! mapped at the top of btstep. Arrays that are copied back as part of the teardown are
   ! released first, so that an input that shares memory with an output (eta_in and eta_out may be
@@ -1952,14 +1960,16 @@ module procedure btstep
   !$omp     CS%dy_Cu, CS%dx_Cv, G%IareaT, G%IdxCu, G%IdyCv, G%IdxT, G%IdyT, G%Coriolis2Bu, &
   !$omp     GV, G%bathyT, CS%q_D, CS%D_u_Cor, CS%D_v_Cor, G%CoriolisBu, CS%q_wt, eta_in, eta_PF_in, &
   !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, U_in, V_in, &
-  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, CS%ubtav, CS%vbtav, uhbtav, vhbtav, eta_sum, &
+  !$omp     CS%IdxCu, CS%IdyCv, CS%IareaT_OBCmask, uhbtav, vhbtav, eta_sum, &
   !$omp     eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, ubt_st, vbt_st, &
   !$omp     bt_rem_u, bt_rem_v, CS%OBCmask_u, CS%OBCmask_v, G%meanSL, wt_vel, wt_eta, wt_trans)
+  !   CS%ubtav and CS%vbtav were allocated in a directive apart from the one that copied in the
+  ! other components of CS, and each of those directives took a reference to CS, so they are
+  ! released in a directive of their own to drop the second one.
+  !$omp target exit data map(release: CS%ubtav, CS%vbtav)
   ! Released after, and apart from, their components, as they were mapped at the start of btstep.
   !$omp target exit data map(release: CS, G, forces)
   !$omp target exit data map(from: ubt_wtd, vbt_wtd, accel_layer_u, accel_layer_v, eta_out)
-
-  if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
 
   ! Calculate diagnostic quantities.
   if (query_averaging_enabled(CS%diag)) then
