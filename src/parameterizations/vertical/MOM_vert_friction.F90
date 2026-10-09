@@ -1542,6 +1542,13 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! the host put under land to be preserved, and because the checksums and post_data calls at
   ! the end of the routine read them back.
   !$omp target enter data map(to: hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
+  !   The column work arrays are private to each thread in the loops over velocity points below,
+  ! but amdflang still maps them implicitly to and from the device at every launch, at the cost of
+  ! a device allocation and two small copies per array.  Giving them device storage here, once,
+  ! turns those implicit maps into lookups.  Nothing is copied, and each thread still works on its
+  ! own private copies.
+  !$omp target enter data map(alloc: hvel, dz_harm, dz_vel, hvel_shelf, dz_vel_shelf, &
+  !$omp     z_i, z_i_gl90, a_cpl, a_cpl_gl90, a_shelf)
 
   ! First do u-points
 
@@ -2166,6 +2173,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   ! on the host, and fetch whichever of the coupling coefficients and thicknesses they read.
   !$omp target exit data map(from: hML_u, hML_v, Kv_u, Kv_v, Kv_gl90_u, Kv_gl90_v)
   !$omp target exit data map(release: Ustar_2d)
+  !$omp target exit data map(release: hvel, dz_harm, dz_vel, hvel_shelf, dz_vel_shelf, &
+  !$omp     z_i, z_i_gl90, a_cpl, a_cpl_gl90, a_shelf)
   if (CS%debug) then
     !$omp target update from(CS%a_u, CS%h_u, CS%a_v, CS%h_v)
   endif

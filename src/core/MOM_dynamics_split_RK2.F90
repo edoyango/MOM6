@@ -601,7 +601,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   !   What the vertical viscosity routines use on the device is copied there before their clock
   ! starts, and back after it stops.  up, vp and dz are filled on the device, and are only read
   ! there, so they are given device storage and never travel.
-  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                          VarMix)
   !$omp target enter data map(to: u_inst, v_inst, u_bc_accel, v_bc_accel) map(alloc: up, vp, dz)
   call cpu_clock_begin(id_clock_vertvisc)
   !$omp target teams distribute parallel do collapse(3)
@@ -636,7 +637,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call vertvisc_remnant(visc, CS%visc_rem_u, CS%visc_rem_v, dt, G, GV, US, CS%vertvisc_CSp)
   call cpu_clock_end(id_clock_vertvisc)
   !$omp target exit data map(release: u_inst, v_inst, u_bc_accel, v_bc_accel, up, vp, dz)
-  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                           VarMix)
   if (showCallTree) call callTree_wayPoint("done with vertvisc_coef (step_MOM_dyn_split_RK2)")
 
 
@@ -757,7 +759,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 ! up <- up + dt_pred d/dz visc d/dz up
 ! u_av  <- u_av  + dt_pred d/dz visc d/dz u_av
   ! As above, the device copies are made outside the clock.  dz is filled and read on the device.
-  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                          VarMix)
   call vertvisc_diags_device_in(CS%AD_pred, CS%taux_bot, CS%tauy_bot)
   !$omp target enter data map(to: up, vp) map(alloc: dz)
   call cpu_clock_begin(id_clock_vertvisc)
@@ -819,7 +822,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call cpu_clock_end(id_clock_vertvisc)
   !$omp target exit data map(from: up, vp) map(release: dz)
   call vertvisc_diags_device_out(CS%AD_pred, CS%taux_bot, CS%tauy_bot)
-  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                           VarMix)
 
   call do_group_pass(CS%pass_visc_rem, G%Domain, clock=id_clock_pass)
   if (G%nonblocking_updates) then
@@ -1033,7 +1037,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   ! u <- u + dt d/dz visc d/dz u
   ! u_av <- u_av + dt d/dz visc d/dz u_av
   ! As above, the device copies are made outside the clock.  dz is filled and read on the device.
-  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_in(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                          VarMix)
   call vertvisc_diags_device_in(CS%ADp, CS%taux_bot, CS%tauy_bot)
   !$omp target enter data map(to: u_inst, v_inst) map(alloc: dz)
   call cpu_clock_begin(id_clock_vertvisc)
@@ -1081,7 +1086,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call cpu_clock_end(id_clock_vertvisc)
   !$omp target exit data map(from: u_inst, v_inst) map(release: dz)
   call vertvisc_diags_device_out(CS%ADp, CS%taux_bot, CS%tauy_bot)
-  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp)
+  call vertvisc_device_out(h, CS%visc_rem_u, CS%visc_rem_v, forces, visc, tv, G, GV, US, CS%vertvisc_CSp, &
+                           VarMix)
   if (showCallTree) call callTree_wayPoint("done with vertvisc (step_MOM_dyn_split_RK2)")
 
 ! Later, h_av = (h_in + h_out)/2, but for now use h_av to store h_in.
@@ -2025,7 +2031,7 @@ end subroutine end_dyn_split_RK2
 !> Copy to the device the state that vertvisc_coef, vertvisc, vertvisc_remnant and
 !! vertvisc_limit_vel use there, so that the copies are made outside the clock that times them.
 !! vertvisc_device_out undoes this, and the two calls must bracket the same span.
-subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS)
+subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS, VarMix)
   type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -2043,6 +2049,7 @@ subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV
   type(thermo_var_ptrs),   intent(in) :: tv    !< Thermodynamic variables
   type(unit_scale_type),   intent(in) :: US    !< A dimensional unit scaling type
   type(vertvisc_CS),       intent(in) :: VCS   !< Vertical viscosity control structure
+  type(VarMix_CS),         intent(in) :: VarMix !< Variable mixing control structure
 
   !   The structures are mapped in a directive of their own, ahead of their components: when a
   ! structure shares a directive with some of its components, amdflang copies only the span
@@ -2053,7 +2060,9 @@ subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV
   !   The coupling coefficients and thicknesses in VCS are written by vertvisc_coef and read by the
   ! other routines, and visc_rem_[uv] are written by vertvisc_remnant only in the columns where
   ! G%mask2dC[uv] > 0, so all of these are copied in, and the rest have to arrive as they are.
-  !$omp target enter data map(to: G, GV, US, VCS, visc, forces, tv)
+  !   VarMix is passed to find_coupling_coef_gl90 inside the vertvisc_coef kernels, which reads
+  ! VarMix%kdgl90_struct.  Without it here, VarMix is mapped implicitly at every launch.
+  !$omp target enter data map(to: G, GV, US, VCS, visc, forces, tv, VarMix)
   !$omp target enter data map(to: G%mask2dCu, G%mask2dCv, G%bathyT, G%CoriolisBu, &
   !$omp     G%dy_Cu, G%dx_Cv, G%areaT, G%IareaT, &
   !$omp     VCS%a_u, VCS%h_u, VCS%a_v, VCS%h_v, VCS%a_u_gl90, VCS%a_v_gl90, &
@@ -2064,7 +2073,7 @@ subroutine vertvisc_device_in(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV
   !$omp     visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
   !$omp     visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
   !$omp     forces%taux, forces%tauy, forces%ustar, forces%tau_mag, &
-  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, &
+  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, VarMix%kdgl90_struct, &
   !$omp     h, visc_rem_u, visc_rem_v)
 
 end subroutine vertvisc_device_in
@@ -2073,7 +2082,7 @@ end subroutine vertvisc_device_in
 !> Copy visc_rem_[uv] back from the device and release everything that vertvisc_device_in mapped.
 !! The coupling coefficients and thicknesses in VCS are not copied back: the vertical viscosity
 !! routines that read them on the host fetch them themselves, and each new span recomputes them.
-subroutine vertvisc_device_out(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS)
+subroutine vertvisc_device_out(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, GV, US, VCS, VarMix)
   type(ocean_grid_type),   intent(in)    :: G     !< Ocean grid structure
   type(verticalGrid_type), intent(in)    :: GV    !< Ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -2091,6 +2100,7 @@ subroutine vertvisc_device_out(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, G
   type(thermo_var_ptrs),   intent(in)    :: tv    !< Thermodynamic variables
   type(unit_scale_type),   intent(in)    :: US    !< A dimensional unit scaling type
   type(vertvisc_CS),       intent(in)    :: VCS   !< Vertical viscosity control structure
+  type(VarMix_CS),         intent(in)    :: VarMix !< Variable mixing control structure
 
   ! The components are released ahead of, and apart from, the structures, as they were mapped.
   !$omp target exit data map(from: visc_rem_u, visc_rem_v)
@@ -2104,8 +2114,8 @@ subroutine vertvisc_device_out(h, visc_rem_u, visc_rem_v, forces, visc, tv, G, G
   !$omp     visc%tbl_thick_shelf_u, visc%tbl_thick_shelf_v, &
   !$omp     visc%Kv_tbl_shelf_u, visc%Kv_tbl_shelf_v, &
   !$omp     forces%taux, forces%tauy, forces%ustar, forces%tau_mag, &
-  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, h)
-  !$omp target exit data map(release: G, GV, US, VCS, visc, forces, tv)
+  !$omp     forces%frac_shelf_u, forces%frac_shelf_v, tv%SpV_avg, VarMix%kdgl90_struct, h)
+  !$omp target exit data map(release: G, GV, US, VCS, visc, forces, tv, VarMix)
 
 end subroutine vertvisc_device_out
 
