@@ -2708,7 +2708,7 @@ module procedure btstep_timeloop
       ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
       ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
       ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
-      !$omp target teams distribute parallel do reduction(.or.: eta_is_submerged)
+      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged)
       do j=js,je ; do i=is,ie
         submerged(i,j) = (eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
