@@ -20,6 +20,7 @@ implicit none ; private
 #include <MOM_memory.h>
 
 public find_eta, find_dz_for_eta, dz_to_thickness, thickness_to_dz, dz_to_thickness_simple
+public thickness_to_dz_gpu
 public calc_derived_thermo
 public convert_MLD_to_ML_thickness
 public find_rho_bottom, find_col_avg_SpV, find_col_mass
@@ -921,6 +922,59 @@ subroutine thickness_to_dz_3d(h, tv, dz, G, GV, US, halo_size)
   endif
 
 end subroutine thickness_to_dz_3d
+
+
+!> Converts layer thicknesses in thickness units to the vertical distance between edges in height
+!! units, as thickness_to_dz does, but on the device.  h, tv and (when it is allocated) tv%SpV_avg
+!! must already be mapped, and dz must already have device storage; dz is filled only there.
+subroutine thickness_to_dz_gpu(h, tv, dz, G, GV, US, halo_size)
+  type(ocean_grid_type),   intent(in)    :: G  !< The ocean's grid structure
+  type(verticalGrid_type), intent(in)    :: GV !< The ocean's vertical grid structure
+  type(unit_scale_type),   intent(in)    :: US !< A dimensional unit scaling type
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(in)    :: h  !< Input thicknesses in thickness units [H ~> m or kg m-2].
+  type(thermo_var_ptrs),   intent(in)    :: tv !< A structure pointing to various
+                                               !! thermodynamic variables
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                           intent(inout) :: dz !< Geometric layer thicknesses in height units [Z ~> m]
+                                               !! This is essentially intent out, but declared as intent
+                                               !! inout to preserve any initialized values in halo points.
+  integer,       optional, intent(in)    :: halo_size !< Width of halo within which to
+                                               !! calculate thicknesses
+  ! Local variables
+  character(len=128) :: mesg    ! A string for error messages
+  real :: H_to_RZ  ! A copy of GV%H_to_RZ, so that the device loop needs no copy of GV [R Z H-1 ~> kg m-3 or 1]
+  real :: H_to_Z   ! A copy of GV%H_to_Z, so that the device loop needs no copy of GV [Z H-1 ~> 1 or m3 kg-1]
+  integer :: i, j, k, is, ie, js, je, halo, nz
+
+  halo = 0 ; if (present(halo_size)) halo = max(0,halo_size)
+  is = G%isc-halo ; ie = G%iec+halo ; js = G%jsc-halo ; je = G%jec+halo ; nz = GV%ke
+
+  if ((.not.GV%Boussinesq) .and. allocated(tv%SpV_avg))  then
+    if ((allocated(tv%SpV_avg)) .and. (tv%valid_SpV_halo < halo)) then
+      if (tv%valid_SpV_halo < 0) then
+        mesg = "invalid values of SpV_avg."
+      else
+        write(mesg, '("insufficiently large SpV_avg halos of width ", i2, " but ", i2," is needed.")') &
+                     tv%valid_SpV_halo, halo
+      endif
+      call MOM_error(FATAL, "thickness_to_dz_gpu called in fully non-Boussinesq mode with "//trim(mesg))
+    endif
+
+    H_to_RZ = GV%H_to_RZ
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      dz(i,j,k) = H_to_RZ * h(i,j,k) * tv%SpV_avg(i,j,k)
+    enddo ; enddo ; enddo
+  else
+    H_to_Z = GV%H_to_Z
+    !$omp target teams distribute parallel do collapse(3)
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      dz(i,j,k) = H_to_Z * h(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
+end subroutine thickness_to_dz_gpu
 
 
 !> Converts a vertical i- / k- slice of layer thicknesses in thickness units to the vertical
