@@ -731,12 +731,6 @@ module procedure btstep
     enddo ; enddo ; enddo
   endif
 
-  ! wt_u/wt_v are now finished (never written again anywhere in btstep) and stay mapped
-  ! continuously for the rest of the routine -- no exit ever releases them again, so this is
-  ! their only host copy-back. It exists solely for the CS%debug uvchksum call much further down
-  ! (the only remaining host reader); nothing else needs it, since every other use is on device.
-  !$omp target update from(wt_u, wt_v)
-
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
   ! gtot_E/W/N/S were already zeroed over the wider CS%isdw:CS%iedw/CS%jsdw:CS%jedw halo, and
@@ -1598,6 +1592,7 @@ module procedure btstep
       !$omp target update from(Datu, Datv)
       call uvchksum("BT Dat[uv]", Datu, Datv, CS%debug_BT_HI, haloshift=1, unscale=US%L_to_m*GV%H_to_m)
     endif
+    !$omp target update from(wt_u, wt_v)
     call uvchksum("BT wt_[uv]", wt_u, wt_v, G%HI, haloshift=0, &
                   symmetric=.true., omit_corners=.true., scalar_pair=.true.)
     call uvchksum("BT frhat[uv]", CS%frhatu, CS%frhatv, G%HI, haloshift=0, &
