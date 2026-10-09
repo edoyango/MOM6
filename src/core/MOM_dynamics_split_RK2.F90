@@ -43,6 +43,7 @@ use MOM_ALE,                   only : ALE_CS, ALE_remap_velocities
 use MOM_barotropic,            only : barotropic_init, btstep, btcalc, bt_mass_source
 use MOM_barotropic,            only : register_barotropic_restarts, set_dtbt, barotropic_CS
 use MOM_barotropic,            only : barotropic_end
+use MOM_barotropic,            only : btstep_device_in, btstep_device_out
 use MOM_boundary_update,       only : update_OBC_data, update_OBC_CS
 use MOM_continuity,            only : continuity, continuity_CS
 use MOM_continuity,            only : continuity_init, continuity_stencil
@@ -701,6 +702,10 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
     uh_ptr => uh_in ; vh_ptr => vh_in ; u_ptr => u_inst ; v_ptr => v_inst
   endif
 
+  call btstep_device_in(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
+                        u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
+                        CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                        uh_ptr, vh_ptr, u_ptr, v_ptr)
   call cpu_clock_begin(id_clock_btstep)
   if (calc_dtbt) then
     if (CS%dtbt_use_bt_cont .and. associated(CS%BT_cont)) then
@@ -722,6 +727,10 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
               eta_PF_start, taux_bot, tauy_bot, uh_ptr, vh_ptr, u_ptr, v_ptr)
   if (showCallTree) call callTree_leave("btstep()")
   call cpu_clock_end(id_clock_btstep)
+  call btstep_device_out(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
+                         u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
+                         CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                         uh_ptr, vh_ptr, u_ptr, v_ptr)
 
 ! up = u + dt_pred*( u_bc_accel + u_accel_bt )
   dt_pred = dt * CS%be
@@ -984,10 +993,15 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   ! u_accel_bt = layer accelerations due to barotropic solver
   ! pbce = dM/deta
-  call cpu_clock_begin(id_clock_btstep)
   if (CS%BT_use_layer_fluxes) then
     uh_ptr => uh ; vh_ptr => vh ; u_ptr => u_av ; v_ptr => v_av
   endif
+  call btstep_device_in(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
+                        u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
+                        CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                        uh_ptr, vh_ptr, u_ptr, v_ptr)
+  !$omp target enter data map(alloc: deta_dt) if(CS%id_deta_dt>0)
+  call cpu_clock_begin(id_clock_btstep)
 
   if (showCallTree) call callTree_enter("btstep(), MOM_barotropic.F90")
   ! This is the corrector step call to btstep.
@@ -995,12 +1009,26 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
               CS%u_accel_bt, CS%v_accel_bt, eta_pred, CS%uhbt, CS%vhbt, G, GV, US, &
               CS%barotropic_CSp, CS%visc_rem_u, CS%visc_rem_v, SpV_avg, CS%ADp, CS%OBC, CS%BT_cont, &
               eta_PF_start, taux_bot, tauy_bot, uh_ptr, vh_ptr, u_ptr, v_ptr, etaav=eta_av)
+  !   eta_pred is only copied back by btstep_device_out, so eta and deta_dt are set from it on the
+  ! device and brought back once the clock is stopped.
   if (CS%id_deta_dt>0) then
-    do j=js,je ; do i=is,ie ; deta_dt(i,j) = (eta_pred(i,j) - eta(i,j))*Idt_bc ; enddo ; enddo
+    !$omp target teams distribute parallel do collapse(2)
+    do j=js,je ; do i=is,ie
+      deta_dt(i,j) = (eta_pred(i,j) - eta(i,j))*Idt_bc
+    enddo ; enddo
   endif
-  do j=js,je ; do i=is,ie ; eta(i,j) = eta_pred(i,j) ; enddo ; enddo
+  !$omp target teams distribute parallel do collapse(2)
+  do j=js,je ; do i=is,ie
+    eta(i,j) = eta_pred(i,j)
+  enddo ; enddo
 
   call cpu_clock_end(id_clock_btstep)
+  !$omp target update from(eta)
+  !$omp target exit data map(from: deta_dt) if(CS%id_deta_dt>0)
+  call btstep_device_out(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
+                         u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
+                         CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                         uh_ptr, vh_ptr, u_ptr, v_ptr)
   if (showCallTree) call callTree_leave("btstep()")
 
   if (CS%debug .and. debug_redundant) then

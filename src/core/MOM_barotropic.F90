@@ -69,6 +69,7 @@ implicit none ; private
 
 public btcalc, bt_mass_source, btstep, barotropic_init, barotropic_end
 public register_barotropic_restarts, set_dtbt, barotropic_get_tav
+public btstep_device_in, btstep_device_out
 
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
@@ -559,6 +560,126 @@ module subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces,
   ! These are always allocated with symmetric memory and wide halos.
                   ! bt_rem_u is between 0 and 1.
 end subroutine btstep
+!> Copy to the device the structures and input arrays that btstep uses there, and allocate its
+!! outputs accel_layer_u, accel_layer_v and eta_out there, so that the copies are made outside the
+!! clock that times the call to btstep.  btstep_device_out undoes this, and the two calls must
+!! bracket the call to btstep, with the same arguments as are passed to btstep.
+module subroutine btstep_device_in(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, forces, pbce, &
+                  eta_PF_in, U_Cor, V_Cor, accel_layer_u, accel_layer_v, eta_out, G, GV, CS, &
+                  visc_rem_u, visc_rem_v, BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                  uh0, vh0, u_uh0, v_vh0)
+  type(ocean_grid_type),                      intent(in) :: G          !< The ocean's grid structure.
+  type(verticalGrid_type),                    intent(in) :: GV         !< The ocean's vertical grid structure.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_in       !< The initial (3-D) zonal
+                                                                       !! velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: V_in       !< The initial (3-D) meridional
+                                                                       !! velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(in) :: eta_in     !< The initial barotropic free surface
+                                                         !! height anomaly or column mass anomaly [H ~> m or kg m-2].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: bc_accel_u !< The zonal baroclinic accelerations,
+                                                                       !! [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: bc_accel_v !< The meridional baroclinic accelerations,
+                                                                       !! [L T-2 ~> m s-2].
+  type(mech_forcing),                         intent(in) :: forces     !< A structure with the driving mechanical forces
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in) :: pbce       !< The baroclinic pressure anomaly in each layer
+                                                         !! due to free surface height anomalies
+                                                         !! [L2 H-1 T-2 ~> m s-2 or m4 kg-1 s-2].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(in) :: eta_PF_in  !< The 2-D eta field that was used to
+                                                         !! calculate the input pressure gradient accelerations
+                                                         !! [H ~> m or kg m-2].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_Cor      !< The (3-D) zonal velocities used to
+                                                         !! calculate the Coriolis terms in bc_accel_u [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: V_Cor      !< The (3-D) meridional velocities used to
+                                                         !! calculate the Coriolis terms in bc_accel_u [L T-1 ~> m s-1].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: accel_layer_u !< The zonal acceleration of each
+                                                         !! layer due to the barotropic calculation [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: accel_layer_v !< The meridional acceleration of each
+                                                         !! layer due to the barotropic calculation [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(in) :: eta_out    !< The final barotropic free surface
+                                                         !! height anomaly or column mass anomaly [H ~> m or kg m-2].
+  type(barotropic_CS),                        intent(in) :: CS         !< Barotropic control structure
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: visc_rem_u !< The fraction of the momentum originally
+                                                         !! in a layer that remains after a time-step of viscosity,
+                                                         !! in the zonal direction [nondim].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: visc_rem_v !< Ditto for meridional direction [nondim].
+  type(BT_cont_type),                         pointer    :: BT_cont    !< A structure with elements that describe
+                                                         !! the effective open face areas as a function of barotropic
+                                                         !! flow.
+  real, dimension(:,:),                       pointer    :: eta_PF_start !< The eta field consistent with the pressure
+                                                         !! gradient at the start of the barotropic stepping
+                                                         !! [H ~> m or kg m-2].
+  real, dimension(:,:),                       pointer    :: taux_bot   !< The zonal bottom frictional stress from
+                                                         !! ocean to the seafloor [R L Z T-2 ~> Pa].
+  real, dimension(:,:),                       pointer    :: tauy_bot   !< The meridional bottom frictional stress
+                                                         !! from ocean to the seafloor [R L Z T-2 ~> Pa].
+  real, dimension(:,:,:),                     pointer    :: uh0        !< The zonal layer transports at reference
+                                                         !! velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(:,:,:),                     pointer    :: vh0        !< The meridional layer transports at reference
+                                                         !! velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(:,:,:),                     pointer    :: u_uh0      !< The velocities used to calculate
+                                                         !! uh0 [L T-1 ~> m s-1]
+  real, dimension(:,:,:),                     pointer    :: v_vh0      !< The velocities used to calculate
+                                                         !! vh0 [L T-1 ~> m s-1]
+end subroutine btstep_device_in
+!> Copy accel_layer_u, accel_layer_v and eta_out back from the device and release everything that
+!! btstep_device_in mapped.
+module subroutine btstep_device_out(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, forces, pbce, &
+                  eta_PF_in, U_Cor, V_Cor, accel_layer_u, accel_layer_v, eta_out, G, GV, CS, &
+                  visc_rem_u, visc_rem_v, BT_cont, eta_PF_start, taux_bot, tauy_bot, &
+                  uh0, vh0, u_uh0, v_vh0)
+  type(ocean_grid_type),                      intent(in) :: G          !< The ocean's grid structure.
+  type(verticalGrid_type),                    intent(in) :: GV         !< The ocean's vertical grid structure.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_in       !< The initial (3-D) zonal
+                                                                       !! velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: V_in       !< The initial (3-D) meridional
+                                                                       !! velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(in) :: eta_in     !< The initial barotropic free surface
+                                                         !! height anomaly or column mass anomaly [H ~> m or kg m-2].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: bc_accel_u !< The zonal baroclinic accelerations,
+                                                                       !! [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: bc_accel_v !< The meridional baroclinic accelerations,
+                                                                       !! [L T-2 ~> m s-2].
+  type(mech_forcing),                         intent(in) :: forces     !< A structure with the driving mechanical forces
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in) :: pbce       !< The baroclinic pressure anomaly in each layer
+                                                         !! due to free surface height anomalies
+                                                         !! [L2 H-1 T-2 ~> m s-2 or m4 kg-1 s-2].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(in) :: eta_PF_in  !< The 2-D eta field that was used to
+                                                         !! calculate the input pressure gradient accelerations
+                                                         !! [H ~> m or kg m-2].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_Cor      !< The (3-D) zonal velocities used to
+                                                         !! calculate the Coriolis terms in bc_accel_u [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: V_Cor      !< The (3-D) meridional velocities used to
+                                                         !! calculate the Coriolis terms in bc_accel_u [L T-1 ~> m s-1].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: accel_layer_u !< The zonal acceleration of each
+                                                         !! layer due to the barotropic calculation [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(inout) :: accel_layer_v !< The meridional acceleration of each
+                                                         !! layer due to the barotropic calculation [L T-2 ~> m s-2].
+  real, dimension(SZI_(G),SZJ_(G)),           intent(inout) :: eta_out    !< The final barotropic free surface
+                                                         !! height anomaly or column mass anomaly [H ~> m or kg m-2].
+  type(barotropic_CS),                        intent(in) :: CS         !< Barotropic control structure
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: visc_rem_u !< The fraction of the momentum originally
+                                                         !! in a layer that remains after a time-step of viscosity,
+                                                         !! in the zonal direction [nondim].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in) :: visc_rem_v !< Ditto for meridional direction [nondim].
+  type(BT_cont_type),                         pointer    :: BT_cont    !< A structure with elements that describe
+                                                         !! the effective open face areas as a function of barotropic
+                                                         !! flow.
+  real, dimension(:,:),                       pointer    :: eta_PF_start !< The eta field consistent with the pressure
+                                                         !! gradient at the start of the barotropic stepping
+                                                         !! [H ~> m or kg m-2].
+  real, dimension(:,:),                       pointer    :: taux_bot   !< The zonal bottom frictional stress from
+                                                         !! ocean to the seafloor [R L Z T-2 ~> Pa].
+  real, dimension(:,:),                       pointer    :: tauy_bot   !< The meridional bottom frictional stress
+                                                         !! from ocean to the seafloor [R L Z T-2 ~> Pa].
+  real, dimension(:,:,:),                     pointer    :: uh0        !< The zonal layer transports at reference
+                                                         !! velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(:,:,:),                     pointer    :: vh0        !< The meridional layer transports at reference
+                                                         !! velocities [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(:,:,:),                     pointer    :: u_uh0      !< The velocities used to calculate
+                                                         !! uh0 [L T-1 ~> m s-1]
+  real, dimension(:,:,:),                     pointer    :: v_vh0      !< The velocities used to calculate
+                                                         !! vh0 [L T-1 ~> m s-1]
+end subroutine btstep_device_out
 module subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL_v, eta_IC, &
                 eta_PF_1, d_eta_PF, eta_src, dyn_coef_eta, uhbtav, vhbtav, u_accel_bt, v_accel_bt, &
                 f_4_u, f_4_v, bt_rem_u, bt_rem_v, &
