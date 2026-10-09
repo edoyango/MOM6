@@ -42,6 +42,7 @@ module procedure zonal_mass_flux
   real :: H_subroundoff ! A copy of GV%H_subroundoff for use on the device [H ~> m or kg m-2]
   type(cont_loop_bounds_type) :: LB
   integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
   integer :: IsdB, IedB, jsd, jed ! The data domain bounds at u points
   integer :: l_seg ! The OBC segment number
   logical :: use_visc_rem, set_BT_cont, set_h_u
@@ -91,6 +92,7 @@ module procedure zonal_mass_flux
     LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
   endif
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nteams = max(1, ((ieh-ish+2) * (jeh-jsh+1) + 255) / 256)
   IsdB = G%IsdB ; IedB = G%IedB ; jsd = G%jsd ; jed = G%jed
 
   vol_CFL = CS%vol_CFL ; aggress_adjust = CS%aggress_adjust ; use_visc_rem_max = CS%use_visc_rem_max
@@ -150,7 +152,7 @@ module procedure zonal_mass_flux
   endif
 
   if (present(uhbt) .or. set_BT_cont) then
-    !$omp target teams
+    !$omp target teams num_teams(nteams)
     if (use_visc_rem .and. use_visc_rem_max) then
       !$omp distribute parallel do collapse(2)
       do j=jsh,jeh ; do I=ish-1,ieh
@@ -787,8 +789,10 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   real :: h_marg_min ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL ! A copy of CS%vol_CFL for use on the device
   integer :: i, j, k, nz
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
 
   nz = GV%ke ; Idt = 1.0 / dt
+  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
   min_visc_rem = 0.1 ; CFL_min = 1e-6
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
@@ -808,7 +812,7 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   ! Determine the westerly- and easterly- fluxes.  Choose a sufficiently
   ! negative velocity correction for the easterly-flux, and a sufficiently
   ! positive correction for the westerly-flux.
-  !$omp target teams
+  !$omp target teams num_teams(nteams)
   !$omp distribute parallel do collapse(2)
   do j=j_start,j_end ; do I=i_start,i_end
     du_CFL(I,j) = (CFL_min * Idt) * G%dxCu(I,j)
@@ -1023,6 +1027,7 @@ module procedure meridional_mass_flux
   real :: H_subroundoff ! A copy of GV%H_subroundoff for use on the device [H ~> m or kg m-2]
   type(cont_loop_bounds_type) :: LB
   integer :: i, j, k, ish, ieh, jsh, jeh, n, nz
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
   integer :: isd, ied, JsdB, JedB ! The data domain bounds at v points
   integer :: l_seg ! The OBC segment number
   logical :: use_visc_rem, set_BT_cont, set_h_v
@@ -1072,6 +1077,7 @@ module procedure meridional_mass_flux
     LB%ish = G%isc ; LB%ieh = G%iec ; LB%jsh = G%jsc ; LB%jeh = G%jec
   endif
   ish = LB%ish ; ieh = LB%ieh ; jsh = LB%jsh ; jeh = LB%jeh ; nz = GV%ke
+  nteams = max(1, ((ieh-ish+1) * (jeh-jsh+2) + 255) / 256)
   isd = G%isd ; ied = G%ied ; JsdB = G%JsdB ; JedB = G%JedB
 
   vol_CFL = CS%vol_CFL ; aggress_adjust = CS%aggress_adjust ; use_visc_rem_max = CS%use_visc_rem_max
@@ -1131,7 +1137,7 @@ module procedure meridional_mass_flux
   endif
 
   if (present(vhbt) .or. set_BT_cont) then
-    !$omp target teams
+    !$omp target teams num_teams(nteams)
     if (use_visc_rem .and. use_visc_rem_max) then
       !$omp distribute parallel do collapse(2)
       do J=jsh-1,jeh ; do i=ish,ieh
@@ -1766,8 +1772,10 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, vh_tot_0, dvhdv_tot_0, 
   real :: h_marg_min ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL ! A copy of CS%vol_CFL for use on the device
   integer :: i, j, k, nz
+  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
 
   nz = GV%ke ; Idt = 1.0 / dt
+  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
   min_visc_rem = 0.1 ; CFL_min = 1e-6
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
@@ -1787,7 +1795,7 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, vh_tot_0, dvhdv_tot_0, 
   !   Determine the southerly- and northerly- fluxes.  Choose a sufficiently
   ! negative velocity correction for the northerly-flux, and a sufficiently
   ! positive correction for the southerly-flux.
-  !$omp target teams
+  !$omp target teams num_teams(nteams)
   !$omp distribute parallel do collapse(2)
   do J=j_start,j_end ; do i=i_start,i_end ; if (do_I(i,J)) then
     dv_CFL(i,J) = (CFL_min * Idt) * G%dyCv(i,J)
