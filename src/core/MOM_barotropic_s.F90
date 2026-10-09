@@ -1021,10 +1021,12 @@ module procedure btstep
   enddo ; enddo
 
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
+    !$omp target update from(ubt)
     do j=js,je ; do I=is-1,ie ; ubt_st(I,j) = ubt(I,j) ; enddo ; enddo
     !$omp target update to(ubt_st) if(apply_OBCs)
   endif
   if (apply_OBCs .or. (CS%id_vbtdt > 0)) then
+    !$omp target update from(vbt)
     do J=js-1,je ; do i=is,ie ; vbt_st(i,J) = vbt(i,J) ; enddo ; enddo
     !$omp target update to(vbt_st) if(apply_OBCs)
   endif
@@ -3155,9 +3157,6 @@ module procedure btstep_ubt_from_layer
       if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
     enddo
   enddo
-
-  ! The host loop after this call (ubt_st(I,j) = ubt(I,j)) uses the host copies of ubt and vbt.
-  !$omp target update from(ubt, vbt)
 
 end procedure btstep_ubt_from_layer
 module procedure btstep_layer_accel
