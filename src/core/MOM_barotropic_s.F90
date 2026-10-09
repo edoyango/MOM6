@@ -4678,7 +4678,7 @@ module procedure bt_mass_source
         eta_h(i,j) = eta_h(i,j) + h(i,j,k)
       enddo
     enddo
-    !$omp parallel do num_threads(256)
+    !$omp parallel do num_threads(256) private(d_eta)
     do i=is,ie
       if (set_cor) then
         d_eta = eta_h(i,j) - eta(i,j)
