@@ -1959,12 +1959,19 @@ subroutine initialize_dyn_split_RK2(u, v, h, tv, uh, vh, eta, Time, G, GV, US, p
   id_clock_btstep     = cpu_clock_id('(Ocean barotropic mode stepping)', grain=CLOCK_MODULE)
   id_clock_btforce    = cpu_clock_id('(Ocean barotropic forcing calc)',  grain=CLOCK_MODULE)
 
+  ! The grid is complete and does not change from here on, so it is mapped to the device once,
+  ! for the rest of the run, and released by end_dyn_split_RK2.
+  call grid_device_in(G)
+
 end subroutine initialize_dyn_split_RK2
 
 
 !> Close the dyn_split_RK2 module
-subroutine end_dyn_split_RK2(CS)
-  type(MOM_dyn_split_RK2_CS), pointer :: CS  !< module control structure
+subroutine end_dyn_split_RK2(G, CS)
+  type(ocean_grid_type),      intent(in) :: G   !< ocean grid structure
+  type(MOM_dyn_split_RK2_CS), pointer    :: CS  !< module control structure
+
+  call grid_device_out(G)
 
   call barotropic_end(CS%barotropic_CSp)
 
@@ -2127,6 +2134,62 @@ subroutine vertvisc_diags_device_out(ADp, taux_bot, tauy_bot)
   !$omp target exit data map(release: ADp)
 
 end subroutine vertvisc_diags_device_out
+
+
+!> Copy G and all of its arrays to the device once, at the end of initialize_dyn_split_RK2, for the
+!! rest of the run.  The grid does not change after initialization, so nothing is copied back;
+!! grid_device_out releases it from end_dyn_split_RK2.  While it is mapped, the maps of G and its
+!! components inside the routines called during a step only adjust reference counts, and no kernel
+!! that names a component of G deep-copies the rest of it.
+!!   The scalars in the device copy of G keep their values from initialization.  G%first_direction
+!! changes during the run when ALTERNATE_FIRST_DIRECTION is true, so it must only be read on the host.
+subroutine grid_device_in(G)
+  type(ocean_grid_type), intent(in) :: G  !< Ocean grid structure
+
+  !   G is mapped in a directive of its own, ahead of its components: when a structure shares a
+  ! directive with some of its components, amdflang copies only the span between the first and
+  ! last of those components, and the rest of it is undefined on the device.
+  !   Components that are unallocated in a configuration (such as the porous barrier depths) are
+  ! named regardless: mapping one transfers nothing.
+  !$omp target enter data map(to: G)
+  !$omp target enter data map(to: &
+  !$omp     G%mask2dT, G%geoLatT, G%geoLonT, G%dxT, G%IdxT, G%dyT, G%IdyT, G%areaT, G%IareaT, &
+  !$omp     G%sin_rot, G%cos_rot, &
+  !$omp     G%mask2dCu, G%OBCmaskCu, G%geoLatCu, G%geoLonCu, G%dxCu, G%IdxCu, G%IdxCu_OBCmask, &
+  !$omp     G%dyCu, G%IdyCu, G%dy_Cu, G%IareaCu, G%areaCu, &
+  !$omp     G%mask2dCv, G%OBCmaskCv, G%geoLatCv, G%geoLonCv, G%dxCv, G%IdxCv, G%dyCv, G%IdyCv, &
+  !$omp     G%IdyCv_OBCmask, G%dx_Cv, G%IareaCv, G%areaCv, &
+  !$omp     G%porous_DminU, G%porous_DmaxU, G%porous_DavgU, &
+  !$omp     G%porous_DminV, G%porous_DmaxV, G%porous_DavgV, &
+  !$omp     G%mask2dBu, G%geoLatBu, G%geoLonBu, G%dxBu, G%IdxBu, G%dyBu, G%IdyBu, G%areaBu, G%IareaBu, &
+  !$omp     G%gridLatT, G%gridLatB, G%gridLonT, G%gridLonB, &
+  !$omp     G%bathyT, G%meanSL, G%Dblock_u, G%Dopen_u, G%Dblock_v, G%Dopen_v, &
+  !$omp     G%CoriolisBu, G%Coriolis2Bu, G%df_dx, G%df_dy)
+
+end subroutine grid_device_in
+
+
+!> Release G and all of its arrays, as mapped by grid_device_in.
+subroutine grid_device_out(G)
+  type(ocean_grid_type), intent(in) :: G  !< Ocean grid structure
+
+  ! The components are released ahead of, and apart from, the structure, as they were mapped.
+  !$omp target exit data map(release: &
+  !$omp     G%mask2dT, G%geoLatT, G%geoLonT, G%dxT, G%IdxT, G%dyT, G%IdyT, G%areaT, G%IareaT, &
+  !$omp     G%sin_rot, G%cos_rot, &
+  !$omp     G%mask2dCu, G%OBCmaskCu, G%geoLatCu, G%geoLonCu, G%dxCu, G%IdxCu, G%IdxCu_OBCmask, &
+  !$omp     G%dyCu, G%IdyCu, G%dy_Cu, G%IareaCu, G%areaCu, &
+  !$omp     G%mask2dCv, G%OBCmaskCv, G%geoLatCv, G%geoLonCv, G%dxCv, G%IdxCv, G%dyCv, G%IdyCv, &
+  !$omp     G%IdyCv_OBCmask, G%dx_Cv, G%IareaCv, G%areaCv, &
+  !$omp     G%porous_DminU, G%porous_DmaxU, G%porous_DavgU, &
+  !$omp     G%porous_DminV, G%porous_DmaxV, G%porous_DavgV, &
+  !$omp     G%mask2dBu, G%geoLatBu, G%geoLonBu, G%dxBu, G%IdxBu, G%dyBu, G%IdyBu, G%areaBu, G%IareaBu, &
+  !$omp     G%gridLatT, G%gridLatB, G%gridLonT, G%gridLonB, &
+  !$omp     G%bathyT, G%meanSL, G%Dblock_u, G%Dopen_u, G%Dblock_v, G%Dopen_v, &
+  !$omp     G%CoriolisBu, G%Coriolis2Bu, G%df_dx, G%df_dy)
+  !$omp target exit data map(release: G)
+
+end subroutine grid_device_out
 
 
 !> \namespace mom_dynamics_split_rk2

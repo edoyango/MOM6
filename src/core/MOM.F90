@@ -4689,7 +4689,7 @@ subroutine MOM_end(CS)
   if (CS%split .and. CS%use_alt_split) then
     call end_dyn_split_RK2b(CS%dyn_split_RK2b_CSp)
   elseif (CS%split) then
-    call end_dyn_split_RK2(CS%dyn_split_RK2_CSp)
+    call end_dyn_split_RK2(CS%G, CS%dyn_split_RK2_CSp)
   elseif (CS%use_RK2) then
     call end_dyn_unsplit_RK2(CS%dyn_unsplit_RK2_CSp)
   else
