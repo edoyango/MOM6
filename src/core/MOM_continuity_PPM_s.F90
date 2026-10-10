@@ -577,14 +577,12 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
                        !! boundary segments where the flow is taken from the cell to the west or east
                        !! of the face, or 0 elsewhere [nondim]
   ! Local variables
-  real, dimension(SZIB_(G),SZJ_(G)) :: &
-    uh_err, &  ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
-    uh_err_best, & ! The smallest value of uh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
-    duhdu_tot,&! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
-    du_min, &  ! Lower limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-    du_max     ! Upper limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-  logical, dimension(SZIB_(G),SZJ_(G)) :: &
-    do_I       ! Indicates the points that are still being adjusted
+  real :: uh_err      ! Difference between uhbt and the summed uh [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real :: uh_err_best ! The smallest value of uh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real :: duhdu_tot   ! Summed partial derivative of uh with u [H L ~> m2 or kg m-1].
+  real :: du_min  ! Lower limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  real :: du_max  ! Upper limit on du correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  logical :: do_I ! Indicates whether this point is still being adjusted
   real :: u_new   ! The velocity with the correction added [L T-1 ~> m s-1].
   real :: duhdu   ! Partial derivative of uh with u [H L ~> m2 or kg m-1].
   real :: du_prev ! The previous value of du [L T-1 ~> m s-1].
@@ -595,90 +593,66 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
   real :: h_marg_min  ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL, better_iter ! Copies of CS fields for use on the device
   integer :: i, j, k, nz, itt
-  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
-#ifndef _OPENMP
-  logical :: domore ! True if any point still needs to be adjusted
-#endif
   integer, parameter :: max_itts = 20
 
   nz = GV%ke
-  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
 
   tol_vel = CS%tol_vel ; tol_eta_ref = CS%tol_eta ; better_iter = CS%better_iter
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
-  !$omp target enter data map(alloc: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
-
-  !$omp target teams num_teams(nteams) private(tol_eta)
-  !$omp distribute parallel do collapse(2)
+  ! Each point is iterated to convergence on its own, with the vertical sums carried in scalars.
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I, u_new, duhdu, du_prev, &
+  !$omp           ddu, tol_eta, itt, k)
   do j=j_start,j_end ; do I=i_start,i_end
-    du(I,j) = 0.0 ; do_I(I,j) = do_I_in(I,j)
-    du_max(I,j) = du_max_CFL(I,j) ; du_min(I,j) = du_min_CFL(I,j)
-    uh_err(I,j) = uh_tot_0(I,j) - uhbt(I,j) ; duhdu_tot(I,j) = duhdu_tot_0(I,j)
-    uh_err_best(I,j) = abs(uh_err(I,j))
-  enddo ; enddo
+    du(I,j) = 0.0 ; do_I = do_I_in(I,j)
+    du_max = du_max_CFL(I,j) ; du_min = du_min_CFL(I,j)
+    uh_err = uh_tot_0(I,j) - uhbt(I,j) ; duhdu_tot = duhdu_tot_0(I,j)
+    uh_err_best = abs(uh_err)
 
-  do itt=1,max_itts
-    select case (itt)
-      case (:1) ; tol_eta = 1e-6 * tol_eta_ref
-      case (2)  ; tol_eta = 1e-4 * tol_eta_ref
-      case (3)  ; tol_eta = 1e-2 * tol_eta_ref
-      case default ; tol_eta = tol_eta_ref
-    end select
+    do itt=1,max_itts
+      select case (itt)
+        case (:1) ; tol_eta = 1e-6 * tol_eta_ref
+        case (2)  ; tol_eta = 1e-4 * tol_eta_ref
+        case (3)  ; tol_eta = 1e-2 * tol_eta_ref
+        case default ; tol_eta = tol_eta_ref
+      end select
 
-    !$omp distribute parallel do collapse(2)
-    do j=j_start,j_end ; do I=i_start,i_end
-      if (uh_err(I,j) > 0.0) then ; du_max(I,j) = du(I,j)
-      elseif (uh_err(I,j) < 0.0) then ; du_min(I,j) = du(I,j)
-      else ; do_I(I,j) = .false. ; endif
-    enddo ; enddo
-#ifndef _OPENMP
-    domore = .false.
-#endif
-    !$omp distribute parallel do collapse(2) private(ddu, du_prev)
-    do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
-      if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err(I,j)) > tol_eta) .or. &
-          (better_iter .and. ((abs(uh_err(I,j)) > tol_vel * duhdu_tot(I,j)) .or. &
-                                 (abs(uh_err(I,j)) > uh_err_best(I,j))) )) then
-      !   Use Newton's method, provided it stays bounded.  Otherwise bisect
-      ! the value with the appropriate bound.
-        ddu = -uh_err(I,j) / duhdu_tot(I,j)
-        du_prev = du(I,j)
-        du(I,j) = du(I,j) + ddu
-        if (abs(ddu) < 1.0e-15*abs(du(I,j))) then
-          do_I(I,j) = .false. ! ddu is small enough to quit.
-        elseif (ddu > 0.0) then
-          if (du(I,j) >= du_max(I,j)) then
-            du(I,j) = 0.5*(du_prev + du_max(I,j))
-            if (du_max(I,j) - du_prev < 1.0e-15*abs(du(I,j))) do_I(I,j) = .false.
+      if (uh_err > 0.0) then ; du_max = du(I,j)
+      elseif (uh_err < 0.0) then ; du_min = du(I,j)
+      else ; do_I = .false. ; endif
+
+      if (do_I) then
+        if ((dt * min(G%IareaT(i,j),G%IareaT(i+1,j))*abs(uh_err) > tol_eta) .or. &
+            (better_iter .and. ((abs(uh_err) > tol_vel * duhdu_tot) .or. &
+                                   (abs(uh_err) > uh_err_best)) )) then
+        !   Use Newton's method, provided it stays bounded.  Otherwise bisect
+        ! the value with the appropriate bound.
+          ddu = -uh_err / duhdu_tot
+          du_prev = du(I,j)
+          du(I,j) = du(I,j) + ddu
+          if (abs(ddu) < 1.0e-15*abs(du(I,j))) then
+            do_I = .false. ! ddu is small enough to quit.
+          elseif (ddu > 0.0) then
+            if (du(I,j) >= du_max) then
+              du(I,j) = 0.5*(du_prev + du_max)
+              if (du_max - du_prev < 1.0e-15*abs(du(I,j))) do_I = .false.
+            endif
+          else ! ddu < 0.0
+            if (du(I,j) <= du_min) then
+              du(I,j) = 0.5*(du_prev + du_min)
+              if (du_prev - du_min < 1.0e-15*abs(du(I,j))) do_I = .false.
+            endif
           endif
-        else ! ddu < 0.0
-          if (du(I,j) <= du_min(I,j)) then
-            du(I,j) = 0.5*(du_prev + du_min(I,j))
-            if (du_prev - du_min(I,j) < 1.0e-15*abs(du(I,j))) do_I(I,j) = .false.
-          endif
+        else
+          do_I = .false.
         endif
-#ifndef _OPENMP
-        if (do_I(I,j)) domore = .true.
-#endif
-      else
-        do_I(I,j) = .false.
       endif
-    endif ; enddo ; enddo
-#ifndef _OPENMP
-    ! Without OpenMP, stop as soon as every point has converged.  Iterations after that would not
-    ! change any of the results, so with OpenMP, where the points are spread across teams that
-    ! cannot share this flag, they are simply carried out.
-    if (.not.domore) exit
-#endif
+      ! Once a point has stopped, later iterations would change neither du nor uh_3d there.
+      if (.not.do_I) exit
 
-    !$omp distribute parallel do collapse(2)
-    do j=j_start,j_end ; do I=i_start,i_end
-      uh_err(I,j) = -uhbt(I,j) ; duhdu_tot(I,j) = 0.0
-    enddo ; enddo
-    do k=1,nz
-      !$omp distribute parallel do collapse(2) private(u_new, duhdu)
-      do j=j_start,j_end ; do I=i_start,i_end ; if (do_I(I,j)) then
+      uh_err = -uhbt(I,j) ; duhdu_tot = 0.0
+      do k=1,nz
         u_new = u(I,j,k) + du(I,j) * visc_rem(I,j,k)
         call flux_elem(u_new, h_in(i,j,k), h_in(i+1,j,k), h_W(i,j,k), h_W(i+1,j,k), h_E(i,j,k), &
                        h_E(i+1,j,k), uh_3d(I,j,k), duhdu, visc_rem(I,j,k), G%dy_Cu(I,j), &
@@ -688,21 +662,15 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
           call flux_elem_OBC(u_new, h_in(i,j,k), h_in(i+1,j,k), uh_3d(I,j,k), duhdu, &
                              visc_rem(I,j,k), por_face_areaU(I,j,k), G%dy_Cu(I,j), h_marg_min, &
                              open_dir(I,j))
-        uh_err(I,j) = uh_err(I,j) + uh_3d(I,j,k)
-        duhdu_tot(I,j) = duhdu_tot(I,j) + duhdu
-      endif ; enddo ; enddo
-    enddo
-    !$omp distribute parallel do collapse(2)
-    do j=j_start,j_end ; do I=i_start,i_end
-      uh_err_best(I,j) = min(uh_err_best(I,j), abs(uh_err(I,j)))
-    enddo ; enddo
-  enddo ! itt-loop
-  ! If there are any faces which have not converged to within the tolerance,
-  ! so-be-it, or else use a final upwind correction?
-  ! This never seems to happen with 20 iterations as max_itt.
-  !$omp end target teams
-
-  !$omp target exit data map(release: uh_err, uh_err_best, duhdu_tot, du_min, du_max, do_I)
+        uh_err = uh_err + uh_3d(I,j,k)
+        duhdu_tot = duhdu_tot + duhdu
+      enddo
+      uh_err_best = min(uh_err_best, abs(uh_err))
+    enddo ! itt-loop
+    ! If there are any faces which have not converged to within the tolerance,
+    ! so-be-it, or else use a final upwind correction?
+    ! This never seems to happen with 20 iterations as max_itt.
+  enddo ; enddo
 
 end subroutine zonal_flux_adjust
 
@@ -1560,14 +1528,12 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
                                                    !! where the flow is taken from the cell to the south
                                                    !! or north of the face, or 0 elsewhere [nondim]
   ! Local variables
-  real, dimension(SZI_(G),SZJB_(G)) :: &
-    vh_err, &  ! Difference between vhbt and the summed vh [H L2 T-1 ~> m3 s-1 or kg s-1].
-    vh_err_best, & ! The smallest value of vh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
-    dvhdv_tot,&! Summed partial derivative of vh with u [H L ~> m2 or kg m-1].
-    dv_min, &  ! Lower limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-    dv_max     ! Upper limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
-  logical, dimension(SZI_(G),SZJB_(G)) :: &
-    do_I       ! Indicates the points that are still being adjusted
+  real :: vh_err      ! Difference between vhbt and the summed vh [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real :: vh_err_best ! The smallest value of vh_err found so far [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real :: dvhdv_tot   ! Summed partial derivative of vh with v [H L ~> m2 or kg m-1].
+  real :: dv_min  ! Lower limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  real :: dv_max  ! Upper limit on dv correction based on CFL limits and previous iterations [L T-1 ~> m s-1]
+  logical :: do_I ! Indicates whether this point is still being adjusted
   real :: v_new   ! The velocity with the correction added [L T-1 ~> m s-1].
   real :: dvhdv   ! Partial derivative of vh with v [H L ~> m2 or kg m-1].
   real :: dv_prev ! The previous value of dv [L T-1 ~> m s-1].
@@ -1578,90 +1544,66 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
   real :: h_marg_min  ! A copy of CS%h_marg_min for use on the device [H ~> m or kg m-2]
   logical :: vol_CFL, better_iter ! Copies of CS fields for use on the device
   integer :: i, j, k, nz, itt
-  integer :: nteams ! The number of teams, which gives each thread at most one point to work on.
-#ifndef _OPENMP
-  logical :: domore ! True if any point still needs to be adjusted
-#endif
   integer, parameter :: max_itts = 20
 
   nz = GV%ke
-  nteams = max(1, ((i_end-i_start+1) * (j_end-j_start+1) + 255) / 256)
 
   tol_vel = CS%tol_vel ; tol_eta_ref = CS%tol_eta ; better_iter = CS%better_iter
   vol_CFL = CS%vol_CFL ; h_marg_min = CS%h_marg_min
 
-  !$omp target enter data map(alloc: vh_err, vh_err_best, dvhdv_tot, dv_min, dv_max, do_I)
-
-  !$omp target teams num_teams(nteams) private(tol_eta)
-  !$omp distribute parallel do collapse(2)
+  ! Each point is iterated to convergence on its own, with the vertical sums carried in scalars.
+  !$omp target teams distribute parallel do collapse(2) &
+  !$omp   private(vh_err, vh_err_best, dvhdv_tot, dv_min, dv_max, do_I, v_new, dvhdv, dv_prev, &
+  !$omp           ddv, tol_eta, itt, k)
   do J=j_start,j_end ; do i=i_start,i_end
-    dv(i,J) = 0.0 ; do_I(i,J) = do_I_in(i,J)
-    dv_max(i,J) = dv_max_CFL(i,J) ; dv_min(i,J) = dv_min_CFL(i,J)
-    vh_err(i,J) = vh_tot_0(i,J) - vhbt(i,J) ; dvhdv_tot(i,J) = dvhdv_tot_0(i,J)
-    vh_err_best(i,J) = abs(vh_err(i,J))
-  enddo ; enddo
+    dv(i,J) = 0.0 ; do_I = do_I_in(i,J)
+    dv_max = dv_max_CFL(i,J) ; dv_min = dv_min_CFL(i,J)
+    vh_err = vh_tot_0(i,J) - vhbt(i,J) ; dvhdv_tot = dvhdv_tot_0(i,J)
+    vh_err_best = abs(vh_err)
 
-  do itt=1,max_itts
-    select case (itt)
-      case (:1) ; tol_eta = 1e-6 * tol_eta_ref
-      case (2)  ; tol_eta = 1e-4 * tol_eta_ref
-      case (3)  ; tol_eta = 1e-2 * tol_eta_ref
-      case default ; tol_eta = tol_eta_ref
-    end select
+    do itt=1,max_itts
+      select case (itt)
+        case (:1) ; tol_eta = 1e-6 * tol_eta_ref
+        case (2)  ; tol_eta = 1e-4 * tol_eta_ref
+        case (3)  ; tol_eta = 1e-2 * tol_eta_ref
+        case default ; tol_eta = tol_eta_ref
+      end select
 
-    !$omp distribute parallel do collapse(2)
-    do J=j_start,j_end ; do i=i_start,i_end
-      if (vh_err(i,J) > 0.0) then ; dv_max(i,J) = dv(i,J)
-      elseif (vh_err(i,J) < 0.0) then ; dv_min(i,J) = dv(i,J)
-      else ; do_I(i,J) = .false. ; endif
-    enddo ; enddo
-#ifndef _OPENMP
-    domore = .false.
-#endif
-    !$omp distribute parallel do collapse(2) private(ddv, dv_prev)
-    do J=j_start,j_end ; do i=i_start,i_end ; if (do_I(i,J)) then
-      if ((dt * min(G%IareaT(i,j),G%IareaT(i,j+1))*abs(vh_err(i,J)) > tol_eta) .or. &
-          (better_iter .and. ((abs(vh_err(i,J)) > tol_vel * dvhdv_tot(i,J)) .or. &
-                                 (abs(vh_err(i,J)) > vh_err_best(i,J))) )) then
+      if (vh_err > 0.0) then ; dv_max = dv(i,J)
+      elseif (vh_err < 0.0) then ; dv_min = dv(i,J)
+      else ; do_I = .false. ; endif
+
+      if (do_I) then
+        if ((dt * min(G%IareaT(i,j),G%IareaT(i,j+1))*abs(vh_err) > tol_eta) .or. &
+            (better_iter .and. ((abs(vh_err) > tol_vel * dvhdv_tot) .or. &
+                                   (abs(vh_err) > vh_err_best)) )) then
         !   Use Newton's method, provided it stays bounded.  Otherwise bisect
         ! the value with the appropriate bound.
-        ddv = -vh_err(i,J) / dvhdv_tot(i,J)
-        dv_prev = dv(i,J)
-        dv(i,J) = dv(i,J) + ddv
-        if (abs(ddv) < 1.0e-15*abs(dv(i,J))) then
-          do_I(i,J) = .false. ! ddv is small enough to quit.
-        elseif (ddv > 0.0) then
-          if (dv(i,J) >= dv_max(i,J)) then
-            dv(i,J) = 0.5*(dv_prev + dv_max(i,J))
-            if (dv_max(i,J) - dv_prev < 1.0e-15*abs(dv(i,J))) do_I(i,J) = .false.
+          ddv = -vh_err / dvhdv_tot
+          dv_prev = dv(i,J)
+          dv(i,J) = dv(i,J) + ddv
+          if (abs(ddv) < 1.0e-15*abs(dv(i,J))) then
+            do_I = .false. ! ddv is small enough to quit.
+          elseif (ddv > 0.0) then
+            if (dv(i,J) >= dv_max) then
+              dv(i,J) = 0.5*(dv_prev + dv_max)
+              if (dv_max - dv_prev < 1.0e-15*abs(dv(i,J))) do_I = .false.
+            endif
+          else ! ddv < 0.0
+            if (dv(i,J) <= dv_min) then
+              dv(i,J) = 0.5*(dv_prev + dv_min)
+              if (dv_prev - dv_min < 1.0e-15*abs(dv(i,J))) do_I = .false.
+            endif
           endif
-        else ! dvv(i,J) < 0.0
-          if (dv(i,J) <= dv_min(i,J)) then
-            dv(i,J) = 0.5*(dv_prev + dv_min(i,J))
-            if (dv_prev - dv_min(i,J) < 1.0e-15*abs(dv(i,J))) do_I(i,J) = .false.
-          endif
+        else
+          do_I = .false.
         endif
-#ifndef _OPENMP
-        if (do_I(i,J)) domore = .true.
-#endif
-      else
-        do_I(i,J) = .false.
       endif
-    endif ; enddo ; enddo
-#ifndef _OPENMP
-    ! Without OpenMP, stop as soon as every point has converged.  Iterations after that would not
-    ! change any of the results, so with OpenMP, where the points are spread across teams that
-    ! cannot share this flag, they are simply carried out.
-    if (.not.domore) exit
-#endif
+      ! Once a point has stopped, later iterations would change neither dv nor vh_3d there.
+      if (.not.do_I) exit
 
-    !$omp distribute parallel do collapse(2)
-    do J=j_start,j_end ; do i=i_start,i_end
-      vh_err(i,J) = -vhbt(i,J) ; dvhdv_tot(i,J) = 0.0
-    enddo ; enddo
-    do k=1,nz
-      !$omp distribute parallel do collapse(2) private(v_new, dvhdv)
-      do J=j_start,j_end ; do i=i_start,i_end ; if (do_I(i,J)) then
+      vh_err = -vhbt(i,J) ; dvhdv_tot = 0.0
+      do k=1,nz
         v_new = v(i,J,k) + dv(i,J) * visc_rem(i,J,k)
         call flux_elem(v_new, h_in(i,j,k), h_in(i,j+1,k), h_S(i,j,k), h_S(i,j+1,k), h_N(i,j,k), &
                        h_N(i,j+1,k), vh_3d(i,J,k), dvhdv, visc_rem(i,J,k), G%dx_Cv(i,J), &
@@ -1671,21 +1613,15 @@ subroutine meridional_flux_adjust(v, h_in, h_S, h_N, vhbt, vh_tot_0, dvhdv_tot_0
           call flux_elem_OBC(v_new, h_in(i,j,k), h_in(i,j+1,k), vh_3d(i,J,k), dvhdv, &
                              visc_rem(i,J,k), por_face_areaV(i,J,k), G%dx_Cv(i,J), h_marg_min, &
                              open_dir(i,J))
-        vh_err(i,J) = vh_err(i,J) + vh_3d(i,J,k)
-        dvhdv_tot(i,J) = dvhdv_tot(i,J) + dvhdv
-      endif ; enddo ; enddo
-    enddo
-    !$omp distribute parallel do collapse(2)
-    do J=j_start,j_end ; do i=i_start,i_end
-      vh_err_best(i,J) = min(vh_err_best(i,J), abs(vh_err(i,J)))
-    enddo ; enddo
-  enddo ! itt-loop
-  ! If there are any faces which have not converged to within the tolerance,
-  ! so-be-it, or else use a final upwind correction?
-  ! This never seems to happen with 20 iterations as max_itt.
-  !$omp end target teams
-
-  !$omp target exit data map(release: vh_err, vh_err_best, dvhdv_tot, dv_min, dv_max, do_I)
+        vh_err = vh_err + vh_3d(i,J,k)
+        dvhdv_tot = dvhdv_tot + dvhdv
+      enddo
+      vh_err_best = min(vh_err_best, abs(vh_err))
+    enddo ! itt-loop
+    ! If there are any faces which have not converged to within the tolerance,
+    ! so-be-it, or else use a final upwind correction?
+    ! This never seems to happen with 20 iterations as max_itt.
+  enddo ; enddo
 
 end subroutine meridional_flux_adjust
 
