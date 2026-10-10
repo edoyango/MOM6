@@ -884,12 +884,15 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 ! barotropic momentum equations.  This has to be done quite early to start
 ! the halo update that needs to be completed before the next calculations.
   if (CS%linearized_BT_PV) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsvf-2:jevf+1, I=isvf-2:ievf+1)
       q(I,J) = CS%q_D(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsvf-1:jevf+1, I=isvf-2:ievf+1)
       DCor_u(I,j) = CS%D_u_Cor(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsvf-2:jevf+1, i=isvf-1:ievf+1)
       DCor_v(i,J) = CS%D_v_Cor(i,J)
     enddo
@@ -1000,6 +1003,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     ! domain and then updated onto the full computational domain.
     ! These calculations can be done almost immediately, but the halo updates
     ! must be done before the [abcd]mer and [abcd]zon are calculated.
+    !$acc wait
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (nonblock_setup) then
       !$omp target update from(q, DCor_u, DCor_v)
@@ -1011,6 +1015,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   ! Zero out various wide-halo arrays.
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
     gtot_E(i,j) = 0.0 ; gtot_W(i,j) = 0.0
     gtot_N(i,j) = 0.0 ; gtot_S(i,j) = 0.0
@@ -1027,10 +1032,12 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   !   The halo regions of various arrays need to be initialized to
   ! non-NaNs in case the neighboring domains are not part of the ocean.
   ! Otherwise a halo update later on fills in the correct values.
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
     Cor_ref_u(I,j) = 0.0 ; BT_force_u(I,j) = 0.0 ; ubt(I,j) = 0.0
     Datu(I,j) = 0.0 ; bt_rem_u(I,j) = 0.0 ; uhbt0(I,j) = 0.0
   enddo
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
     Cor_ref_v(i,J) = 0.0 ; BT_force_v(i,J) = 0.0 ; vbt(i,J) = 0.0
     Datv(i,J) = 0.0 ; bt_rem_v(i,J) = 0.0 ; vhbt0(i,J) = 0.0
@@ -1044,6 +1051,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       do j=js,je ; do i=is,ie
         SpV_col_avg(i,j) = Spv_avg(i,j)
       enddo ; enddo
+      !$acc wait
       if (nonblock_setup) then
         call start_group_pass(CS%pass_SpV_avg, CS%BT_domain)
       else
@@ -1065,6 +1073,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Copy input arrays into their wide-halo counterparts.
   if (interp_eta_PF) then
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
@@ -1072,6 +1081,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       d_eta_PF(i,j) = eta_PF_in(i,j) - eta_PF_start(i,j)
     enddo
   else
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=G%Jsd:G%Jed, i=G%isd:G%ied)
       ! Was "do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1" but doing so breaks OBC. Not sure why?
       eta(i,j) = eta_in(i,j)
@@ -1079,11 +1089,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     enddo
   endif
   if (integral_BT_cont) then
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
       eta_IC(i,j) = eta_in(i,j)
     enddo
   endif
 
+  !$acc kernels loop collapse(3) async(1)
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     ! rem needs to be greater than visc_rem_u and 1-Instep/visc_rem_u.
     ! The 0.5 below is just for safety.
@@ -1096,6 +1108,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     visc_rem = max(visc_rem, 0.)
     wt_u(I,j,k) = CS%frhatu(I,j,k) * visc_rem
   enddo
+  !$acc kernels loop collapse(3) async(1)
   do concurrent (k=1:nz, J=js-1:je, i=is:ie)
     ! As above, rem must be greater than visc_rem_v and 1-Instep/visc_rem_v.
     visc_rem = min(visc_rem_v(I,j,k), 1.)
@@ -1105,28 +1118,40 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   enddo
 
   if (.not. CS%wt_uv_bug) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       Iwt_u_tot(I,j) = wt_u(I,j,1)
     enddo
-    do k=2,nz ; do concurrent (j=js:je, I=is-1:ie)
-      Iwt_u_tot(I,j) = Iwt_u_tot(I,j) + wt_u(I,j,k)
-    enddo ; enddo
+    do k=2,nz
+      !$acc kernels loop collapse(2) async(1)
+      do concurrent (j=js:je, I=is-1:ie)
+        Iwt_u_tot(I,j) = Iwt_u_tot(I,j) + wt_u(I,j,k)
+      enddo
+    enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie, abs(Iwt_u_tot(I,j)) > 0.0)
       Iwt_u_tot(I,j) = G%mask2dCu(I,j) / Iwt_u_tot(I,j)
     enddo
+    !$acc kernels loop collapse(3) async(1)
     do concurrent (k=1:nz, j=js:je, I=is-1:ie)
       wt_u(I,j,k) = wt_u(I,j,k) * Iwt_u_tot(I,j)
     enddo
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       Iwt_v_tot(i,J) = wt_v(i,J,1)
     enddo
-    do k=2,nz ; do concurrent (J=js-1:je, i=is:ie)
-      Iwt_v_tot(i,J) = Iwt_v_tot(i,J) + wt_v(i,J,k)
-    enddo ; enddo
+    do k=2,nz
+      !$acc kernels loop collapse(2) async(1)
+      do concurrent (J=js-1:je, i=is:ie)
+        Iwt_v_tot(i,J) = Iwt_v_tot(i,J) + wt_v(i,J,k)
+      enddo
+    enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie, abs(Iwt_v_tot(i,J)) > 0.0)
       Iwt_v_tot(i,J) = G%mask2dCv(i,J) / Iwt_v_tot(i,J)
     enddo
+    !$acc kernels loop collapse(3) async(1)
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       wt_v(i,J,k) = wt_v(i,J,k) * Iwt_v_tot(i,J)
     enddo
@@ -1134,12 +1159,15 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   !   Use u_Cor and v_Cor as the reference values for the Coriolis terms,
   ! including the viscous remnant.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js-1:je+1, I=is-1:ie)
     ubt_Cor(I,j) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-1:je, i=is-1:ie+1)
     vbt_Cor(i,J) = 0.0
   enddo
+  !$acc kernels loop async(1)
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (I=is-1:ie)
@@ -1147,6 +1175,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       enddo
     enddo
   enddo
+  !$acc kernels loop async(1)
   do concurrent (J=js-1:je)
     do k=1,nz
       do concurrent (i=is:ie)
@@ -1159,6 +1188,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! accelerations across the various faces, with names for the relative
   ! locations of the faces to the pressure point.  They will have their halos
   ! updated later on.
+  !$acc kernels loop async(1)
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (i=is-1:ie)
@@ -1167,6 +1197,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       enddo
     enddo
   enddo
+  !$acc kernels loop async(1)
   do concurrent (J=js-1:je)
     do k=1,nz
       do concurrent (i=is:ie)
@@ -1177,6 +1208,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   enddo
 
   if (CS%BT_OBC%u_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       if (CS%BT_OBC%u_OBC_type(I,j) > 0) & ! Eastern boundary condition
         gtot_W(i+1,j) = gtot_W(i,j)  ! Perhaps this should be gtot_E(i,j)?
@@ -1185,6 +1217,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     enddo
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       if (CS%BT_OBC%v_OBC_type(i,J) > 0) & ! Northern boundary condition
         gtot_S(i,j+1) = gtot_S(i,j)  !### Should this be gtot_N(i,j) to use wt_v at the same point?
@@ -1228,6 +1261,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! Set up fields related to the open boundary conditions.  These calls include halo updates that
   ! must occur on all PEs when there are open boundary conditions anywhere.
   if (apply_OBCs) then
+    !$acc wait
     !$omp target update from(eta, Datu, Datv, BTCL_u, BTCL_v)
     if (nonblock_setup .and. apply_OBC_flather .and. .not.GV%Boussinesq) &
       call complete_group_pass(CS%pass_SpV_avg, CS%BT_domain)
@@ -1240,22 +1274,31 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! Determine the difference between the sum of the layer fluxes and the
   ! barotropic fluxes found from the same input velocities.
   if (add_uh0) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       uhbt(I,j) = 0.0 ; ubt(I,j) = 0.0
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       vhbt(i,J) = 0.0 ; vbt(i,J) = 0.0
     enddo
     if (CS%visc_rem_u_uh0) then
-      do k=1,nz ; do concurrent (j=js:je, I=is-1:ie)
-        uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
-        ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * u_uh0(I,j,k)
-      enddo ; enddo
-      do k=1,nz ; do concurrent (J=js-1:je, i=is:ie)
-        vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
-        vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
-      enddo ; enddo
+      do k=1,nz
+        !$acc kernels loop collapse(2) async(1)
+        do concurrent (j=js:je, I=is-1:ie)
+          uhbt(I,j) = uhbt(I,j) + uh0(I,j,k)
+          ubt(I,j) = ubt(I,j) + wt_u(I,j,k) * u_uh0(I,j,k)
+        enddo
+      enddo
+      do k=1,nz
+        !$acc kernels loop collapse(2) async(1)
+        do concurrent (J=js-1:je, i=is:ie)
+          vhbt(i,J) = vhbt(i,J) + vh0(i,J,k)
+          vbt(i,J) = vbt(i,J) + wt_v(i,J,k) * v_vh0(i,J,k)
+        enddo
+      enddo
     else
+      !$acc kernels loop async(1)
       do concurrent (j=js:je)
         do k=1,nz
           do concurrent (I=is-1:ie)
@@ -1264,6 +1307,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
           enddo
         enddo
       enddo
+      !$acc kernels loop async(1)
       do concurrent (J=js-1:je)
         do k=1,nz
           do concurrent (i=is:ie)
@@ -1280,6 +1324,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       ! Fill in the halo data for ubt, vbt, uhbt, and vhbt.
       if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
       if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
+      !$acc wait
       !$omp target update from(ubt, vbt, uhbt, vhbt)
       call pass_vector(ubt, vbt, CS%BT_Domain, complete=.false., halo=1+ievf-ie)
       call pass_vector(uhbt, vhbt, CS%BT_Domain, complete=.true., halo=1+ievf-ie)
@@ -1297,33 +1342,41 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       !$omp target update to(BTCL_u, BTCL_v)
     endif
     if (integral_BT_cont) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(dt*ubt(I,j), BTCL_u(I,j)) * Idt
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(dt*vbt(i,J), BTCL_v(i,J)) * Idt
       enddo
     elseif (use_BT_cont) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - find_uhbt(ubt(I,j), BTCL_u(I,j))
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - find_vhbt(vbt(i,J), BTCL_v(i,J))
       enddo
     else
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, I=is-1:ie)
         uhbt0(I,j) = uhbt(I,j) - Datu(I,j)*ubt(I,j)
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1:je, i=is:ie)
         vhbt0(i,J) = vhbt(i,J) - Datv(i,J)*vbt(i,J)
       enddo
     endif
     if (CS%BT_OBC%u_OBCs_on_PE) then  ! Zero out the reference transport at OBC points
+      !$acc kernels loop collapse(2) async(1)
       do concurrent(j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
         uhbt0(I,j) = 0.0
       enddo
     endif
     if (CS%BT_OBC%v_OBCs_on_PE) then  !Zero out the reference transport at OBC points
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
         vhbt0(i,J) = 0.0
       enddo
@@ -1331,6 +1384,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
 ! Calculate the initial barotropic velocities from the layer's velocities.
+  !$acc wait
   call btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt, G, GV, CS)
 
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
@@ -1966,9 +2020,11 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (id_clock_calc > 0) call cpu_clock_end(id_clock_calc)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
 
-  if (find_etaav) then ; do concurrent (j=js:je, i=is:ie)
-    etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
-  enddo ; endif
+  if (find_etaav) then
+    do concurrent (j=js:je, i=is:ie)
+      etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
+    enddo
+  endif
   do concurrent (j=js-1:je+1, i=is-1:ie+1)
     e_anom(i,j) = 0.0
   enddo
@@ -2189,19 +2245,27 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       enddo
     endif
 
-    if (associated(ADp%bt_cor_u)) then ; do concurrent (j=js:je, I=is-1:ie)
-      ADp%bt_cor_u(I,j) = Coru_avg(I,j)
-    enddo ; endif
-    if (associated(ADp%bt_cor_v)) then ; do concurrent (J=js-1:je, i=is:ie)
-      ADp%bt_cor_v(i,J) = Corv_avg(i,J)
-    enddo ; endif
+    if (associated(ADp%bt_cor_u)) then
+      do concurrent (j=js:je, I=is-1:ie)
+        ADp%bt_cor_u(I,j) = Coru_avg(I,j)
+      enddo
+    endif
+    if (associated(ADp%bt_cor_v)) then
+      do concurrent (J=js-1:je, i=is:ie)
+        ADp%bt_cor_v(i,J) = Corv_avg(i,J)
+      enddo
+    endif
 
-    if (associated(ADp%bt_lwd_u)) then ; do concurrent (j=js:je, I=is-1:ie)
-      ADp%bt_lwd_u(I,j) = LDu_avg(I,j)
-    enddo ; endif
-    if (associated(ADp%bt_lwd_v)) then ; do concurrent (J=js-1:je, i=is:ie)
-      ADp%bt_lwd_v(i,J) = LDv_avg(i,J)
-    enddo ; endif
+    if (associated(ADp%bt_lwd_u)) then
+      do concurrent (j=js:je, I=is-1:ie)
+        ADp%bt_lwd_u(I,j) = LDu_avg(I,j)
+      enddo
+    endif
+    if (associated(ADp%bt_lwd_v)) then
+      do concurrent (J=js-1:je, i=is:ie)
+        ADp%bt_lwd_v(i,J) = LDv_avg(i,J)
+      enddo
+    endif
 
     if (CS%id_ubtforce > 0) call post_data(CS%id_ubtforce, BT_force_u(IsdB:IedB,jsd:jed), CS%diag)
     if (CS%id_vbtforce > 0) call post_data(CS%id_vbtforce, BT_force_v(isd:ied,JsdB:JedB), CS%diag)
@@ -5262,21 +5326,25 @@ subroutine set_local_BT_cont_types(BT_cont, BTCL_u, BTCL_v, G, US, MS, BT_Domain
   !$omp              v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
 
   ! Copy the BT_cont arrays into symmetric, potentially wide haloed arrays.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js-hs:je+hs, i=is-hs-1:ie+hs)
     u_polarity(i,j) = 1.0
     uBT_EE(i,j) = 0.0 ; uBT_WW(i,j) = 0.0
     FA_u_EE(i,j) = 0.0 ; FA_u_E0(i,j) = 0.0 ; FA_u_W0(i,j) = 0.0 ; FA_u_WW(i,j) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js-hs-1:je+hs, i=is-hs:ie+hs)
     v_polarity(i,j) = 1.0
     vBT_NN(i,j) = 0.0 ; vBT_SS(i,j) = 0.0
     FA_v_NN(i,j) = 0.0 ; FA_v_N0(i,j) = 0.0 ; FA_v_S0(i,j) = 0.0 ; FA_v_SS(i,j) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js:je, I=is-1:ie)
     uBT_EE(I,j) = BT_cont%uBT_EE(I,j) ; uBT_WW(I,j) = BT_cont%uBT_WW(I,j)
     FA_u_EE(I,j) = BT_cont%FA_u_EE(I,j) ; FA_u_E0(I,j) = BT_cont%FA_u_E0(I,j)
     FA_u_W0(I,j) = BT_cont%FA_u_W0(I,j) ; FA_u_WW(I,j) = BT_cont%FA_u_WW(I,j)
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-1:je, i=is:ie)
     vBT_NN(i,J) = BT_cont%vBT_NN(i,J) ; vBT_SS(i,J) = BT_cont%vBT_SS(i,J)
     FA_v_NN(i,J) = BT_cont%FA_v_NN(i,J) ; FA_v_N0(i,J) = BT_cont%FA_v_N0(i,J)
@@ -5295,6 +5363,7 @@ subroutine set_local_BT_cont_types(BT_cont, BTCL_u, BTCL_v, G, US, MS, BT_Domain
   call create_group_pass(BT_cont%pass_FA_uv, FA_u_W0, FA_v_S0, BT_Domain, To_All+Scalar_Pair)
   call create_group_pass(BT_cont%pass_FA_uv, FA_u_WW, FA_v_SS, BT_Domain, To_All+Scalar_Pair)
 !--- end setup for group halo update
+  !$acc wait
   ! Do halo updates on BT_cont.
   ! data update directives for MPI transfers (via CPU) needed even for serial
   call do_group_pass(BT_cont%pass_polarity_BT, BT_Domain, omp_offload=.true.)
@@ -5302,6 +5371,7 @@ subroutine set_local_BT_cont_types(BT_cont, BTCL_u, BTCL_v, G, US, MS, BT_Domain
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js-hs:je+hs, I=is-hs-1:ie+hs)
     BTCL_u(I,j)%FA_u_EE = FA_u_EE(I,j) ; BTCL_u(I,j)%FA_u_E0 = FA_u_E0(I,j)
     BTCL_u(I,j)%FA_u_W0 = FA_u_W0(I,j) ; BTCL_u(I,j)%FA_u_WW = FA_u_WW(I,j)
@@ -5333,6 +5403,7 @@ subroutine set_local_BT_cont_types(BT_cont, BTCL_u, BTCL_v, G, US, MS, BT_Domain
       (C1_3 * (BTCL_u(I,j)%FA_u_EE - BTCL_u(I,j)%FA_u_E0)) / BTCL_u(I,j)%uBT_EE**2
   enddo
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-hs-1:je+hs, i=is-hs:ie+hs)
     BTCL_v(i,J)%FA_v_NN = FA_v_NN(i,J) ; BTCL_v(i,J)%FA_v_N0 = FA_v_N0(i,J)
     BTCL_v(i,J)%FA_v_S0 = FA_v_S0(i,J) ; BTCL_v(i,J)%FA_v_SS = FA_v_SS(i,J)
@@ -5364,6 +5435,7 @@ subroutine set_local_BT_cont_types(BT_cont, BTCL_u, BTCL_v, G, US, MS, BT_Domain
       (C1_3 * (BTCL_v(i,J)%FA_v_NN - BTCL_v(i,J)%FA_v_N0)) / BTCL_v(i,J)%vBT_NN**2
   enddo
 
+  !$acc wait
   !$omp target exit data &
   !$omp   map(release: u_polarity, uBT_EE, uBT_WW, FA_u_EE, FA_u_E0, FA_u_W0, FA_u_WW, &
   !$omp                v_polarity, vBT_NN, vBT_SS, FA_v_NN, FA_v_N0, FA_v_S0, FA_v_SS)
