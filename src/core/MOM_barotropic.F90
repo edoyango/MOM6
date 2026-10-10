@@ -1384,17 +1384,19 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
 ! Calculate the initial barotropic velocities from the layer's velocities.
-  !$acc wait
   call btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt, G, GV, CS)
 
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
     uhbt(i,j) = 0.0 ; u_accel_bt(i,j) = 0.0
   enddo
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
     vhbt(i,j) = 0.0 ; v_accel_bt(i,j) = 0.0
   enddo
 
   if (apply_OBCs .or. (CS%id_ubtdt > 0)) then
+    !$acc wait
     !$omp target update from(ubt)
     do j=js,je ; do I=is-1,ie
       ubt_st(I,j) = ubt(I,j)
@@ -1402,6 +1404,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (apply_OBCs .or. (CS%id_vbtdt > 0)) then
+    !$acc wait
     !$omp target update from(vbt)
     do J=js-1,je ; do i=is,ie
       vbt_st(i,J) = vbt(i,J)
@@ -1414,6 +1417,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 ! between the accelerations due to the average of the layer equations and the
 ! barotropic calculation.
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js:je, I=is-1:ie) ; if (G%OBCmaskCu(I,j) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
@@ -1440,6 +1444,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     BT_force_u(I,j) = 0.0
   endif ; enddo
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-1:je, i=is:ie) ; if (G%OBCmaskCv(i,J) > 0.0) then
     if (CS%nonlin_stress) then
       if (GV%Boussinesq) then
@@ -1467,9 +1472,11 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif ; enddo
 
   if (associated(taux_bot) .and. associated(tauy_bot)) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) > 0.0)
       BT_force_u(I,j) = BT_force_u(I,j) - taux_bot(I,j) * GV%RZ_to_H * CS%IDatu(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0)
       BT_force_v(i,J) = BT_force_v(i,J) - tauy_bot(i,J) * GV%RZ_to_H * CS%IDatv(i,J)
     enddo
@@ -1477,6 +1484,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! bc_accel_u & bc_accel_v are only available on the potentially
   ! non-symmetric computational domain.
+  !$acc kernels loop async(1)
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (I=Isq:Ieq)
@@ -1484,6 +1492,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       enddo
     enddo
   enddo
+  !$acc kernels loop async(1)
   do concurrent (J=Jsq:Jeq)
     do k=1,nz
       do concurrent (i=is:ie)
@@ -1493,11 +1502,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   enddo
 
   if (CS%gradual_BT_ICs) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       BT_force_u(I,j) = BT_force_u(I,j) + (ubt(I,j) - CS%ubt_IC(I,j)) * Idt
       ubt(I,j) = CS%ubt_IC(I,j)
       if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       BT_force_v(i,J) = BT_force_v(i,J) + (vbt(i,J) - CS%vbt_IC(i,J)) * Idt
       vbt(i,J) = CS%vbt_IC(i,J)
@@ -1509,6 +1520,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! Note that the filtered velocities are only updated during the current predictor step,
   ! and are calculated using the barotropic velocity from the previous correction step.
   if (CS%use_filter) then
+    !$acc wait
     !$omp target update from(ubt, vbt)
     call Filt_accum(ubt(G%IsdB:G%IedB,G%jsd:G%jed), ufilt, CS%Time, US, CS%Filt_CS_u)
     call Filt_accum(vbt(G%isd:G%ied,G%JsdB:G%JedB), vfilt, CS%Time, US, CS%Filt_CS_v)
@@ -1516,6 +1528,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   if (CS%use_filter .and. CS%linear_freq_drag) then
     call wave_drag_calc(ufilt, vfilt, Drag_u, Drag_v, G, CS%Drag_CS)
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
       if (GV%Boussinesq) &
@@ -1527,6 +1540,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         Drag_u(I,j) = 0.0
       endif
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
       if (GV%Boussinesq) &
@@ -1542,11 +1556,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Mask out the forcing at OBC points
   if (CS%BT_OBC%u_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       BT_force_u(I,j) = CS%OBCmask_u(I,j) * BT_force_u(I,j)
     enddo
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       BT_force_v(i,J) = CS%OBCmask_v(i,J) * BT_force_v(i,J)
     enddo
@@ -1558,6 +1574,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
     tmp_u(:,:) = 0.0 ; tmp_v(:,:) = 0.0
+    !$acc wait
     !$omp target update from(BT_force_u, BT_force_v)
     do j=js,je ; do I=Isq,Ieq ; tmp_u(I,j) = BT_force_u(I,j) ; enddo ; enddo
     do J=Jsq,Jeq ; do i=is,ie ; tmp_v(i,J) = BT_force_v(i,J) ; enddo ; enddo
@@ -1577,6 +1594,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
     ! ensure correct data on host to be exchanged
+    !$acc wait
     !$omp target update from(ubt_Cor, vbt_Cor, gtot_E, gtot_W, gtot_N, gtot_S)
     call start_group_pass(CS%pass_gtot, CS%BT_Domain)
     call start_group_pass(CS%pass_ubt_Cor, G%Domain)
@@ -1588,6 +1606,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   call btstep_find_Cor(q, DCor_u, DCor_v, f_4_u, f_4_v, isvf, ievf, jsvf, jevf, CS)
 
 ! Complete the previously initiated message passing.
+  !$acc wait
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
   if (nonblock_setup) then
@@ -3251,12 +3270,14 @@ subroutine btstep_find_Cor(q, DCor_u, DCor_v, f_4_u, f_4_v, isvf, ievf, jsvf, je
   integer :: i, j
 
   if (CS%Sadourny) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
       f_4_v(1,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j) * q(I-1,J)
       f_4_v(2,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j) * q(I,J)
       f_4_v(4,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j+1) * q(I,J)
       f_4_v(3,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j+1) * q(I-1,J)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
       f_4_u(4,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J) * q(I,J)
       f_4_u(3,I,j) = CS%OBCmask_u(I,j) * DCor_v(i,J) * q(I,J)
@@ -3264,12 +3285,14 @@ subroutine btstep_find_Cor(q, DCor_u, DCor_v, f_4_u, f_4_v, isvf, ievf, jsvf, je
       f_4_u(2,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J-1) * q(I,J-1)
     enddo
   else  !### if (CS%answer_date < 20250601) then  ! Uncomment this later.
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
       f_4_v(1,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j) * ((q(I,J) + q(I-1,J-1)) + q(I-1,J)) / 3.0
       f_4_v(2,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j) * (q(I,J) + (q(I-1,J) + q(I,J-1))) / 3.0
       f_4_v(4,i,J) = CS%OBCmask_v(i,J) * DCor_u(I,j+1) * (q(I,J) + (q(I-1,J) + q(I,J+1))) / 3.0
       f_4_v(3,i,J) = CS%OBCmask_v(i,J) * DCor_u(I-1,j+1) * ((q(I,J) + q(I-1,J+1)) + q(I-1,J)) / 3.0
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
       f_4_u(4,I,j) = CS%OBCmask_u(I,j) * DCor_v(i+1,J) * (q(I,J) + (q(I+1,J) + q(I,J-1))) / 3.0
       f_4_u(3,I,j) = CS%OBCmask_u(I,j) * DCor_v(i,J) * (q(I,J) + (q(I-1,J) + q(I,J-1))) / 3.0
@@ -3752,13 +3775,16 @@ subroutine btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt,  G, GV, CS)
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw-1:CS%iedw)
     ubt(i,j) = 0.0
   enddo
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
     vbt(i,j) = 0.0
   enddo
 
+  !$acc kernels loop async(1)
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (I=is-1:ie)
@@ -3769,6 +3795,7 @@ subroutine btstep_ubt_from_layer(U_in, V_in, wt_u, wt_v, ubt, vbt,  G, GV, CS)
       if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
     enddo
   enddo
+  !$acc kernels loop async(1)
   do concurrent (J=js-1:je)
     do k=1,nz
       do concurrent (i=is:ie)
