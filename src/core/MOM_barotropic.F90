@@ -880,13 +880,19 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   !$omp       d_eta_PF, gtot_E, gtot_W, gtot_N, gtot_S, eta_src, dyn_coef_eta, BTCL_u, BTCL_v, &
   !$omp       PFu_avg, PFv_avg, Iwt_u_tot, Iwt_v_tot)
 
-  ! The do concurrent nests in btstep and its helpers are launched with "!$acc kernels loop ... async(1)"
+  ! The do concurrent nests in btstep and its helpers are launched with "!$acc kernels loop ... async(Q)"
   ! ("!$acc parallel loop" when a loop bound is a derived-type member, for which kernels would add a host-device
   ! copy to every launch), so successive kernels queue up on the device without a host round-trip while the
-  ! data stays under the OpenMP target mappings.  Anything that is not such a kernel (target update, host and
-  ! omp_offload halo passes, host reads of device data, cpu_clock calls that should include device time, and
-  ! target exit data) must be preceded by an "!$acc wait".  So must the end of a routine that is also called
-  ! from code which does not follow this convention, as in find_face_areas.
+  ! data stays under the OpenMP target mappings.  Queue 1 carries the h-point work and the time-step spine
+  ! (pressure force, the velocity updates, truncation, the eta updates and the submerged checks); queues 2 and 3
+  ! carry the remaining u- and v-point work (transports, running sums, setup fills and diagnostic copies).  Work
+  ! on different queues is ordered only by explicit "wait(...)" clauses on the later construct: a construct that
+  ! reads or overwrites something that another queue has written or read waits for that queue (the transports
+  ! wait for queue 1, which updates the velocities, and the eta update waits for queues 2 and 3).  Anything that
+  ! is not an async kernel (target update, host and omp_offload halo passes, host reads of device data, cpu_clock
+  ! calls that should include device time, and target exit data) must be preceded by a plain "!$acc wait", which
+  ! waits for all queues.  So must the end of a routine that is also called from code which does not follow this
+  ! convention, as in find_face_areas.
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
