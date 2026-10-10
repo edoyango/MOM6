@@ -2409,31 +2409,36 @@ module procedure btstep_timeloop
 
   ! Zero out the arrays for various time-averaged quantities.
   if (find_etaav) then
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(out: eta_sum, eta_wtd)
     ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
       eta_sum(i,j) = 0.0 ; eta_wtd(i,j) = 0.0
     enddo ; enddo
   else
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(out: eta_wtd)
     ! do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     do j=jsvf-1,jevf+1 ; do i=isvf-1,ievf+1
       eta_wtd(i,j) = 0.0
     enddo ; enddo
   endif
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(out: CS%ubtav, uhbtav, PFu_avg, Coru_avg, LDu_avg, ubt_wtd)
   ! do concurrent (j=js:je, I=is-1:ie)
   do j=js,je ; do I=is-1,ie
     CS%ubtav(I,j) = 0.0 ; uhbtav(I,j) = 0.0
     PFu_avg(I,j) = 0.0 ; Coru_avg(I,j) = 0.0
     LDu_avg(I,j) = 0.0 ; ubt_wtd(I,j) = 0.0
   enddo ; enddo
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(out: ubt_trans)
   ! do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
   do j=jsvf-1,jevf+1 ; do I=isvf-1,ievf
     ubt_trans(I,j) = 0.0
   enddo ; enddo
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(out: CS%vbtav, vhbtav, PFv_avg, Corv_avg, LDv_avg, vbt_wtd)
   ! do concurrent (J=js-1:je, i=is:ie)
   do J=js-1,je ; do i=is,ie
     CS%vbtav(i,J) = 0.0 ; vhbtav(i,J) = 0.0
@@ -2445,7 +2450,8 @@ module procedure btstep_timeloop
     !$omp taskwait
     !$omp target update from(PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg)
   endif
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(out: vbt_trans)
   ! do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
   do J=jsvf-1,jevf ; do i=isvf-1,ievf+1
     vbt_trans(i,J) = 0.0
@@ -2455,7 +2461,8 @@ module procedure btstep_timeloop
     vbt_int(:,:) = 0.0 ; vhbt_int(:,:) = 0.0
   endif
 
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(out: p_surf_dyn)
   ! do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
   do j=CS%jsdw,CS%jedw ; do i=CS%isdw,CS%iedw
     p_surf_dyn(i,j) = 0.0
@@ -2495,6 +2502,11 @@ module procedure btstep_timeloop
       call create_group_pass(CS%pass_eta_ubt, uhbt_int, vhbt_int, CS%BT_Domain)
   endif
 
+  !   The kernels of the barotropic steps, here and in the btloop_* routines, are launched with
+  ! nowait.  Their depend clauses name every array that they write, and every array that they read
+  ! and another kernel in the loop writes, so they run in the order that the code gives while
+  ! independent kernels may overlap.  The arrays that the loop only reads are filled before it.
+
   ! The following loop contains all of the time steps.
   isv = is ; iev = ie ; jsv = js ; jev = je
   do n=1,nstep+nfilter
@@ -2518,12 +2530,14 @@ module procedure btstep_timeloop
     endif
 
     ! Store the previous velocities for time-filtered transports and OBCs.
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: ubt) depend(out: ubt_prev)
     ! do concurrent (j=jsv:jev, I=isv-2:iev+1)
     do j=jsv,jev ; do I=isv-2,iev+1
       ubt_prev(I,j) = ubt(I,j)
     enddo ; enddo
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: vbt) depend(out: vbt_prev)
     ! do concurrent (J=jsv-2:jev+1, i=isv:iev)
     do J=jsv-2,jev+1 ; do i=isv,iev
       vbt_prev(i,J) = vbt(i,J)
@@ -2651,13 +2665,15 @@ module procedure btstep_timeloop
       enddo ; enddo
       !$omp target update to(ubt_trans, vbt_trans, uhbt, vhbt)
     elseif (use_BT_cont) then
-      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+      !$omp   nowait depend(in: ubt, ubt_prev) depend(out: ubt_trans, uhbt)
       ! do concurrent (j=jsv:jev, I=isv-1:iev)
       do j=jsv,jev ; do I=isv-1,iev
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = find_uhbt(ubt_trans(I,j), BTCL_u(I,j)) + uhbt0(I,j)
       enddo ; enddo
-      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+      !$omp   nowait depend(in: vbt, vbt_prev) depend(out: vbt_trans, vhbt)
       ! do concurrent (J=jsv-1:jev, i=isv:iev)
       do J=jsv-1,jev ; do i=isv,iev
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
@@ -2729,14 +2745,16 @@ module procedure btstep_timeloop
     endif
 
     ! Contribute to the running sums of the transports and velocities.
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: ubt_trans, uhbt, ubt) depend(inout: CS%ubtav, uhbtav, ubt_wtd)
     ! do concurrent (j=js:je, I=is-1:ie)
     do j=js,je ; do I=is-1,ie
       CS%ubtav(I,j) = CS%ubtav(I,j) + wt_trans(n) * ubt_trans(I,j)
       uhbtav(I,j) = uhbtav(I,j) + wt_trans(n) * uhbt(I,j)
       ubt_wtd(I,j) = ubt_wtd(I,j) + wt_vel(n) * ubt(I,j)
     enddo ; enddo
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: vbt_trans, vhbt, vbt) depend(inout: CS%vbtav, vhbtav, vbt_wtd)
     ! do concurrent (J=js-1:je, i=is:ie)
     do J=js-1,je ; do i=is,ie
       CS%vbtav(i,J) = CS%vbtav(i,J) + wt_trans(n) * vbt_trans(i,J)
@@ -2788,7 +2806,8 @@ module procedure btstep_timeloop
       enddo ; enddo
       !$omp target update to(eta, eta_wtd)
     else
-      !$omp target teams distribute parallel do collapse(2) num_threads(256)
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+      !$omp   nowait depend(in: uhbt, vhbt) depend(inout: eta, eta_wtd)
       ! do concurrent (j=jsv:jev, i=isv:iev)
       do j=jsv,jev ; do i=isv,iev
         eta(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
@@ -2812,7 +2831,8 @@ module procedure btstep_timeloop
       ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
       ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
       ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
-      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged)
+      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) &
+      !$omp   depend(in: eta)
       do j=js,je ; do i=is,ie
         submerged(i,j) = (eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
@@ -3088,7 +3108,8 @@ module procedure btloop_find_PF
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(in: eta_PF_BT) depend(out: PFu)
   ! do concurrent (j=js_u:je_u, I=isv-1:iev)
   do j=js_u,je_u ; do I=isv-1,iev
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
@@ -3096,7 +3117,8 @@ module procedure btloop_find_PF
                 dgeo_de * CS%IdxCu(I,j)
   enddo ; enddo
 
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(in: eta_PF_BT) depend(out: PFv)
   ! do concurrent (J=jsv-1:jev, i=is_v:ie_v)
   do J=jsv-1,jev ; do i=is_v,ie_v
     PFv(i,J) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_N(i,j)) - &
@@ -3105,7 +3127,8 @@ module procedure btloop_find_PF
   enddo ; enddo
 
   if (find_etaav .and. (abs(wt_accel2_n) > 0.0)) then
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: eta_PF_BT) depend(inout: eta_sum)
     ! do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
     do j=G%jsc,G%jec ; do i=G%isc,G%iec
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
@@ -3161,7 +3184,8 @@ module procedure btloop_update_v
    !$OMP end do nowait
    !$omp target update to(Cor_v)
   else
-   !$omp target teams distribute parallel do collapse(2) num_threads(256)
+   !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+   !$omp   nowait depend(in: ubt) depend(out: Cor_v)
    ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
    do J=Js_v,Je_v ; do i=is_v,ie_v
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(4,i,J) * ubt(I,j+1))) + &
@@ -3170,7 +3194,8 @@ module procedure btloop_update_v
   endif
 
   ! This updates the v-velocity, except at OBC points.
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(in: Cor_v, PFv) depend(inout: vbt)
   ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
   do J=Js_v,Je_v ; do i=is_v,ie_v
     vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
@@ -3188,7 +3213,8 @@ module procedure btloop_update_v
     enddo ; enddo
     !$omp target update to(v_accel_bt)
   else
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: Cor_v, PFv) depend(inout: v_accel_bt)
     ! do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
     do J=Js_v,Je_v ; do i=is_v,ie_v
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * (Cor_v(i,J) + PFv(i,J))
@@ -3199,7 +3225,8 @@ end procedure btloop_update_v
 module procedure btloop_update_u
   integer :: i, j
 
-  !$omp target teams distribute parallel do collapse(2) num_threads(256)
+  !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+  !$omp   nowait depend(in: vbt, PFu) depend(out: Cor_u) depend(inout: ubt)
   ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
   do j=js_u,je_u ; do I=Is_u,Ie_u
     Cor_u(I,j) = (((f_4_u(4,I,j) * vbt(i+1,J)) + (f_4_u(1,I,j) * vbt(i,J-1))) + &
@@ -3222,7 +3249,8 @@ module procedure btloop_update_u
     !$OMP end do nowait
     !$omp target update to(u_accel_bt)
   else
-    !$omp target teams distribute parallel do collapse(2) num_threads(256)
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(in: Cor_u, PFu) depend(inout: u_accel_bt)
     ! do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
     do j=js_u,je_u ; do I=Is_u,Ie_u
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * (Cor_u(I,j) + PFu(I,j))
