@@ -2353,8 +2353,10 @@ module procedure btstep_timeloop
   integer :: i, j, n, is, ie, js, je
   integer :: debug_halo ! The halo size to use for debugging checksums
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
-  logical :: submerged(SZIW_(CS),SZJW_(CS)) ! True where eta has dropped below the bottom depth [nondim]
-  logical :: eta_is_submerged ! True if submerged is true anywhere in the domain [nondim]
+  integer :: submerged_step(SZIW_(CS),SZJW_(CS)) ! The first barotropic step at which eta has dropped
+                                ! below the bottom depth, or 0 if it has not [nondim]
+  real :: eta_submerged(SZIW_(CS),SZJW_(CS)) ! The value of eta at submerged_step [H ~> m or kg m-2]
+  logical :: eta_is_submerged ! True if eta has dropped below the bottom depth anywhere [nondim]
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
@@ -2363,7 +2365,8 @@ module procedure btstep_timeloop
   ! All of the dummy arguments used on the device here and in the btloop_* helpers were mapped by
   ! btstep; only the local work arrays of this routine are mapped here, for the whole sub-cycle.
   !$omp target enter data map(alloc: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
-  !$omp                             p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
+  !$omp                             p_surf_dyn, submerged_step, eta_submerged, PFu, PFv, Cor_u, Cor_v, &
+  !$omp                             eta_pred)
 
   ! Figure out the fullest arrays that could be updated.
   stencil = max(1, CS%min_stencil)
@@ -2467,6 +2470,13 @@ module procedure btstep_timeloop
   do j=CS%jsdw,CS%jedw ; do i=CS%isdw,CS%iedw
     p_surf_dyn(i,j) = 0.0
   enddo ; enddo
+  if (GV%Boussinesq) then
+    !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+    !$omp   nowait depend(out: submerged_step)
+    do j=js,je ; do i=is,ie
+      submerged_step(i,j) = 0
+    enddo ; enddo
+  endif
   cfl_ltd_vol(:,:) = huge( GV%Z_to_H )
   if (CS%bt_limit_integral_transport) then
     ! Issue warnings if there are unphysical values of the initial sea surface height or total water column mass.
@@ -2826,31 +2836,18 @@ module procedure btstep_timeloop
     endif
 
     ! Issue warnings if there are unphysical values of the sea surface height or total water column mass.
-    eta_is_submerged = .false.
     if (GV%Boussinesq) then
-      ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
-      ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
-      ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
-      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) &
-      !$omp   depend(in: eta)
+      !   Record the first step at which eta drops below the bottom at each point, and eta then.
+      ! The warnings are issued after the last step, so that the host does not wait for each step.
+      !$omp target teams distribute parallel do collapse(2) num_threads(256) &
+      !$omp   nowait depend(in: eta) depend(inout: submerged_step, eta_submerged)
       do j=js,je ; do i=is,ie
-        submerged(i,j) = (eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)
-        eta_is_submerged = eta_is_submerged .or. submerged(i,j)
+        if (submerged_step(i,j) == 0) then
+          if ((eta(i,j) < -GV%Z_to_H*G%bathyT(i,j)) .and. (G%mask2dT(i,j) > 0.0)) then
+            submerged_step(i,j) = n ; eta_submerged(i,j) = eta(i,j)
+          endif
+        endif
       enddo ; enddo
-
-      if (eta_is_submerged) then
-        !$omp taskwait
-        !$omp target update from(eta, submerged)
-        do j=js,je ; do i=is,ie ; if (submerged(i,j)) then
-          write(mesg,'(ES24.16," vs. ",ES24.16, " at ", ES12.4, ES12.4, i7, i7)') GV%H_to_m*eta(i,j), &
-               -US%Z_to_m*G%bathyT(i,j), G%geoLonT(i,j), G%geoLatT(i,j), i + G%HI%idg_offset, j + G%HI%jdg_offset
-          if (CS%bt_limit_integral_transport) &
-            call MOM_error(FATAL, "btstep: eta has dropped below bathyT: "//trim(mesg))
-          if (err_count < 2) &
-            call MOM_error(WARNING, "btstep: eta has dropped below bathyT: "//trim(mesg), all_print=.true.)
-          err_count = err_count + 1
-        endif ; enddo ; enddo
-      endif
     else
       !$omp taskwait
       !$omp target update from(eta)
@@ -2958,6 +2955,32 @@ module procedure btstep_timeloop
     endif
   enddo ! end of do n=1,ntimestep
 
+  if (GV%Boussinesq) then
+    ! Warn about the points where eta dropped below the bottom, in the order in which they did.
+    ! do concurrent's reduce() locality specifier is silently dropped by amdflang's device
+    ! lowering (a host scalar written inside a do concurrent comes back unchanged, with no
+    ! diagnostic), so this reduction is written as an explicit OpenMP construct instead.
+    eta_is_submerged = .false.
+    !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) &
+    !$omp   depend(in: submerged_step)
+    do j=js,je ; do i=is,ie
+      eta_is_submerged = eta_is_submerged .or. (submerged_step(i,j) > 0)
+    enddo ; enddo
+    if (eta_is_submerged) then
+      !$omp taskwait
+      !$omp target update from(submerged_step, eta_submerged)
+      do n=1,nstep+nfilter ; do j=js,je ; do i=is,ie ; if (submerged_step(i,j) == n) then
+        write(mesg,'(ES24.16," vs. ",ES24.16, " at ", ES12.4, ES12.4, i7, i7)') GV%H_to_m*eta_submerged(i,j), &
+             -US%Z_to_m*G%bathyT(i,j), G%geoLonT(i,j), G%geoLatT(i,j), i + G%HI%idg_offset, j + G%HI%jdg_offset
+        if (CS%bt_limit_integral_transport) &
+          call MOM_error(FATAL, "btstep: eta has dropped below bathyT: "//trim(mesg))
+        if (err_count < 2) &
+          call MOM_error(WARNING, "btstep: eta has dropped below bathyT: "//trim(mesg), all_print=.true.)
+        err_count = err_count + 1
+      endif ; enddo ; enddo ; enddo
+    endif
+  endif
+
   ! Reset the time information in the diag type.
   if (do_hifreq_output) call enable_averaging(time_int_in, time_end_in, CS%diag)
 
@@ -2965,7 +2988,8 @@ module procedure btstep_timeloop
   !$omp taskwait
   !$omp target update from(CS%ubtav, CS%vbtav)
   !$omp target exit data map(release: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
-  !$omp                              p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
+  !$omp                              p_surf_dyn, submerged_step, eta_submerged, PFu, PFv, Cor_u, Cor_v, &
+  !$omp                              eta_pred)
 
 end procedure btstep_timeloop
 module procedure btstep_find_Cor
