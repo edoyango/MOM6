@@ -1626,16 +1626,19 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! Update MPI-updated values are on GPU
   ! The various elements of gtot are positive definite but directional, so use
   ! the polarity arrays to sort out when the directions have shifted.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     if (CS%ua_polarity(i,j) < 0.0) call swap(gtot_E(i,j), gtot_W(i,j))
     if (CS%va_polarity(i,j) < 0.0) call swap(gtot_N(i,j), gtot_S(i,j))
   enddo
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js:je, I=is-1:ie)
     Cor_ref_u(I,j) =  &
         (((f_4_u(4,I,j) * vbt_Cor(i+1,j)) + (f_4_u(1,I,j) * vbt_Cor(i  ,j-1))) + &
          ((f_4_u(3,I,j) * vbt_Cor(i  ,j)) + (f_4_u(2,I,j) * vbt_Cor(i+1,j-1))))
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-1:je, i=is:ie)
     Cor_ref_v(i,J) = -1.0 * &
         (((f_4_v(1,i,J) * ubt_Cor(I-1,j)) + (f_4_v(4,i,J) * ubt_Cor(I  ,j+1))) + &
@@ -1644,6 +1647,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Now start new halo updates.
   if (nonblock_setup) then
+    !$acc wait
     if (.not.use_BT_cont) then
       !$omp target update from(Datu, Datv)
       call start_group_pass(CS%pass_Dat_uv, CS%BT_Domain)
@@ -1656,9 +1660,11 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js-1:je+1, I=is-1:ie)
     av_rem_u(I,j) = 0.0
   enddo
+  !$acc kernels loop async(1)
   do concurrent (j=js:je)
     do k=1,nz
       do concurrent (I=is-1:ie)
@@ -1666,6 +1672,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       enddo
     enddo
   enddo
+  !$acc kernels loop async(1)
   do concurrent (J=js-1:je)
     do concurrent(i=is-1:ie+1)
       av_rem_v(i,J) = 0.0
@@ -1677,10 +1684,12 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     enddo
   enddo
   if (CS%strong_drag) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       bt_rem_u(I,j) = G%mask2dCu(I,j) * &
          ((nstep * av_rem_u(I,j)) / (1.0 + (nstep-1)*av_rem_u(I,j)))
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       bt_rem_v(i,J) = G%mask2dCv(i,J) * &
          ((nstep * av_rem_v(i,J)) / (1.0 + (nstep-1)*av_rem_v(i,J)))
@@ -1688,11 +1697,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   else
     ! `av_rem**Instep` lowers to `exp(Instep*log(av_rem))` which is not bit-identical
     ! CPU <-> GPU when offloaded by stdpar. Use deterministic Newton nth_root instead.
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       bt_rem_u(I,j) = 0.0
       if (G%mask2dCu(I,j) * av_rem_u(I,j) > 0.0) &
         bt_rem_u(I,j) = G%mask2dCu(I,j) * (av_rem_u(I,j)**Instep) !nth_root(av_rem_u(I,j), nstep)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       bt_rem_v(i,J) = 0.0
       if (G%mask2dCv(i,J) * av_rem_v(i,J) > 0.0) &
@@ -1701,6 +1712,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (CS%linear_wave_drag) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie, G%mask2dCu(I,j) * CS%lin_drag_u(I,j) > 0.0)
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
 
@@ -1715,6 +1727,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       endif
     enddo
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) * CS%lin_drag_v(i,J) > 0.0)
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
 
@@ -1732,21 +1745,25 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Avoid changing the velocities at OBC points due to non-OBC calculations.
   if (CS%BT_OBC%u_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie, CS%BT_OBC%u_OBC_type(I,j) /= 0)
       bt_rem_u(I,j) = 1.0
     enddo
   endif
   if (CS%BT_OBC%v_OBCs_on_PE) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie, CS%BT_OBC%v_OBC_type(i,J) /= 0)
       bt_rem_v(i,J) = 1.0
     enddo
   endif
 
   ! Set the mass source, after first initializing the halos to 0.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
     eta_src(i,j) = 0.0
   enddo
   if (CS%bound_BT_corr) then ; if ((use_BT_Cont.or.integral_BT_cont) .and. CS%BT_cont_bounds) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, i=is:ie, G%mask2dT(i,j) > 0.0) &
         DO_LOCALITY(local(uint_cor, vint_cor, u_max_cor, v_max_cor))
       if (CS%eta_cor(i,j) > 0.0) then
@@ -1779,11 +1796,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       endif
     enddo
   else
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, i=is:ie, abs(CS%eta_cor(i,j)) > dt*CS%eta_cor_bound(i,j))
       CS%eta_cor(i,j) = sign(dt*CS%eta_cor_bound(i,j), CS%eta_cor(i,j))
     enddo
   endif ; endif
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js:je, i=is:ie)
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
   enddo
@@ -1800,6 +1819,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       else
         H_to_Z = GV%H_to_RZ / CS%Rho_BT_lin
       endif
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, i=is:ie)
         ! First determine the maximum stable value for dyn_coef_eta.
 
@@ -1831,6 +1851,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     endif
   endif
 
+  !$acc wait
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
   if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
   if (nonblock_setup) then
@@ -1851,6 +1872,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Complete all of the outstanding halo updates.
   if (nonblock_setup) then
+    !$acc wait
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
 
@@ -1872,6 +1894,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (CS%debug) then
+    !$acc wait
     !$omp target update from(uhbt, vhbt)
     call uvchksum("BT [uv]hbt", uhbt, vhbt, CS%debug_BT_HI, haloshift=0, &
                   unscale=US%s_to_T*US%L_to_m**2*GV%H_to_m)
