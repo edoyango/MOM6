@@ -2772,27 +2772,33 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
   ! Zero out the arrays for various time-averaged quantities.
   if (find_etaav) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
       eta_sum(i,j) = 0.0 ; eta_wtd(i,j) = 0.0
     enddo
   else
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsvf-1:jevf+1, i=isvf-1:ievf+1)
       eta_wtd(i,j) = 0.0
     enddo
   endif
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js:je, I=is-1:ie)
     CS%ubtav(I,j) = 0.0 ; uhbtav(I,j) = 0.0
     PFu_avg(I,j) = 0.0 ; Coru_avg(I,j) = 0.0
     LDu_avg(I,j) = 0.0 ; ubt_wtd(I,j) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
     ubt_trans(I,j) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=js-1:je, i=is:ie)
     CS%vbtav(i,J) = 0.0 ; vhbtav(i,J) = 0.0
     PFv_avg(i,J) = 0.0 ; Corv_avg(i,J) = 0.0
     LDv_avg(i,J) = 0.0 ; vbt_wtd(i,J) = 0.0
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
     vbt_trans(i,J) = 0.0
   enddo
@@ -2800,26 +2806,31 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
   if (integral_BT_cont) then
     !$omp target enter data map(alloc: ubt_int, uhbt_int, vbt_int, vhbt_int, cfl_ltd_vol)
 
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
       ubt_int(I,j) = 0.
       uhbt_int(I,j) = 0.
     enddo
 
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
       vbt_int(i,J) = 0.
       vhbt_int(i,J) = 0.
     enddo
 
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
       cfl_ltd_vol(i,j) = huge(GV%Z_to_H)
     enddo
   endif
 
+  !$acc parallel loop collapse(2) async(1)
   do concurrent (j=CS%jsdw:CS%jedw, i=CS%isdw:CS%iedw)
     p_surf_dyn(i,j) = 0.0
   enddo
 
   if (CS%bt_limit_integral_transport) then
+    !$acc wait
     !$omp target update from(eta_IC)
     ! Issue warnings if there are unphysical values of the initial sea surface height or total water column mass.
     if (GV%Boussinesq) then
@@ -2859,6 +2870,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
     ! Update the range of valid points, either by doing a halo update or by marching inward.
     if ((iev - stencil < ie) .or. (jev - stencil < je)) then
+      !$acc wait
       if (id_clock_calc > 0) call cpu_clock_end(id_clock_calc)
       call do_group_pass(CS%pass_eta_ubt, CS%BT_Domain, clock=id_clock_pass_step, omp_offload=.true.)
       isv = isvf ; iev = ievf ; jsv = jsvf ; jev = jevf
@@ -2869,18 +2881,22 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
 
     ! Store the previous velocities for time-filtered transports and OBCs.
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv:jev, I=isv-2:iev+1)
       ubt_prev(I,j) = ubt(I,j)
     enddo
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsv-2:jev+1, i=isv:iev)
       vbt_prev(i,J) = vbt(i,J)
     enddo
 
     if (integral_BT_cont) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
         uhbt_int_prev(I,j) = uhbt_int(I,j)
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
         vhbt_int_prev(i,J) = vhbt_int(i,J)
       enddo
@@ -2902,6 +2918,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     if (interp_eta_PF) then
       ! Interpolate the effective surface pressure in time
       wt_end = n*Instep  ! This could be (n-0.5)*Instep.
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
         eta_PF(i,j) = eta_PF_1(i,j) + wt_end*d_eta_PF(i,j)
       enddo
@@ -2956,11 +2973,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         ! Only the sink is accounted for: if diverent motion occurs at the beginning of the BT cycling but the volume
         ! was due only to a +ve source being applied gradually, then the instantaneous eta could drop below the bottom.
         if (GV%Boussinesq) then
+          !$acc kernels loop collapse(2) async(1)
           do concurrent (j=jsv:jev, i=isv:iev)
             cfl_ltd_vol(i,j) = ( CS%maxCFL_BT_cont * G%areaT(i,j) ) * &
                       max( 0., ( GV%Z_to_H*G%bathyT(i,j) + eta_IC(i,j) ) + nstep * min( 0., eta_src(i,j) ) )
           enddo
         else
+          !$acc kernels loop collapse(2) async(1)
           do concurrent (j=jsv:jev, i=isv:iev)
             cfl_ltd_vol(i,j) = ( CS%maxCFL_BT_cont * G%areaT(i,j) ) * &
                       max( 0., eta_IC(i,j) + nstep * min( 0., eta_src(i,j) ) )
@@ -2968,6 +2987,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif
       endif
 
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         ubt_int_prev(I,j) = ubt_int(I,j) ! Store the previous integrated velocity so it can be reset by at OBC points
@@ -2977,6 +2997,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         ! Estimate the mass flux within a single timestep to take the filtered average.
         uhbt(I,j) = (uhbt_int(I,j) - uhbt_int_prev(I,j)) * Idtbt
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vbt_int_prev(i,J) = vbt_int(i,J) ! Store the previous integrated velocity so it can be reset by at OBC points
@@ -2987,19 +3008,23 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         vhbt(i,J) = (vhbt_int(i,J) - vhbt_int_prev(i,J)) * Idtbt
       enddo
     elseif (use_BT_cont) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = find_uhbt(ubt_trans(I,j), BTCL_u(I,j)) + uhbt0(I,j)
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = find_vhbt(vbt_trans(i,J), BTCL_v(i,J)) + vhbt0(i,J)
       enddo
     else
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = Datu(I,j)*ubt_trans(I,j) + uhbt0(I,j)
       enddo
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = Datv(i,J)*vbt_trans(i,J) + vhbt0(i,J)
@@ -3010,6 +3035,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     if (CS%debug_bt) then
       write(mesg,'("BT vel update ",I0)') n
       debug_halo = 0 ; if  (CS%debug_wide_halos) debug_halo = iev - ie
+      !$acc wait
       !$omp target update from(PFu, PFv)
       call uvchksum(trim(mesg)//" PF[uv]", PFu, PFv, CS%debug_BT_HI, haloshift=debug_halo, &
                     symmetric=.true., unscale=US%L_T_to_m_s*US%s_to_T)
@@ -3040,6 +3066,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
     ! Apply open boundary condition considerations to revise the updated velocities and transports.
     if (CS%BT_OBC%u_OBCs_on_PE) then
+      !$acc wait
       !$omp target update from(ubt, uhbt, ubt_trans, eta, SpV_col_avg, ubt_prev, Datu, BTCL_u, uhbt0)
       call apply_u_velocity_OBCs(ubt, uhbt, ubt_trans, eta, SpV_col_avg, ubt_prev, BT_OBC, &
              G, MS, GV, US, CS, iev-ie, dtbt, CS%bebt, use_BT_cont, integral_BT_cont, n*dtbt, &
@@ -3048,6 +3075,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
 
     if (CS%BT_OBC%v_OBCs_on_PE) then
+      !$acc wait
       !$omp target update from(vbt, vhbt, vbt_trans, eta, SpV_col_avg, vbt_prev, Datv, BTCL_v, vhbt0)
       call apply_v_velocity_OBCs(vbt, vhbt, vbt_trans, eta, SpV_col_avg, vbt_prev, BT_OBC, &
              G, MS, GV, US, CS, iev-ie, dtbt, CS%bebt, use_BT_cont, integral_BT_cont, n*dtbt, &
@@ -3056,11 +3084,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
 
     ! Contribute to the running sums of the transports and velocities.
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) + wt_trans(n) * ubt_trans(I,j)
       uhbtav(I,j) = uhbtav(I,j) + wt_trans(n) * uhbt(I,j)
       ubt_wtd(I,j) = ubt_wtd(I,j) + wt_vel(n) * ubt(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1:je, i=is:ie)
       CS%vbtav(i,J) = CS%vbtav(i,J) + wt_trans(n) * vbt_trans(i,J)
       vhbtav(i,J) = vhbtav(i,J) + wt_trans(n) * vhbt(i,J)
@@ -3087,6 +3117,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       endif
 
       eta_is_submerged = .false.
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv:jev, i=isv:iev) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         eta(i,j) = (eta_IC(i,j) + eta_cor_multiplier * eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
                    ((uhbt_int(I-1,j) - uhbt_int(I,j)) + (vhbt_int(i,J-1) - vhbt_int(i,J)))
@@ -3104,6 +3135,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         eta_is_submerged = submerged(i,j)
       enddo
 
+      !$acc wait(1)
       if (eta_is_submerged) then
         !$omp target update from(submerged, eta)
         do j=jsv,jev ; do i=isv,iev ; if (submerged(i,j)) then
@@ -3115,6 +3147,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif ; enddo ; enddo
       endif
     else
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=jsv:jev, i=isv:iev)
         eta(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                    ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
@@ -3124,6 +3157,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
     if (CS%debug_bt) then
       write(mesg,'("BT step ",I0)') n
+      !$acc wait
       !$omp target update from(ubt, vbt)
       call uvchksum(trim(mesg)//" [uv]bt", ubt, vbt, CS%debug_BT_HI, haloshift=debug_halo, &
                     symmetric=.true., unscale=US%L_T_to_m_s)
@@ -3135,11 +3169,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     ! or total water column mass.
     eta_is_submerged = .false.
     if (GV%Boussinesq) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
         eta_is_submerged = submerged(i,j)
       enddo
 
+      !$acc wait(1)
       if (eta_is_submerged) then
         !$omp target update from(submerged, eta)
         do j=js,je ; do i=is,ie ; if (submerged(i,j)) then
@@ -3156,11 +3192,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif ; enddo ; enddo
       endif
     else
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         submerged(i,j) = eta(i,j) < 0.0 .and. G%mask2dT(i,j) > 0.0
         eta_is_submerged = submerged(i,j)
       enddo
 
+      !$acc wait(1)
       if (eta_is_submerged) then
         !$omp target update from(submerged)
 
@@ -3183,21 +3221,25 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     ! Accumulate some diagnostics of time-averaged barotropic accelerations.
     if (do_ave) then
       if ((CS%id_PFu_bt > 0) .or. associated(ADp%bt_pgf_u)) then
+        !$acc kernels loop collapse(2) async(1)
         do concurrent (j=js:je, I=is-1:ie)
           PFu_avg(I,j)  = PFu_avg(I,j) + wt_accel2(n) * PFu(I,j)
         enddo
       endif
       if ((CS%id_PFv_bt > 0) .or. associated(ADp%bt_pgf_v)) then
+        !$acc kernels loop collapse(2) async(1)
         do concurrent (J=js-1:je, i=is:ie)
           PFv_avg(i,J)  = PFv_avg(i,J) + wt_accel2(n) * PFv(i,J)
         enddo
       endif
       if ((CS%id_Coru_bt > 0) .or. associated(ADp%bt_cor_u)) then
+        !$acc kernels loop collapse(2) async(1)
         do concurrent (j=js:je, I=is-1:ie)
           Coru_avg(I,j) = Coru_avg(I,j) + wt_accel2(n) * Cor_u(I,j)
         enddo
       endif
       if ((CS%id_Corv_bt > 0) .or. associated(ADp%bt_cor_v)) then
+        !$acc kernels loop collapse(2) async(1)
         do concurrent (J=js-1:je, i=is:ie)
           Corv_avg(i,J) = Corv_avg(i,J) + wt_accel2(n) * Cor_v(i,J)
         enddo
@@ -3205,11 +3247,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
       if (CS%linear_wave_drag) then
         if ((CS%id_LDu_bt > 0) .or. (associated(ADp%bt_lwd_u))) then
+          !$acc kernels loop collapse(2) async(1)
           do concurrent (j=js:je, I=is-1:ie)
             LDu_avg(I,j) = LDu_avg(I,j) - wt_accel2(n) * (ubt(I,j) * Rayleigh_u(I,j))
           enddo
         endif
         if ((CS%id_LDv_bt > 0) .or. (associated(ADp%bt_lwd_v))) then
+          !$acc kernels loop collapse(2) async(1)
           do concurrent (J=js-1:je, i=is:ie)
             LDv_avg(i,J) = LDv_avg(i,J) - wt_accel2(n) * (vbt(i,J) * Rayleigh_v(i,J))
           enddo
@@ -3218,6 +3262,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
 
     if (do_hifreq_output) then
+      !$acc wait
       ! Note that this compresses the time so that all of the timesteps, including those in the
       ! extra timesteps for filtering, fit within dt.
       time_step_end = time_bt_start + real_to_time(n*dtbt_diag, unscale=US%T_to_s)
@@ -3248,6 +3293,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
   enddo ! end of do n=1,ntimestep
 
+  !$acc wait
   !$omp target exit data &
   !$omp   map(release: uhbt, vhbt, ubt_prev, vbt_prev, ubt_trans, vbt_trans, PFu, PFv, Cor_u, Cor_v, &
   !$omp       p_surf_dyn, submerged)
@@ -3358,6 +3404,7 @@ subroutine truncate_velocities(ubt, vbt, dt, G, CS, isv, iev, jsv, jev)
   integer :: i, j
 
   if (CS%clip_velocity) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv:jev, I=isv-1:iev)
       if ((ubt(I,j) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
         ! Add some error reporting later.
@@ -3367,6 +3414,7 @@ subroutine truncate_velocities(ubt, vbt, dt, G, CS, isv, iev, jsv, jev)
         ubt(I,j) = (0.95*CS%CFL_trunc) * (G%areaT(i,j) / (dt * G%dy_Cu(I,j)))
       endif
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsv-1:jev, i=isv:iev)
       if ((vbt(i,J) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
         ! Add some error reporting later.
@@ -3446,28 +3494,35 @@ subroutine btloop_eta_predictor(n, dtbt, ubt, vbt, eta, ubt_int, vbt_int, uhbt, 
   integer :: i, j
 
   if (integral_BT_cont) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
       uhbt_int(I,j) = find_uhbt(ubt_int(I,j) + dtbt*ubt(I,j), BTCL_u(I,j)) + n*dtbt*uhbt0(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
       vhbt_int(i,J) = find_vhbt(vbt_int(i,J) + dtbt*vbt(i,J), BTCL_v(i,J)) + n*dtbt*vhbt0(i,J)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
       eta_pred(i,j) = (eta_IC(i,j) + n*eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
                  ((uhbt_int(I-1,j) - uhbt_int(I,j)) + (vhbt_int(i,J-1) - vhbt_int(i,J)))
     enddo
   elseif (use_BT_cont) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
       uhbt(I,j) = find_uhbt(ubt(I,j), BTCL_u(I,j)) + uhbt0(I,j)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
       vhbt(i,J) = find_vhbt(vbt(i,J), BTCL_v(i,J)) + vhbt0(i,J)
     enddo
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
       eta_pred(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                  ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
     enddo
   else
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
       eta_pred(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
           (((Datu(I-1,j)*ubt(I-1,j) + uhbt0(I-1,j)) - &
@@ -3541,12 +3596,14 @@ subroutine btloop_find_PF(PFu, PFv, isv, iev, jsv, jev, eta_PF_BT, eta_PF, &
     is_v = isv ; ie_v = iev ; js_u = jsv-1 ; je_u = jev+1
   endif
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js_u:je_u, I=isv-1:iev)
     PFu(I,j) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_E(i,j)) - &
                 ((eta_PF_BT(i+1,j)-eta_PF(i+1,j))*gtot_W(i+1,j))) * &
                 dgeo_de * CS%IdxCu(I,j)
   enddo
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=jsv-1:jev, i=is_v:ie_v)
     PFv(i,J) = (((eta_PF_BT(i,j)-eta_PF(i,j))*gtot_N(i,j)) - &
                 ((eta_PF_BT(i,j+1)-eta_PF(i,j+1))*gtot_S(i,j+1))) * &
@@ -3554,6 +3611,7 @@ subroutine btloop_find_PF(PFu, PFv, isv, iev, jsv, jev, eta_PF_BT, eta_PF, &
   enddo
 
   if (find_etaav .and. (abs(wt_accel2_n) > 0.0)) then
+    !$acc parallel loop collapse(2) async(1)
     do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec)
       eta_sum(i,j) = eta_sum(i,j) + wt_accel2_n * eta_PF_BT(i,j)
     enddo
@@ -3600,13 +3658,16 @@ subroutine btloop_add_dyn_PF(PFu, PFv, eta_pred, eta, dyn_coef_eta, p_surf_dyn, 
   endif
 
   ! Use the change in eta to estimate the flow divergence and dynamic pressure.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
     p_surf_dyn(i,j) = dyn_coef_eta(i,j) * (eta_pred(i,j) - eta(i,j))
   enddo
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js_u:je_u, I=isv-1:iev)
     PFu(I,j) = PFu(I,j) + (p_surf_dyn(i,j) - p_surf_dyn(i+1,j)) * CS%IdxCu(I,j)
   enddo
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=jsv-1:jev, i=is_v:ie_v)
     PFv(i,J) = PFv(i,J) + (p_surf_dyn(i,j) - p_surf_dyn(i,j+1)) * CS%IdyCv(i,J)
   enddo
@@ -3671,11 +3732,13 @@ subroutine btloop_update_v(dtbt, ubt, vbt, v_accel_bt, &
 
   ! The bracket bug only applies if v is second, use ioff to check.
   if (use_bracket_bug) then
+   !$acc kernels loop collapse(2) async(1)
    do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(2,i,J) * ubt(I,j))) + &
              ((f_4_v(4,i,J) * ubt(I,j+1)) + (f_4_v(3,i,J) * ubt(I-1,j+1)))) - Cor_ref_v(i,J)
    enddo
   else
+   !$acc kernels loop collapse(2) async(1)
    do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
      Cor_v(i,J) = -1.0*(((f_4_v(1,i,J) * ubt(I-1,j)) + (f_4_v(4,i,J) * ubt(I,j+1))) + &
              ((f_4_v(2,i,J) * ubt(I,j)) + (f_4_v(3,i,J) * ubt(I-1,j+1)))) - Cor_ref_v(i,J)
@@ -3683,6 +3746,7 @@ subroutine btloop_update_v(dtbt, ubt, vbt, v_accel_bt, &
   endif
 
   ! This updates the v-velocity, except at OBC points.
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
     vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
          dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
@@ -3690,11 +3754,13 @@ subroutine btloop_update_v(dtbt, ubt, vbt, v_accel_bt, &
   enddo
 
   if (CS%linear_wave_drag) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * &
           ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J))
     enddo
   else
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=Js_v:Je_v, i=is_v:ie_v)
       v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel_n * (Cor_v(i,J) + PFv(i,J))
     enddo
@@ -3753,6 +3819,7 @@ subroutine btloop_update_u(dtbt, ubt, vbt, u_accel_bt, &
   ! Local variables
   integer :: i, j
 
+  !$acc kernels loop collapse(2) async(1)
   do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
     Cor_u(I,j) = (((f_4_u(4,I,j) * vbt(i+1,J)) + (f_4_u(1,I,j) * vbt(i,J-1))) + &
                   ((f_4_u(3,I,j) * vbt(i,J)) + (f_4_u(2,I,j) * vbt(i+1,J-1)))) - &
@@ -3764,11 +3831,13 @@ subroutine btloop_update_u(dtbt, ubt, vbt, u_accel_bt, &
   enddo
 
   if (CS%linear_wave_drag) then
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * &
           ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j))
     enddo
   else
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js_u:je_u, I=Is_u:Ie_u)
       u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel_n * (Cor_u(I,j) + PFu(I,j))
     enddo
@@ -5659,6 +5728,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
   if (present(eta)) then
     ! The use of harmonic mean thicknesses ensure positive definiteness.
     if (GV%Boussinesq) then
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
         H1 = CS%bathyT(i,j)*GV%Z_to_H + eta(i,j) ; H2 = CS%bathyT(i+1,j)*GV%Z_to_H + eta(i+1,j)
         Datu(I,j) = 0.0 ; if ((H1 > 0.0) .and. (H2 > 0.0)) &
@@ -5666,6 +5736,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
         ! Datu(I,j) = CS%dy_Cu(I,j) * 0.5 * (H1 + H2)
       enddo
 
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
         H1 = CS%bathyT(i,j)*GV%Z_to_H + eta(i,j) ; H2 = CS%bathyT(i,j+1)*GV%Z_to_H + eta(i,j+1)
         Datv(i,J) = 0.0 ; if ((H1 > 0.0) .and. (H2 > 0.0)) &
@@ -5673,6 +5744,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
         ! Datu(I,j) = CS%dy_Cu(I,j) * 0.5 * (H1 + H2)
       enddo
     else
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
         Datu(I,j) = 0.0 ; if ((eta(i,j) > 0.0) .and. (eta(i+1,j) > 0.0)) &
         Datu(I,j) = CS%dy_Cu(I,j) * (2.0 * eta(i,j) * eta(i+1,j)) / &
@@ -5680,6 +5752,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
         ! Datu(I,j) = CS%dy_Cu(I,j) * 0.5 * (eta(i,j) + eta(i+1,j))
       enddo
 
+      !$acc kernels loop collapse(2) async(1)
       do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
         Datv(i,J) = 0.0 ; if ((eta(i,j) > 0.0) .and. (eta(i,j+1) > 0.0)) &
         Datv(i,J) = CS%dx_Cv(i,J) * (2.0 * eta(i,j) * eta(i,j+1)) / &
@@ -5690,12 +5763,14 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
   elseif (present(add_max)) then
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
       H1 = max((G%meanSL(i+1,j) + add_max) + G%bathyT(i+1,j), 0.0)
       H2 = max((G%meanSL(i,j) + add_max) + G%bathyT(i,j), 0.0)
       Datu(I,j) = CS%dy_Cu(I,j) * Z_to_H * max(H1, H2)
     enddo
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
       H1 = max((G%meanSL(i,j+1) + add_max) + G%bathyT(i,j+1), 0.0)
       H2 = max((G%meanSL(i,j) + add_max) + G%bathyT(i,j), 0.0)
@@ -5704,6 +5779,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
   else
     Z_to_H = GV%Z_to_H ; if (.not.GV%Boussinesq) Z_to_H = GV%RZ_to_H * CS%Rho_BT_lin
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (j=js-hs:je+hs, I=is-1-hs:ie+hs)
       H1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * Z_to_H
       H2 = max(G%meanSL(i+1,j) + G%bathyT(i+1,j), 0.0) * Z_to_H
@@ -5712,6 +5788,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
         Datu(I,j) = CS%dy_Cu(I,j) * (2.0 * H1 * H2) / (H1 + H2)
     enddo
 
+    !$acc kernels loop collapse(2) async(1)
     do concurrent (J=js-1-hs:je+hs, i=is-hs:ie+hs)
       H1 = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * Z_to_H
       H2 = max(G%meanSL(i,j+1) + G%bathyT(i,j+1), 0.0) * Z_to_H
@@ -5720,6 +5797,7 @@ subroutine find_face_areas(Datu, Datv, G, GV, US, CS, MS, halo, eta, add_max)
         Datv(i,J) = CS%dx_Cv(i,J) * (2.0 * H1 * H2) / (H1 + H2)
     enddo
   endif
+  !$acc wait
 end subroutine find_face_areas
 
 !> bt_mass_source determines the appropriately limited mass source for
