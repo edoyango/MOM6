@@ -2834,23 +2834,23 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       eta_wtd(i,j) = 0.0
     enddo
   endif
-  !$acc kernels loop collapse(2) async(1)
+  !$acc kernels loop collapse(2) async(2)
   do concurrent (j=js:je, I=is-1:ie)
     CS%ubtav(I,j) = 0.0 ; uhbtav(I,j) = 0.0
     PFu_avg(I,j) = 0.0 ; Coru_avg(I,j) = 0.0
     LDu_avg(I,j) = 0.0 ; ubt_wtd(I,j) = 0.0
   enddo
-  !$acc kernels loop collapse(2) async(1)
+  !$acc kernels loop collapse(2) async(2)
   do concurrent (j=jsvf-1:jevf+1, I=isvf-1:ievf)
     ubt_trans(I,j) = 0.0
   enddo
-  !$acc kernels loop collapse(2) async(1)
+  !$acc kernels loop collapse(2) async(3)
   do concurrent (J=js-1:je, i=is:ie)
     CS%vbtav(i,J) = 0.0 ; vhbtav(i,J) = 0.0
     PFv_avg(i,J) = 0.0 ; Corv_avg(i,J) = 0.0
     LDv_avg(i,J) = 0.0 ; vbt_wtd(i,J) = 0.0
   enddo
-  !$acc kernels loop collapse(2) async(1)
+  !$acc kernels loop collapse(2) async(3)
   do concurrent (J=jsvf-1:jevf, i=isvf-1:ievf+1)
     vbt_trans(i,J) = 0.0
   enddo
@@ -2858,13 +2858,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
   if (integral_BT_cont) then
     !$omp target enter data map(alloc: ubt_int, uhbt_int, vbt_int, vhbt_int, cfl_ltd_vol)
 
-    !$acc parallel loop collapse(2) async(1)
+    !$acc parallel loop collapse(2) async(2)
     do concurrent (j=CS%jsdw:CS%jedw, I=CS%isdw-1:CS%iedw)
       ubt_int(I,j) = 0.
       uhbt_int(I,j) = 0.
     enddo
 
-    !$acc parallel loop collapse(2) async(1)
+    !$acc parallel loop collapse(2) async(3)
     do concurrent (J=CS%jsdw-1:CS%jedw, i=CS%isdw:CS%iedw)
       vbt_int(i,J) = 0.
       vhbt_int(i,J) = 0.
@@ -2944,11 +2944,11 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     enddo
 
     if (integral_BT_cont) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(1) wait(2)
       do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
         uhbt_int_prev(I,j) = uhbt_int(I,j)
       enddo
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(1) wait(3)
       do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
         vhbt_int_prev(i,J) = vhbt_int(i,J)
       enddo
@@ -3039,7 +3039,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif
       endif
 
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2) wait(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         ubt_int_prev(I,j) = ubt_int(I,j) ! Store the previous integrated velocity so it can be reset by at OBC points
@@ -3049,7 +3049,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         ! Estimate the mass flux within a single timestep to take the filtered average.
         uhbt(I,j) = (uhbt_int(I,j) - uhbt_int_prev(I,j)) * Idtbt
       enddo
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3) wait(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vbt_int_prev(i,J) = vbt_int(i,J) ! Store the previous integrated velocity so it can be reset by at OBC points
@@ -3060,23 +3060,23 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         vhbt(i,J) = (vhbt_int(i,J) - vhbt_int_prev(i,J)) * Idtbt
       enddo
     elseif (use_BT_cont) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2) wait(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = find_uhbt(ubt_trans(I,j), BTCL_u(I,j)) + uhbt0(I,j)
       enddo
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3) wait(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = find_vhbt(vbt_trans(i,J), BTCL_v(i,J)) + vhbt0(i,J)
       enddo
     else
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2) wait(1)
       do concurrent (j=jsv:jev, I=isv-1:iev)
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*ubt_prev(I,j)
         uhbt(I,j) = Datu(I,j)*ubt_trans(I,j) + uhbt0(I,j)
       enddo
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3) wait(1)
       do concurrent (J=jsv-1:jev, i=isv:iev)
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vbt_prev(i,J)
         vhbt(i,J) = Datv(i,J)*vbt_trans(i,J) + vhbt0(i,J)
@@ -3136,13 +3136,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     endif
 
     ! Contribute to the running sums of the transports and velocities.
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(2)
     do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) + wt_trans(n) * ubt_trans(I,j)
       uhbtav(I,j) = uhbtav(I,j) + wt_trans(n) * uhbt(I,j)
       ubt_wtd(I,j) = ubt_wtd(I,j) + wt_vel(n) * ubt(I,j)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(3)
     do concurrent (J=js-1:je, i=is:ie)
       CS%vbtav(i,J) = CS%vbtav(i,J) + wt_trans(n) * vbt_trans(i,J)
       vhbtav(i,J) = vhbtav(i,J) + wt_trans(n) * vhbt(i,J)
@@ -3169,7 +3169,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       endif
 
       eta_is_submerged = .false.
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(1) wait(2,3)
       do concurrent (j=jsv:jev, i=isv:iev) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         eta(i,j) = (eta_IC(i,j) + eta_cor_multiplier * eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
                    ((uhbt_int(I-1,j) - uhbt_int(I,j)) + (vhbt_int(i,J-1) - vhbt_int(i,J)))
@@ -3199,7 +3199,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif ; enddo ; enddo
       endif
     else
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(1) wait(2,3)
       do concurrent (j=jsv:jev, i=isv:iev)
         eta(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                    ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
@@ -3546,29 +3546,29 @@ subroutine btloop_eta_predictor(n, dtbt, ubt, vbt, eta, ubt_int, vbt_int, uhbt, 
   integer :: i, j
 
   if (integral_BT_cont) then
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(2) wait(1)
     do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
       uhbt_int(I,j) = find_uhbt(ubt_int(I,j) + dtbt*ubt(I,j), BTCL_u(I,j)) + n*dtbt*uhbt0(I,j)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(3) wait(1)
     do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
       vhbt_int(i,J) = find_vhbt(vbt_int(i,J) + dtbt*vbt(i,J), BTCL_v(i,J)) + n*dtbt*vhbt0(i,J)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(1) wait(2,3)
     do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
       eta_pred(i,j) = (eta_IC(i,j) + n*eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
                  ((uhbt_int(I-1,j) - uhbt_int(I,j)) + (vhbt_int(i,J-1) - vhbt_int(i,J)))
     enddo
   elseif (use_BT_cont) then
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(2) wait(1)
     do concurrent (j=jsv-1:jev+1, I=isv-2:iev+1)
       uhbt(I,j) = find_uhbt(ubt(I,j), BTCL_u(I,j)) + uhbt0(I,j)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(3) wait(1)
     do concurrent (J=jsv-2:jev+1, i=isv-1:iev+1)
       vhbt(i,J) = find_vhbt(vbt(i,J), BTCL_v(i,J)) + vhbt0(i,J)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(1) wait(2,3)
     do concurrent (j=jsv-1:jev+1, i=isv-1:iev+1)
       eta_pred(i,j) = (eta(i,j) + eta_src(i,j)) + (dtbt * CS%IareaT_OBCmask(i,j)) * &
                  ((uhbt(I-1,j) - uhbt(I,j)) + (vhbt(i,J-1) - vhbt(i,J)))
