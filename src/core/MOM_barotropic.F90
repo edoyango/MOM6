@@ -2139,14 +2139,14 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   ! Find or store the weighted time-mean velocities and transports.
   if (CS%answer_date < 20190101) then
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(2)
     do concurrent (j=js:je, I=is-1:ie)
       CS%ubtav(I,j) = CS%ubtav(I,j) * I_sum_wt_trans
       uhbtav(I,j) = uhbtav(I,j) * I_sum_wt_trans
       ubt_wtd(I,j) = ubt_wtd(I,j) * I_sum_wt_vel
     enddo
 
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(3)
     do concurrent (J=js-1:je, i=is:ie)
       CS%vbtav(i,J) = CS%vbtav(i,J) * I_sum_wt_trans
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
@@ -2155,23 +2155,23 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(2)
     do concurrent (j=js:je, I=is-1:ie)
       u_accel_bt(I,j) = u_accel_bt(I,j) - Drag_u(I,j)
     enddo
-    !$acc kernels loop collapse(2) async(1)
+    !$acc kernels loop collapse(2) async(3)
     do concurrent (J=js-1:je, i=is:ie)
       v_accel_bt(i,J) = v_accel_bt(i,J) - Drag_v(i,J)
     enddo
 
     if ((CS%id_LDu_bt > 0) .or. (associated(ADp%bt_lwd_u))) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2)
       do concurrent (j=js:je, I=is-1:ie)
         LDu_avg(I,j) = LDu_avg(I,j) - Drag_u(I,j)
       enddo
     endif
     if ((CS%id_LDv_bt > 0) .or. (associated(ADp%bt_lwd_v))) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3)
       do concurrent (J=js-1:je, i=is:ie)
         LDv_avg(i,J) = LDv_avg(i,J) - Drag_v(i,J)
       enddo
@@ -2230,11 +2230,11 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (query_averaging_enabled(CS%diag)) then
 
     if (CS%gradual_BT_ICs) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2)
       do concurrent (j=js:je, I=is-1:ie)
         CS%ubt_IC(I,j) = ubt_wtd(I,j)
       enddo
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3)
       do concurrent (J=js-1:je, i=is:ie)
         CS%vbt_IC(i,J) = vbt_wtd(i,J)
       enddo
@@ -2250,7 +2250,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       if (CS%id_LDv_bt > 0) call post_data(CS%id_LDv_bt, LDv_avg, CS%diag)
     else ! if (CS%answer_date < 20190101) then
       if (CS%id_PFu_bt > 0) then
-        !$acc kernels loop collapse(2) async(1)
+        !$acc kernels loop collapse(2) async(2)
         do concurrent (j=js:je, I=is-1:ie)
           PFu_avg(I,j) = PFu_avg(I,j) * I_sum_wt_accel
         enddo
@@ -2259,7 +2259,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         call post_data(CS%id_PFu_bt, PFu_avg, CS%diag)
       endif
       if (CS%id_PFv_bt > 0) then
-        !$acc kernels loop collapse(2) async(1)
+        !$acc kernels loop collapse(2) async(3)
         do concurrent (J=js-1:je, i=is:ie)
           PFv_avg(i,J) = PFv_avg(i,J) * I_sum_wt_accel
         enddo
@@ -2268,7 +2268,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         call post_data(CS%id_PFv_bt, PFv_avg, CS%diag)
       endif
       if (CS%id_Coru_bt > 0) then
-        !$acc kernels loop collapse(2) async(1)
+        !$acc kernels loop collapse(2) async(2)
         do concurrent (j=js:je, I=is-1:ie)
           Coru_avg(I,j) = Coru_avg(I,j) * I_sum_wt_accel
         enddo
@@ -2277,7 +2277,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         call post_data(CS%id_Coru_bt, Coru_avg, CS%diag)
       endif
       if (CS%id_Corv_bt > 0) then
-        !$acc kernels loop collapse(2) async(1)
+        !$acc kernels loop collapse(2) async(3)
         do concurrent (J=js-1:je, i=is:ie)
           Corv_avg(i,J) = Corv_avg(i,J) * I_sum_wt_accel
         enddo
@@ -2289,7 +2289,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
     ! Diagnostics for time tendency
     if (CS%id_ubtdt > 0) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2)
       do concurrent (j=js:je, I=is-1:ie)
         ubt_dt(I,j) = (ubt_wtd(I,j) - ubt_st(I,j))*Idt
       enddo
@@ -2297,7 +2297,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       call post_data(CS%id_ubtdt, ubt_dt(IsdB:IedB,jsd:jed), CS%diag)
     endif
     if (CS%id_vbtdt > 0) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3)
       do concurrent (J=js-1:je, i=is:ie)
         vbt_dt(i,J) = (vbt_wtd(i,J) - vbt_st(i,J))*Idt
       enddo
@@ -2308,7 +2308,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     ! Copy decomposed barotropic accelerations to ADp
     if (associated(ADp%bt_pgf_u)) then
       ! Note that CS%IdxCu is 0 at OBC points, so ADp%bt_pgf_u is zeroed out there.
-      !$acc kernels loop collapse(3) async(1)
+      !$acc kernels loop collapse(3) async(2)
       do concurrent (k=1:nz, j=js:je, I=is-1:ie)
         ADp%bt_pgf_u(I,j,k) = PFu_avg(I,j) - &
           (((pbce(i+1,j,k) - gtot_W(i+1,j)) * e_anom(i+1,j)) - &
@@ -2317,7 +2317,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     endif
     if (associated(ADp%bt_pgf_v)) then
       ! Note that CS%IdyCv is 0 at OBC points, so ADp%bt_pgf_v is zeroed out there.
-      !$acc kernels loop collapse(3) async(1)
+      !$acc kernels loop collapse(3) async(3)
       do concurrent (k=1:nz, J=js-1:je, i=is:ie)
         ADp%bt_pgf_v(i,J,k) = PFv_avg(i,J) - &
           (((pbce(i,j+1,k) - gtot_S(i,j+1)) * e_anom(i,j+1)) - &
@@ -2326,26 +2326,26 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     endif
 
     if (associated(ADp%bt_cor_u)) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2)
       do concurrent (j=js:je, I=is-1:ie)
         ADp%bt_cor_u(I,j) = Coru_avg(I,j)
       enddo
     endif
     if (associated(ADp%bt_cor_v)) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3)
       do concurrent (J=js-1:je, i=is:ie)
         ADp%bt_cor_v(i,J) = Corv_avg(i,J)
       enddo
     endif
 
     if (associated(ADp%bt_lwd_u)) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(2)
       do concurrent (j=js:je, I=is-1:ie)
         ADp%bt_lwd_u(I,j) = LDu_avg(I,j)
       enddo
     endif
     if (associated(ADp%bt_lwd_v)) then
-      !$acc kernels loop collapse(2) async(1)
+      !$acc kernels loop collapse(2) async(3)
       do concurrent (J=js-1:je, i=is:ie)
         ADp%bt_lwd_v(i,J) = LDv_avg(i,J)
       enddo
@@ -2473,38 +2473,38 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (associated(ADp%diag_hfrac_u)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(2)
     do concurrent (k=1:nz, j=js:je, I=is-1:ie)
       ADp%diag_hfrac_u(I,j,k) = CS%frhatu(I,j,k)
     enddo
   endif
   if (associated(ADp%diag_hfrac_v)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(3)
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       ADp%diag_hfrac_v(i,J,k) = CS%frhatv(i,J,k)
     enddo
   endif
 
   if (use_BT_cont .and. associated(ADp%diag_hu)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(2)
     do concurrent (k=1:nz, j=js:je, I=is-1:ie)
       ADp%diag_hu(I,j,k) = BT_cont%h_u(I,j,k)
     enddo
   endif
   if (use_BT_cont .and. associated(ADp%diag_hv)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(3)
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       ADp%diag_hv(i,J,k) = BT_cont%h_v(i,J,k)
     enddo
   endif
   if (associated(ADp%visc_rem_u)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(2)
     do concurrent (k=1:nz, j=js:je, I=is-1:ie)
       ADp%visc_rem_u(I,j,k) = visc_rem_u(I,j,k)
     enddo
   endif
   if (associated(ADp%visc_rem_v)) then
-    !$acc kernels loop collapse(3) async(1)
+    !$acc kernels loop collapse(3) async(3)
     do concurrent (k=1:nz, J=js-1:je, i=is:ie)
       ADp%visc_rem_v(i,J,k) = visc_rem_v(i,J,k)
     enddo
@@ -4011,14 +4011,14 @@ subroutine btstep_layer_accel(dt, u_accel_bt, v_accel_bt, pbce, gtot_E, gtot_W, 
   accel_underflow = CS%vel_underflow * Idt
 
   ! Now calculate each layer's accelerations.
-  !$acc kernels loop collapse(3) async(1)
+  !$acc kernels loop collapse(3) async(2)
   do concurrent (k=1:nz, j=js:je, I=is-1:ie)
     accel_layer_u(I,j,k) = (u_accel_bt(I,j) - &
           (((pbce(i+1,j,k) - gtot_W(i+1,j)) * e_anom(i+1,j)) - &
           ((pbce(i,j,k) - gtot_E(i,j)) * e_anom(i,j))) * CS%IdxCu(I,j) )
     if (abs(accel_layer_u(I,j,k)) < accel_underflow) accel_layer_u(I,j,k) = 0.0
   enddo
-  !$acc kernels loop collapse(3) async(1)
+  !$acc kernels loop collapse(3) async(3)
   do concurrent (k=1:nz, J=js-1:je, i=is:ie)
     accel_layer_v(i,J,k) = (v_accel_bt(i,J) - &
           (((pbce(i,j+1,k) - gtot_S(i,j+1)) * e_anom(i,j+1)) - &
