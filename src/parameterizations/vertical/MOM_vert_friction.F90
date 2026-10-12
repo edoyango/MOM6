@@ -1395,9 +1395,12 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   real :: I_valBL ! The inverse of a scaling factor determining when water is
                   ! still within the boundary layer, as determined by the sum
                   ! of the harmonic mean thicknesses [nondim].
+  real :: frac_shelf ! The fraction of a velocity point under an ice shelf [nondim]
   logical :: do_any_shelf
   integer :: zi_dir
-    ! A ternary logical indicating which thickness to use for finding z_clear.
+    ! A ternary logical indicating which thickness to use for finding z_clear and for projecting
+    ! thicknesses outward across OBCs, -1 for the i (or j) side, 1 for the i+1 (or j+1) side,
+    ! and 0 to use both.
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
@@ -1451,7 +1454,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp   private(z_i, z_i_gl90, dz_harm, hvel, dz_vel, a_cpl, a_cpl_gl90, &
   !$omp&     I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, zh, zcol, &
   !$omp&     zcol_p1, h_harm, h_arith, h_delta, dz_arith, z2, botfn, z_clear, &
-  !$omp&     z2_wt, h_ml)
+  !$omp&     z2_wt, h_ml, frac_shelf)
   do j=js,je ; do I=Isq,Ieq ; if (G%mask2dCu(I,j) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1510,26 +1513,18 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       dz_arith = 0.5 * (dz(i+1,j,k) + dz(i,j,k))
 
       ! Project thickness outward across OBCs using a zero-gradient condition.
-      if (associated(OBC)) then
-        if (OBC%u_E_OBCs_on_PE) then
-          if (OBC%segnum_u(I,j) > 0) then
-            h_harm = h(i,j,k)
-            h_arith = h(i,j,k)
-            h_delta = 0.
-            dz_harm(k) = dz(i,j,k)
-            dz_arith = dz(i,j,k)
-          endif
-        endif
-
-        if (OBC%u_W_OBCs_on_PE) then
-          if (OBC%segnum_u(I,j) < 0) then
-            h_harm = h(i+1,j,k)
-            h_arith = h(i+1,j,k)
-            h_delta = 0.
-            dz_harm(k) = dz(i+1,j,k)
-            dz_arith = dz(i+1,j,k)
-          endif
-        endif
+      if (zi_dir < 0) then
+        h_harm = h(i,j,k)
+        h_arith = h(i,j,k)
+        h_delta = 0.
+        dz_harm(k) = dz(i,j,k)
+        dz_arith = dz(i,j,k)
+      elseif (zi_dir > 0) then
+        h_harm = h(i+1,j,k)
+        h_arith = h(i+1,j,k)
+        h_delta = 0.
+        dz_harm(k) = dz(i+1,j,k)
+        dz_arith = dz(i+1,j,k)
       endif
 
       if (CS%harmonic_visc) then
@@ -1611,7 +1606,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     do_any_shelf = .false.
     if (associated(forces%frac_shelf_u)) then
       CS%a1_shelf_u(I,j) = 0.
-      do_any_shelf = forces%frac_shelf_u(I,j) > 0.
+      frac_shelf = forces%frac_shelf_u(I,j)
+      do_any_shelf = frac_shelf > 0.
 
       if (do_any_shelf) then
         if (.not. CS%harmonic_visc) then
@@ -1634,24 +1630,16 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
             h_delta = h(i+1,j,k) - h(i,j,k)
             dz_arith = 0.5 * (dz(i+1,j,k) + dz(i,j,k))
 
-            if (associated(OBC)) then
-              if (OBC%u_E_OBCs_on_PE) then
-                if (OBC%segnum_u(I,j) > 0) then
-                  h_harm = h(i,j,k)
-                  h_arith = h(i,j,k)
-                  h_delta = 0.
-                  dz_arith = dz(i,j,k)
-                endif
-              endif
-
-              if (OBC%u_W_OBCs_on_PE) then
-                if (OBC%segnum_u(I,j) < 0) then
-                  h_harm = h(i+1,j,k)
-                  h_arith = h(i+1,j,k)
-                  h_delta = 0.
-                  dz_arith = dz(i+1,j,k)
-                endif
-              endif
+            if (zi_dir < 0) then
+              h_harm = h(i,j,k)
+              h_arith = h(i,j,k)
+              h_delta = 0.
+              dz_arith = dz(i,j,k)
+            elseif (zi_dir > 0) then
+              h_harm = h(i+1,j,k)
+              h_arith = h(i+1,j,k)
+              h_delta = 0.
+              dz_arith = dz(i+1,j,k)
             endif
 
             zcol = zcol - dz(i,j,k)
@@ -1694,8 +1682,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     if (do_any_shelf) then
       if (CS%use_GL90_in_SSW) then
         do K=1,nz+1
-          CS%a_u(I,j,K) = min(a_cpl_max, (forces%frac_shelf_u(I,j) * a_shelf(K) + &
-                                         (1. - forces%frac_shelf_u(I,j)) * a_cpl(K)) + a_cpl_gl90(K))
+          CS%a_u(I,j,K) = min(a_cpl_max, (frac_shelf * a_shelf(K) + &
+                                         (1. - frac_shelf) * a_cpl(K)) + a_cpl_gl90(K))
 
           ! This is Alistair's suggestion, but it destabilizes the model. I do not know why. RWH
           ! CS%a_u(I,j,K) = min(a_cpl_max, forces%frac_shelf_u(I,j) * max(a_shelf(K), a_cpl(K)) + &
@@ -1705,8 +1693,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
         enddo
       else
         do K=1,nz+1
-          CS%a_u(I,j,K) = min(a_cpl_max, (forces%frac_shelf_u(I,j) * a_shelf(K) + &
-                                         (1. - forces%frac_shelf_u(I,j)) * a_cpl(K)))
+          CS%a_u(I,j,K) = min(a_cpl_max, (frac_shelf * a_shelf(K) + &
+                                         (1. - frac_shelf) * a_cpl(K)))
 
           ! This is Alistair's suggestion, but it destabilizes the model. I do not know why. RWH
           ! CS%a_u(I,j,K) = min(a_cpl_max, forces%frac_shelf_u(I,j) * max(a_shelf(K), a_cpl(K)) + &
@@ -1716,8 +1704,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
       do k=1,nz
         ! Should we instead take the inverse of the average of the inverses?
-        CS%h_u(I,j,k) = forces%frac_shelf_u(I,j) * hvel_shelf(k) &
-            + (1. - forces%frac_shelf_u(I,j)) * hvel(k) + h_neglect
+        CS%h_u(I,j,k) = frac_shelf * hvel_shelf(k) &
+            + (1. - frac_shelf) * hvel(k) + h_neglect
       enddo
     else
       if (CS%use_GL90_in_SSW) then
@@ -1760,7 +1748,7 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
   !$omp   private(z_i, z_i_gl90, dz_harm, hvel, dz_vel, a_cpl, a_cpl_gl90, &
   !$omp     I_Hbbl, I_Hbbl_gl90, kv_bbl, bbl_thick, Dmin, zi_dir, zh, zcol, &
   !$omp     zcol_p1, h_harm, h_arith, h_delta, dz_arith, z2, botfn, z_clear, &
-  !$omp     z2_wt, h_ml)
+  !$omp     z2_wt, h_ml, frac_shelf)
   do J=Jsq,Jeq ; do i=is,ie ; if (G%mask2dCv(i,J) > 0.) then
     I_Hbbl = 1. / (CS%Hbbl + dz_neglect)
     if (CS%use_GL90_in_SSW) then
@@ -1813,26 +1801,18 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
       dz_arith = 0.5 * (dz(i,j+1,k) + dz(i,j,k))
 
       ! Project thickness outward across OBCs using a zero-gradient condition.
-      if (associated(OBC)) then
-        if (OBC%v_N_OBCs_on_PE) then
-          if (OBC%segnum_v(i,J) > 0) then
-            h_harm = h(i,j,k)
-            h_arith = h(i,j,k)
-            h_delta = 0.
-            dz_harm(k) = dz(i,j,k)
-            dz_arith = dz(i,j,k)
-          endif
-        endif
-
-        if (OBC%v_S_OBCs_on_PE) then
-          if (OBC%segnum_v(i,J) < 0) then
-            h_harm = h(i,j+1,k)
-            h_arith = h(i,j+1,k)
-            h_delta = 0.
-            dz_harm(k) = dz(i,j+1,k)
-            dz_arith = dz(i,j+1,k)
-          endif
-        endif
+      if (zi_dir < 0) then
+        h_harm = h(i,j,k)
+        h_arith = h(i,j,k)
+        h_delta = 0.
+        dz_harm(k) = dz(i,j,k)
+        dz_arith = dz(i,j,k)
+      elseif (zi_dir > 0) then
+        h_harm = h(i,j+1,k)
+        h_arith = h(i,j+1,k)
+        h_delta = 0.
+        dz_harm(k) = dz(i,j+1,k)
+        dz_arith = dz(i,j+1,k)
       endif
 
       if (CS%harmonic_visc) then
@@ -1915,7 +1895,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     do_any_shelf = .false.
     if (associated(forces%frac_shelf_v)) then
       CS%a1_shelf_v(i,J) = 0.
-      do_any_shelf = forces%frac_shelf_v(i,J) > 0.
+      frac_shelf = forces%frac_shelf_v(i,J)
+      do_any_shelf = frac_shelf > 0.
 
       if (do_any_shelf) then
         ! Initialize non-harmonic depths
@@ -1939,24 +1920,16 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
             dz_arith = 0.5 * (dz(i,j+1,k) + dz(i,j,k))
 
             ! Project thickness outward across OBCs using a zero-gradient condition.
-            if (associated(OBC)) then
-              if (OBC%v_N_OBCs_on_PE) then
-                if (OBC%segnum_v(i,J) > 0) then
-                  h_harm = h(i,j,k)
-                  h_arith = h(i,j,k)
-                  h_delta = 0.
-                  dz_arith = dz(i,j,k)
-                endif
-              endif
-
-              if (OBC%v_S_OBCs_on_PE) then
-                if (OBC%segnum_v(i,J) < 0) then
-                  h_harm = h(i,j+1,k)
-                  h_arith = h(i,j+1,k)
-                  h_delta = 0.
-                  dz_arith = dz(i,j+1,k)
-                endif
-              endif
+            if (zi_dir < 0) then
+              h_harm = h(i,j,k)
+              h_arith = h(i,j,k)
+              h_delta = 0.
+              dz_arith = dz(i,j,k)
+            elseif (zi_dir > 0) then
+              h_harm = h(i,j+1,k)
+              h_arith = h(i,j+1,k)
+              h_delta = 0.
+              dz_arith = dz(i,j+1,k)
             endif
 
             zcol = zcol - dz(i,j,k)
@@ -1998,8 +1971,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     if (do_any_shelf) then
       if (CS%use_GL90_in_SSW) then
         do K=1,nz+1
-          CS%a_v(I,j,K) = min(a_cpl_max, (forces%frac_shelf_v(I,j) * a_shelf(K) + &
-                                         (1. - forces%frac_shelf_v(I,j)) * a_cpl(K)) + a_cpl_gl90(K))
+          CS%a_v(I,j,K) = min(a_cpl_max, (frac_shelf * a_shelf(K) + &
+                                         (1. - frac_shelf) * a_cpl(K)) + a_cpl_gl90(K))
 
           ! This is Alistair's suggestion, but it destabilizes the model. I do not know why. RWH
           ! CS%a_v(I,j,K) = min(a_cpl_max, forces%frac_shelf_v(I,j) * max(a_shelf(K), a_cpl(K)) + &
@@ -2009,8 +1982,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
         enddo
       else
         do K=1,nz+1
-          CS%a_v(I,j,K) = min(a_cpl_max, (forces%frac_shelf_v(I,j) * a_shelf(K) + &
-                                           (1. - forces%frac_shelf_v(I,j)) * a_cpl(K)))
+          CS%a_v(I,j,K) = min(a_cpl_max, (frac_shelf * a_shelf(K) + &
+                                           (1. - frac_shelf) * a_cpl(K)))
           ! This is Alistair's suggestion, but it destabilizes the model. I do not know why. RWH
           ! CS%a_v(I,j,K) = min(a_cpl_max, forces%frac_shelf_v(I,j) * max(a_shelf(K), a_cpl(K)) + &
           !                                (1. - forces%frac_shelf_v(I,j)) * a_cpl(K))
@@ -2019,8 +1992,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
 
       do k=1,nz
         ! Should we instead take the inverse of the average of the inverses?
-        CS%h_v(I,j,k) = forces%frac_shelf_v(I,j) * hvel_shelf(k) &
-            + (1. - forces%frac_shelf_v(I,j)) * hvel(k) + h_neglect
+        CS%h_v(I,j,k) = frac_shelf * hvel_shelf(k) &
+            + (1. - frac_shelf) * hvel(k) + h_neglect
       enddo
     else
       if (CS%use_GL90_in_SSW) then
@@ -2170,6 +2143,7 @@ pure subroutine find_coupling_coef_k(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bb
   real :: botfn   ! A function that is 1 at the bottom and small far from it [nondim]
   real :: topfn   ! A function that is 1 at the top and small far from it [nondim]
   real :: kv_top  ! A viscosity associated with the top boundary layer [H Z T-1 ~> m2 s-1 or Pa s]
+  real :: nkml_visc ! The fractional number of layers in the viscous mixed layer [nondim]
   logical :: do_shelf, do_OBCs, can_exit
   integer :: k
   integer :: nz, max_nk
@@ -2468,28 +2442,20 @@ pure subroutine find_coupling_coef_k(a_cpl, hvel, i, j, h_harm, bbl_thick, kv_bb
       max_nk = 0
 
       if (work_on_u) then
-        nk_in_ml = ceiling(visc%nkml_visc_u(I,j))
-        max_nk = max(max_nk, nk_in_ml)
-
-        do k=1,max_nk
-          if (k <= visc%nkml_visc_u(I,j)) then ! This layer is all in the ML.
-            h_ml = h_ml + hvel(k)
-          elseif (k < visc%nkml_visc_u(I,j) + 1.) then ! Part of this layer is in the ML.
-            h_ml = h_ml + ((visc%nkml_visc_u(I,j) + 1.) - k) * hvel(k)
-          endif
-        enddo
+        nkml_visc = visc%nkml_visc_u(I,j)
       else
-        nk_in_ml = ceiling(visc%nkml_visc_v(i,J))
-        max_nk = max(max_nk, nk_in_ml)
-
-        do k=1,max_nk
-          if (k <= visc%nkml_visc_v(i,J)) then ! This layer is all in the ML.
-            h_ml = h_ml + hvel(k)
-          elseif (k < visc%nkml_visc_v(i,J) + 1.) then ! Part of this layer is in the ML.
-            h_ml = h_ml + ((visc%nkml_visc_v(i,J) + 1.) - k) * hvel(k)
-          endif
-        enddo
+        nkml_visc = visc%nkml_visc_v(i,J)
       endif
+      nk_in_ml = ceiling(nkml_visc)
+      max_nk = max(max_nk, nk_in_ml)
+
+      do k=1,max_nk
+        if (k <= nkml_visc) then ! This layer is all in the ML.
+          h_ml = h_ml + hvel(k)
+        elseif (k < nkml_visc + 1.) then ! Part of this layer is in the ML.
+          h_ml = h_ml + ((nkml_visc + 1.) - k) * hvel(k)
+        endif
+      enddo
     elseif (GV%nkml>0) then
       ! This is a simple application of a refined-bulk mixed layer with GV%nkml sublayers.
       max_nk = GV%nkml
