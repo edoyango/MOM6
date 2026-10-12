@@ -1291,7 +1291,7 @@ subroutine tracer_advect_init(Time, G, US, param_file, diag, CS)
         default=.false.)
   endif
 
-  !$omp target enter data map(to: CS)
+  !!$omp target enter data map(to: CS)
 
   id_clock_advect = cpu_clock_id('(Ocean advect tracer)', grain=CLOCK_MODULE)
   id_clock_pass = cpu_clock_id('(Ocean tracer halo updates)', grain=CLOCK_ROUTINE)

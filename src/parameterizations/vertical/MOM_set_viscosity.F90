@@ -678,8 +678,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         ! Calculate the mean velocity magnitude over the bottommost CS%Hbbl of
         ! the water column for determining the quadratic bottom drag.
         ! Used in ustar(i,j)
-        do concurrent (i=is:ie, do_i(i,j)) DO_LOCALITY(local(k, cdrag_sqrt)) &
-            DO_LOCALITY(local_init(cdrag_sqrt_H, cdrag_sqrt_H_RL))
+        do concurrent (i=is:ie, do_i(i,j)) DO_LOCALITY(local(k, cdrag_sqrt)) DO_LOCALITY(local_init(cdrag_sqrt_H, cdrag_sqrt_H_RL))
           htot_vel = 0.0 ; hwtot = 0.0 ; hutot = 0.0
           dztot_vel = 0.0 ; dzwtot = 0.0
           Thtot = 0.0 ; Shtot = 0.0 ; SpV_htot = 0.0
@@ -755,8 +754,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
           endif
         enddo
       else
-        do concurrent (i=is:ie) DO_LOCALITY(local(cdrag_sqrt)) &
-            DO_LOCALITY(local_init(cdrag_sqrt_H))
+        do concurrent (i=is:ie) DO_LOCALITY(local(cdrag_sqrt)) DO_LOCALITY(local_init(cdrag_sqrt_H))
           if (CS%bottomdragmap) then
             if (m==1) then
               cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
