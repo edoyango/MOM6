@@ -705,7 +705,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call btstep_device_in(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
                         u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
                         CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                        uh_ptr, vh_ptr, u_ptr, v_ptr)
+                        uh_ptr, vh_ptr, u_ptr, v_ptr, CS%uhbt, CS%vhbt)
   call cpu_clock_begin(id_clock_btstep)
   if (calc_dtbt) then
     if (CS%dtbt_use_bt_cont .and. associated(CS%BT_cont)) then
@@ -730,7 +730,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call btstep_device_out(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
                          u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
                          CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                         uh_ptr, vh_ptr, u_ptr, v_ptr)
+                         uh_ptr, vh_ptr, u_ptr, v_ptr, CS%uhbt, CS%vhbt)
 
 ! up = u + dt_pred*( u_bc_accel + u_accel_bt )
   dt_pred = dt * CS%be
@@ -999,8 +999,11 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call btstep_device_in(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
                         u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
                         CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                        uh_ptr, vh_ptr, u_ptr, v_ptr)
+                        uh_ptr, vh_ptr, u_ptr, v_ptr, CS%uhbt, CS%vhbt, etaav=eta_av)
   !$omp target enter data map(alloc: deta_dt) if(CS%id_deta_dt>0)
+  !   eta points to CS%eta, which btstep_device_in has mapped as eta_in.  Mapping the pointer here
+  ! keeps the kernels that set eta and deta_dt below from mapping it at every launch, in the clock.
+  !$omp target enter data map(alloc: eta)
   call cpu_clock_begin(id_clock_btstep)
 
   if (showCallTree) call callTree_enter("btstep(), MOM_barotropic.F90")
@@ -1024,11 +1027,12 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   call cpu_clock_end(id_clock_btstep)
   !$omp target update from(eta)
+  !$omp target exit data map(release: eta)
   !$omp target exit data map(from: deta_dt) if(CS%id_deta_dt>0)
   call btstep_device_out(u_inst, v_inst, eta, u_bc_accel, v_bc_accel, forces, CS%pbce, CS%eta_PF, &
                          u_av, v_av, CS%u_accel_bt, CS%v_accel_bt, eta_pred, G, GV, CS%barotropic_CSp, &
                          CS%visc_rem_u, CS%visc_rem_v, CS%BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                         uh_ptr, vh_ptr, u_ptr, v_ptr)
+                         uh_ptr, vh_ptr, u_ptr, v_ptr, CS%uhbt, CS%vhbt, etaav=eta_av)
   if (showCallTree) call callTree_leave("btstep()")
 
   if (CS%debug .and. debug_redundant) then

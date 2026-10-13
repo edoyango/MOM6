@@ -259,7 +259,7 @@ module procedure btstep
   !   The structures and input arrays that btstep and the routines it calls use on the device are
   ! copied in by btstep_device_in and released by btstep_device_out, which the caller calls on
   ! either side of its own clock around btstep; those two also allocate and copy back the outputs
-  ! accel_layer_u, accel_layer_v and eta_out. The other arrays that btstep fills on the device are
+  ! accel_layer_u, accel_layer_v, eta_out, uhbtav, vhbtav, etaav, CS%ubtav and CS%vbtav. The other arrays that btstep fills on the device are
   ! allocated below and released in the teardown at the end of this routine (wt_vel/wt_eta/wt_trans
   ! are mapped as soon as they are allocated and filled, and the called routines map their own
   ! local arrays). Host code in between (unported loops, halo updates, diagnostics) keeps the host
@@ -350,17 +350,15 @@ module procedure btstep
 !--- end setup for group halo update
 
   !   The arrays that btstep fills on the device are allocated here. Those that it reads, and the
-  ! outputs accel_layer_u, accel_layer_v and eta_out, were mapped by btstep_device_in before the
-  ! caller started its clock.
+  ! outputs accel_layer_u, accel_layer_v, eta_out, uhbtav, vhbtav, etaav, CS%ubtav and CS%vbtav,
+  ! were mapped by btstep_device_in before the caller started its clock.
   !$omp target enter data &
   !$omp   map(alloc: q, DCor_u, DCor_v, gtot_E, gtot_W, gtot_N, gtot_S, eta, eta_PF, eta_PF_1, &
   !$omp     d_eta_PF, eta_IC, dyn_coef_eta, Cor_ref_u, BT_force_u, ubt, Datu, bt_rem_u, uhbt0, &
   !$omp     Cor_ref_v, BT_force_v, vbt, Datv, bt_rem_v, vhbt0, wt_u, wt_v, Iwt_u_tot, Iwt_v_tot, &
   !$omp     ubt_Cor, vbt_Cor, BTCL_u, BTCL_v, uhbt, vhbt, u_accel_bt, v_accel_bt, f_4_u, f_4_v, &
   !$omp     av_rem_u, av_rem_v, Rayleigh_u, Rayleigh_v, eta_src, e_anom, ubt_st, vbt_st, &
-  !$omp     eta_sum, eta_wtd, ubt_wtd, vbt_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg, &
-  !$omp     CS%ubtav, CS%vbtav, uhbtav, vhbtav)
-  !$omp target enter data map(alloc: etaav) if(find_etaav)
+  !$omp     eta_sum, eta_wtd, ubt_wtd, vbt_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, LDv_avg)
 
 !   Calculate the constant coefficients for the Coriolis force terms in the
 ! barotropic momentum equations.  This has to be done quite early to start
@@ -1450,8 +1448,7 @@ module procedure btstep
   do j=js,je ; do i=is,ie
     eta_src(i,j) = G%mask2dT(i,j) * (Instep * CS%eta_cor(i,j))
   enddo ; enddo
-  ! The bounded CS%eta_cor persists beyond this call (bt_mass_source and the eta_cor diagnostic).
-  !$omp target update from(CS%eta_cor)
+  ! The bounded CS%eta_cor persists beyond this call, and is copied back by btstep_device_out.
 
   if (CS%dynamic_psurf) then
     ice_is_rigid = (associated(forces%rigidity_ice_u) .and. &
@@ -1708,8 +1705,9 @@ module procedure btstep
     do j=js,je ; do i=is,ie
       etaav(i,j) = eta_sum(i,j) * I_sum_wt_accel
     enddo ; enddo
-    ! The host copy of etaav is used from here on, starting with the pass_etaav halo update.
-    !$omp target update from(etaav)
+    ! With nonblocking halo updates, the halos of etaav are updated on the host. Otherwise they are
+    ! updated on the device, and etaav is copied back by btstep_device_out.
+    !$omp target update from(etaav) if(G%nonblocking_updates)
   endif
 
   !$omp target teams distribute parallel do collapse(2) num_threads(256)
@@ -1797,8 +1795,6 @@ module procedure btstep
       vhbtav(i,J) = vhbtav(i,J) * I_sum_wt_trans
       vbt_wtd(i,J) = vbt_wtd(i,J) * I_sum_wt_vel
     enddo ; enddo
-    ! The host copies of CS%ubtav and CS%vbtav are used from here on.
-    !$omp target update from(CS%ubtav, CS%vbtav)
   endif
 
   if (CS%use_filter .and. CS%linear_freq_drag) then ! Apply frequency-dependent drag
@@ -1831,11 +1827,9 @@ module procedure btstep
     !$omp target update from(CS%ubtav, CS%vbtav, uhbtav, vhbtav)
     call start_group_pass(CS%pass_ubta_uhbta, G%DoMain)
   else
+    ! The halo-updated device copies of CS%ubtav, CS%vbtav, uhbtav and vhbtav are copied back by
+    ! btstep_device_out, or below when the diagnostics read them.
     call do_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
-    ! CS%ubtav, CS%vbtav, uhbtav and vhbtav are read on the host from here on (the diagnostics
-    ! below, and uhbtav/vhbtav are returned to the caller), and the teardown only releases them,
-    ! so the halo-updated device copies are brought back here.
-    !$omp target update from(CS%ubtav, CS%vbtav, uhbtav, vhbtav)
   endif
   if (id_clock_pass_post > 0) call cpu_clock_end(id_clock_pass_post)
   if (id_clock_calc_post > 0) call cpu_clock_begin(id_clock_calc_post)
@@ -1909,19 +1903,21 @@ module procedure btstep
   !$omp target update from(CS%IDatu, CS%IDatv) if(CS%nonlin_stress)
   !$omp target update from(e_anom) if(associated(ADp%bt_pgf_u) .or. associated(ADp%bt_pgf_v) .or. CS%id_etaPF_anom > 0)
   !$omp target update from(BT_force_u, BT_force_v) if(CS%id_ubtforce > 0 .or. CS%id_vbtforce > 0)
-  !$omp target exit data map(release: etaav) if(find_etaav)
+  !$omp target update from(CS%eta_cor) if(CS%id_eta_cor > 0)
+  if (.not.G%nonblocking_updates) then
+    !$omp target update from(CS%ubtav) if(CS%id_ubtav > 0)
+    !$omp target update from(CS%vbtav) if(CS%id_vbtav > 0)
+    !$omp target update from(uhbtav) if(CS%id_uhbt > 0)
+    !$omp target update from(vhbtav) if(CS%id_vhbt > 0)
+  endif
   !$omp target exit data &
   !$omp   map(release: q, DCor_u, DCor_v, uhbt, vhbt, ubt, vbt, BTCL_u, BTCL_v, Datu, Datv, &
   !$omp     u_accel_bt, v_accel_bt, gtot_N, gtot_S, gtot_E, gtot_W, eta_IC, dyn_coef_eta, &
   !$omp     Cor_ref_u, Cor_ref_v, f_4_u, f_4_v, ubt_Cor, vbt_Cor, av_rem_u, av_rem_v, &
   !$omp     Rayleigh_u, Rayleigh_v, eta, eta_src, e_anom, BT_force_u, BT_force_v, &
   !$omp     eta_PF, eta_PF_1, d_eta_PF, Iwt_u_tot, Iwt_v_tot, wt_u, wt_v, uhbt0, vhbt0, &
-  !$omp     uhbtav, vhbtav, eta_sum, eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, &
+  !$omp     eta_sum, eta_wtd, PFu_avg, Coru_avg, LDu_avg, PFv_avg, Corv_avg, &
   !$omp     LDv_avg, bt_rem_u, bt_rem_v, wt_vel, wt_eta, wt_trans)
-  !   CS%ubtav and CS%vbtav were allocated in a directive apart from the one that copied in the
-  ! other components of CS, and each of those directives took a reference to CS, so they are
-  ! released in a directive of their own to drop the second one.
-  !$omp target exit data map(release: CS%ubtav, CS%vbtav)
 
   ! Calculate diagnostic quantities.
   if (query_averaging_enabled(CS%diag)) then
@@ -2218,6 +2214,14 @@ module procedure btstep_device_in
   !$omp   if(use_BT_cont)
   ! eta_out may be the same array as eta_in, so it is mapped after eta_in has been copied in.
   !$omp target enter data map(alloc: accel_layer_u, accel_layer_v, eta_out)
+  !   btstep fills CS%ubtav, CS%vbtav, uhbtav, vhbtav and etaav on the device, and they are copied
+  ! back by btstep_device_out.  CS%ubtav and CS%vbtav are mapped apart from the other components
+  ! of CS, so they are released in a directive of their own.
+  !$omp target enter data map(alloc: CS%ubtav, CS%vbtav)
+  !$omp target enter data map(alloc: uhbtav, vhbtav)
+  if (present(etaav)) then
+    !$omp target enter data map(alloc: etaav)
+  endif
 
 end procedure btstep_device_in
 module procedure btstep_device_out
@@ -2231,6 +2235,22 @@ module procedure btstep_device_out
 
   ! btstep sets CS%ubt_IC and CS%vbt_IC on the device when GRADUAL_BT_ICS is true.
   !$omp target update from(CS%ubt_IC, CS%vbt_IC) if(CS%gradual_BT_ICs)
+  ! btstep bounds CS%eta_cor on the device, and bt_mass_source reads it from the host.
+  !$omp target update from(CS%eta_cor)
+  !   With nonblocking halo updates, btstep updates the halos of CS%ubtav, CS%vbtav, uhbtav, vhbtav
+  ! and etaav on the host, which then has the current copies.  Otherwise their halos are updated on
+  ! the device, and they are copied back here.
+  if (.not.G%nonblocking_updates) then
+    !$omp target update from(CS%ubtav, CS%vbtav, uhbtav, vhbtav)
+    if (present(etaav)) then
+      !$omp target update from(etaav)
+    endif
+  endif
+  if (present(etaav)) then
+    !$omp target exit data map(release: etaav)
+  endif
+  !$omp target exit data map(release: uhbtav, vhbtav)
+  !$omp target exit data map(release: CS%ubtav, CS%vbtav)
   !$omp target exit data map(release: CS%BT_OBC%u_OBC_type) if (CS%BT_OBC%u_OBCs_on_PE)
   !$omp target exit data map(release: CS%BT_OBC%v_OBC_type) if (CS%BT_OBC%v_OBCs_on_PE)
   !$omp target exit data map(release: CS%BT_OBC) if (CS%BT_OBC%u_OBCs_on_PE .or. CS%BT_OBC%v_OBCs_on_PE)
@@ -2883,8 +2903,6 @@ module procedure btstep_timeloop
   ! Reset the time information in the diag type.
   if (do_hifreq_output) call enable_averaging(time_int_in, time_end_in, CS%diag)
 
-  ! The host copies of CS%ubtav and CS%vbtav are used from here on.
-  !$omp target update from(CS%ubtav, CS%vbtav)
   !$omp target exit data map(release: ubt_prev, vbt_prev, ubt_trans, vbt_trans, uhbt, vhbt, &
   !$omp                              p_surf_dyn, submerged, PFu, PFv, Cor_u, Cor_v, eta_pred)
 
@@ -4707,6 +4725,10 @@ module procedure bt_mass_source
   ! MOM_dynamics_split_RK2).
   !$omp target enter data map(alloc: eta_h)
 
+  !   G%bathyT is used through an associate name: a kernel that names a component of G makes
+  ! amdflang map all of G's allocatable components, and copy at every launch the descriptors of
+  ! those that are not allocated (and so cannot already be on the device).
+  associate(bathyT => G%bathyT)
   ! do concurrent (j=js:je) with inner do concurrent (i=is:ie) blocks (Boussinesq/set_cor branches
   ! and the sequential do k=2,nz accumulation) -- GV%Boussinesq and set_cor are loop-invariant, so
   ! each is its own parallel-do over i, with the k accumulation sequential per j-team in between.
@@ -4715,7 +4737,7 @@ module procedure bt_mass_source
     !$omp parallel do num_threads(256)
     do i=is,ie
       if (GV%Boussinesq) then
-        eta_h(i,j) = h(i,j,1) - G%bathyT(i,j)*GV%Z_to_H
+        eta_h(i,j) = h(i,j,1) - bathyT(i,j)*GV%Z_to_H
       else
         eta_h(i,j) = h(i,j,1)
       endif
@@ -4737,6 +4759,7 @@ module procedure bt_mass_source
       endif
     enddo
   enddo
+  end associate
 
   !$omp target exit data map(release: eta_h)
 

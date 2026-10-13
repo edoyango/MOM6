@@ -561,13 +561,14 @@ module subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces,
                   ! bt_rem_u is between 0 and 1.
 end subroutine btstep
 !> Copy to the device the structures and input arrays that btstep uses there, and allocate its
-!! outputs accel_layer_u, accel_layer_v and eta_out there, so that the copies are made outside the
-!! clock that times the call to btstep.  btstep_device_out undoes this, and the two calls must
-!! bracket the call to btstep, with the same arguments as are passed to btstep.
+!! outputs accel_layer_u, accel_layer_v, eta_out, uhbtav, vhbtav and etaav and the time-mean
+!! velocities in CS there, so that the copies are made outside the clock that times the call to
+!! btstep.  btstep_device_out undoes this, and the two calls must bracket the call to btstep, with
+!! the same arguments as are passed to btstep.
 module subroutine btstep_device_in(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, forces, pbce, &
                   eta_PF_in, U_Cor, V_Cor, accel_layer_u, accel_layer_v, eta_out, G, GV, CS, &
                   visc_rem_u, visc_rem_v, BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                  uh0, vh0, u_uh0, v_vh0)
+                  uh0, vh0, u_uh0, v_vh0, uhbtav, vhbtav, etaav)
   type(ocean_grid_type),                      intent(in) :: G          !< The ocean's grid structure.
   type(verticalGrid_type),                    intent(in) :: GV         !< The ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_in       !< The initial (3-D) zonal
@@ -620,13 +621,20 @@ module subroutine btstep_device_in(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, f
                                                          !! uh0 [L T-1 ~> m s-1]
   real, dimension(:,:,:),                     pointer    :: v_vh0      !< The velocities used to calculate
                                                          !! vh0 [L T-1 ~> m s-1]
+  real, dimension(SZIB_(G),SZJ_(G)),          intent(in) :: uhbtav     !< the barotropic zonal volume or mass
+                                                         !! fluxes averaged through the barotropic steps
+                                                         !! [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(SZI_(G),SZJB_(G)),          intent(in) :: vhbtav     !< the barotropic meridional volume or mass
+                                                         !! fluxes averaged through the barotropic steps
+                                                         !! [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in) :: etaav  !< The free surface height or column mass
+                                                         !! averaged over the barotropic integration [H ~> m or kg m-2].
 end subroutine btstep_device_in
-!> Copy accel_layer_u, accel_layer_v and eta_out back from the device and release everything that
-!! btstep_device_in mapped.
+!> Copy btstep's outputs back from the device and release everything that btstep_device_in mapped.
 module subroutine btstep_device_out(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, forces, pbce, &
                   eta_PF_in, U_Cor, V_Cor, accel_layer_u, accel_layer_v, eta_out, G, GV, CS, &
                   visc_rem_u, visc_rem_v, BT_cont, eta_PF_start, taux_bot, tauy_bot, &
-                  uh0, vh0, u_uh0, v_vh0)
+                  uh0, vh0, u_uh0, v_vh0, uhbtav, vhbtav, etaav)
   type(ocean_grid_type),                      intent(in) :: G          !< The ocean's grid structure.
   type(verticalGrid_type),                    intent(in) :: GV         !< The ocean's vertical grid structure.
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in) :: U_in       !< The initial (3-D) zonal
@@ -679,6 +687,14 @@ module subroutine btstep_device_out(U_in, V_in, eta_in, bc_accel_u, bc_accel_v, 
                                                          !! uh0 [L T-1 ~> m s-1]
   real, dimension(:,:,:),                     pointer    :: v_vh0      !< The velocities used to calculate
                                                          !! vh0 [L T-1 ~> m s-1]
+  real, dimension(SZIB_(G),SZJ_(G)),          intent(inout) :: uhbtav     !< the barotropic zonal volume or mass
+                                                         !! fluxes averaged through the barotropic steps
+                                                         !! [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(SZI_(G),SZJB_(G)),          intent(inout) :: vhbtav     !< the barotropic meridional volume or mass
+                                                         !! fluxes averaged through the barotropic steps
+                                                         !! [H L2 T-1 ~> m3 s-1 or kg s-1].
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(inout) :: etaav  !< The free surface height or column mass
+                                                         !! averaged over the barotropic integration [H ~> m or kg m-2].
 end subroutine btstep_device_out
 module subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL_v, eta_IC, &
                 eta_PF_1, d_eta_PF, eta_src, dyn_coef_eta, uhbtav, vhbtav, u_accel_bt, v_accel_bt, &
