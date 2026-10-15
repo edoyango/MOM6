@@ -2992,7 +2992,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         eta_wtd(i,j) = eta_wtd(i,j) + eta(i,j) * wt_eta(n)
 
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
-        eta_is_submerged = submerged(i,j)
+        eta_is_submerged = eta_is_submerged .or. submerged(i,j)
       enddo
 
       if (eta_is_submerged) then
@@ -3028,7 +3028,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     if (GV%Boussinesq) then
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
-        eta_is_submerged = submerged(i,j)
+        eta_is_submerged = eta_is_submerged .or. submerged(i,j)
       enddo
 
       if (eta_is_submerged) then
@@ -3049,7 +3049,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     else
       do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
         submerged(i,j) = eta(i,j) < 0.0 .and. G%mask2dT(i,j) > 0.0
-        eta_is_submerged = submerged(i,j)
+        eta_is_submerged = eta_is_submerged .or. submerged(i,j)
       enddo
 
       if (eta_is_submerged) then
