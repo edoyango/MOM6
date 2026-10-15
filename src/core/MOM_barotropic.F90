@@ -2978,7 +2978,10 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       endif
 
       eta_is_submerged = .false.
-      do concurrent (j=jsv:jev, i=isv:iev) DO_LOCALITY(reduce(.or.: eta_is_submerged))
+      ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) private(eta_acc) &
+      !$omp   map(tofrom: eta_is_submerged)
+      do j=jsv,jev ; do i=isv,iev
         eta(i,j) = (eta_IC(i,j) + eta_cor_multiplier * eta_src(i,j)) + CS%IareaT_OBCmask(i,j) * &
                    ((uhbt_int(I-1,j) - uhbt_int(I,j)) + (vhbt_int(i,J-1) - vhbt_int(i,J)))
         ! eta_acc contains the magnitude of the largest term in the above expression which
@@ -2993,7 +2996,7 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
 
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
-      enddo
+      enddo ; enddo
 
       if (eta_is_submerged) then
         !$omp target update from(submerged)
@@ -3026,10 +3029,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
     ! or total water column mass.
     eta_is_submerged = .false.
     if (GV%Boussinesq) then
-      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
+      ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) &
+      !$omp   map(tofrom: eta_is_submerged)
+      do j=js,je ; do i=is,ie
         submerged(i,j) = eta(i,j) < -GV%Z_to_H*G%bathyT(i,j) .and. G%mask2dT(i,j) > 0.0
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
-      enddo
+      enddo ; enddo
 
       if (eta_is_submerged) then
         !$omp target update from(submerged)
@@ -3047,10 +3053,13 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
         endif ; enddo ; enddo
       endif
     else
-      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(.or.: eta_is_submerged))
+      ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+      !$omp target teams distribute parallel do collapse(2) reduction(.or.: eta_is_submerged) &
+      !$omp   map(tofrom: eta_is_submerged)
+      do j=js,je ; do i=is,ie
         submerged(i,j) = eta(i,j) < 0.0 .and. G%mask2dT(i,j) > 0.0
         eta_is_submerged = eta_is_submerged .or. submerged(i,j)
-      enddo
+      enddo ; enddo
 
       if (eta_is_submerged) then
         !$omp target update from(submerged)
@@ -3897,7 +3906,10 @@ subroutine set_dtbt(G, GV, US, CS, pbce, gtot_est, BT_cont, eta, SSH_add)
   endif
 
   min_max_dt2 = 1.0e38*US%s_to_T**2  ! A huge value for the permissible timestep squared.
-  do concurrent (j=js:je, i=is:ie) DO_LOCALITY(reduce(min:min_max_dt2))
+  ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+  !$omp target teams distribute parallel do collapse(2) reduction(min: min_max_dt2) private(Idt_max2) &
+  !$omp   map(tofrom: min_max_dt2)
+  do j=js,je ; do i=is,ie
     !   This is pretty accurate for gravity waves, but it is a conservative
     ! estimate since it ignores the stabilizing effect of the bottom drag.
     Idt_max2 = 0.5 * (1.0 + 2.0*CS%bebt) * (G%IareaT(i,j) * &
@@ -3906,7 +3918,7 @@ subroutine set_dtbt(G, GV, US, CS, pbce, gtot_est, BT_cont, eta, SSH_add)
       ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
        (G%Coriolis2Bu(I-1,J) + G%Coriolis2Bu(I,J-1))) * CS%BT_Coriolis_scale**2 )
     if (Idt_max2 * min_max_dt2 > 1.0) min_max_dt2 = 1.0 / Idt_max2
-  enddo
+  enddo ; enddo
   !$omp target exit data map(release: gtot_E, gtot_W, gtot_N, gtot_S, Datu, Datv)
   dtbt_max = sqrt(min_max_dt2 / dgeo_de)
   if (id_clock_sync > 0) call cpu_clock_begin(id_clock_sync)

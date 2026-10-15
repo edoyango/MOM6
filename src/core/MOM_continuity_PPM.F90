@@ -894,7 +894,10 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
       any_simple_OBC = .false.
       if (present(uhbt) .or. set_BT_cont) then
         if (local_specified_BC .or. local_Flather_OBC) then
-          do concurrent (j=j_start:j_end, I=i_start:i_end) DO_LOCALITY(reduce(.or.:any_simple_OBC))
+          ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+          !$omp target teams distribute parallel do collapse(2) reduction(.or.: any_simple_OBC) &
+          !$omp   private(ii, jj, l_seg) map(tofrom: any_simple_OBC)
+          do j=j_start,j_end ; do I=i_start,i_end
             ii=I-i_start+1 ; jj=j-j_start+1
             l_seg = abs(OBC%segnum_u(I,j))
 
@@ -903,7 +906,7 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
             if (l_seg /= OBC_NONE) simple_OBC_pt(ii,jj) = OBC%segment(l_seg)%specified
             do_I(ii,jj) = .not.simple_OBC_pt(ii,jj)
             any_simple_OBC = any_simple_OBC .or. simple_OBC_pt(ii,jj)
-          enddo ; else
+          enddo ; enddo ; else
           do concurrent (jj=1:j_end-j_start+1, II=1:i_end-i_start+1)
             do_I(II,jj) = .true.
           enddo ; endif
@@ -2011,7 +2014,10 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
       any_simple_OBC = .false.
       if (present(vhbt) .or. set_BT_cont) then
         if (local_specified_BC .or. local_Flather_OBC) then
-          do concurrent (J=J_start:J_end, i=i_start:i_end) DO_LOCALITY(reduce(.or.:any_simple_OBC))
+          ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+          !$omp target teams distribute parallel do collapse(2) reduction(.or.: any_simple_OBC) &
+          !$omp   private(ii, jj, l_seg) map(tofrom: any_simple_OBC)
+          do J=J_start,J_end ; do i=i_start,i_end
             ii=i-i_start+1 ; jj=J-j_start+1
             l_seg = abs(OBC%segnum_v(i,J))
 
@@ -2020,7 +2026,7 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
             if (l_seg /= 0) simple_OBC_pt(ii,jj) = OBC%segment(l_seg)%specified
             do_I(ii,jj) = .not.simple_OBC_pt(ii,jj)
             any_simple_OBC = any_simple_OBC .or. simple_OBC_pt(ii,jj)
-          enddo ; else
+          enddo ; enddo ; else
           do concurrent (JJ=1:J_end-J_start+1, ii=1:i_end-i_start+1)
             do_I(ii,JJ) = .true.
           enddo ; endif
