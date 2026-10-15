@@ -847,6 +847,10 @@ subroutine tracer_epipycnal_ML_diff(h, dt, Tr, ntr, khdt_epi_x, khdt_epi_y, G, &
   integer, dimension(2,2) :: EOSdom ! The i-computational domain for the equation of state
   integer :: k_max, k_min, k_test, itmp
   integer :: i, j, k, k2, m, is, ie, js, je, nz, nkmb
+  ! Copies of loop variables for the do concurrent loops: amdflang gives a do concurrent local() variable and an
+  ! OpenMP private() variable of the same name the same privatizer symbol, which clashes.
+  integer :: i_dc, j_dc, k_dc, kLa_dc, kLb_dc, kRa_dc, kRb_dc
+  real :: wt_a_dc, wt_b_dc ! Fractional weights of layers above and below [nondim].
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, k_size
   integer :: kL, kR, kLa, kLb, kRa, kRb, nP, itt, ns, max_itt
   integer :: PEmax_kRho
@@ -916,21 +920,21 @@ subroutine tracer_epipycnal_ML_diff(h, dt, Tr, ntr, khdt_epi_x, khdt_epi_y, G, &
 
   h_exclude = 10.0*(GV%Angstrom_H + GV%H_subroundoff)
   !$omp target update to(h)
-  do concurrent (j=js-1:je+1) DO_LOCALITY(local(k, ns))
-    do k=1,nkmb ; do concurrent (i=is-1:ie+1, G%mask2dT(i,j) > 0.0) DO_LOCALITY(local(ns))
-      if (h(i,j,k) > h_exclude) then
+  do concurrent (j=js-1:je+1) DO_LOCALITY(local(k_dc, ns))
+    do k_dc=1,nkmb ; do concurrent (i=is-1:ie+1, G%mask2dT(i,j) > 0.0) DO_LOCALITY(local(ns))
+      if (h(i,j,k_dc) > h_exclude) then
         num_srt(i,j) = num_srt(i,j) + 1 ; ns = num_srt(i,j)
-        k0_srt(i,ns,j) = k
-        rho_srt(i,ns,j) = rho_coord(i,j,k)
-        h_srt(i,ns,j) = h(i,j,k)
+        k0_srt(i,ns,j) = k_dc
+        rho_srt(i,ns,j) = rho_coord(i,j,k_dc)
+        h_srt(i,ns,j) = h(i,j,k_dc)
       endif
     enddo ; enddo
-    do k=nkmb+1,PEmax_kRho ; do concurrent (i=is-1:ie+1, G%mask2dT(i,j) > 0.0) DO_LOCALITY(local(ns))
-      if ((k<=k_end_srt(i,j)) .and. (h(i,j,k) > h_exclude)) then
+    do k_dc=nkmb+1,PEmax_kRho ; do concurrent (i=is-1:ie+1, G%mask2dT(i,j) > 0.0) DO_LOCALITY(local(ns))
+      if ((k_dc<=k_end_srt(i,j)) .and. (h(i,j,k_dc) > h_exclude)) then
         num_srt(i,j) = num_srt(i,j) + 1 ; ns = num_srt(i,j)
-        k0_srt(i,ns,j) = k
-        rho_srt(i,ns,j) = GV%Rlay(k)
-        h_srt(i,ns,j) = h(i,j,k)
+        k0_srt(i,ns,j) = k_dc
+        rho_srt(i,ns,j) = GV%Rlay(k_dc)
+        h_srt(i,ns,j) = h(i,j,k_dc)
       endif
     enddo ; enddo
   enddo
@@ -947,13 +951,13 @@ subroutine tracer_epipycnal_ML_diff(h, dt, Tr, ntr, khdt_epi_x, khdt_epi_y, G, &
       endif ; enddo
     endif ; enddo
   enddo
-  do concurrent (j=js-1:je+1) DO_LOCALITY(local(itmp, i))
+  do concurrent (j=js-1:je+1) DO_LOCALITY(local(itmp, i_dc))
     ! max_srt(j) = 0
     itmp = 0
     ! nvfortran do concurrent cannot reduce array elements
     ! amdflang crashes on reduce() of the enclosing loop's local variable, so this is a sequential loop
-    do i=is-1,ie+1
-      itmp = max(itmp, num_srt(i,j))
+    do i_dc=is-1,ie+1
+      itmp = max(itmp, num_srt(i_dc,j))
     enddo
     max_srt(j) = itmp
   enddo
@@ -1581,51 +1585,54 @@ subroutine tracer_epipycnal_ML_diff(h, dt, Tr, ntr, khdt_epi_x, khdt_epi_y, G, &
       if (CS%answer_date <= 20240330) then
         ! KRa/b aren't guaranteed to be unique and update of tr_flux_conv(:, j/j+1, :) means this
         ! loop must be serial in both j and k. i can be paralellised.
-        do concurrent (i=is:ie) DO_LOCALITY(local(j, k, kLb, kRb, kLa, wt_b, wt_a, kRa))
-          do J=js-1,je ; if (G%mask2dCv(i,J) > 0.0)  then
-            do k=1,nPv(i,J)
-              kLb = k0b_Lv(i,k,J) ; kRb = k0b_Rv(i,k,J)
-              if (deep_wt_Lv(I,k,J) >= 1.0) then
-                tr_flux_conv(i,j,kLb) = tr_flux_conv(i,j,kLb) - Tr_flux_3d(i,J,k)
+        do concurrent (i=is:ie) DO_LOCALITY(local(j_dc, k_dc, kLb_dc, kRb_dc, kLa_dc, wt_b_dc, wt_a_dc, kRa_dc))
+          do j_dc=js-1,je ; if (G%mask2dCv(i,j_dc) > 0.0)  then
+            do k_dc=1,nPv(i,j_dc)
+              kLb_dc = k0b_Lv(i,k_dc,j_dc) ; kRb_dc = k0b_Rv(i,k_dc,j_dc)
+              if (deep_wt_Lv(I,k_dc,j_dc) >= 1.0) then
+                tr_flux_conv(i,j_dc,kLb_dc) = tr_flux_conv(i,j_dc,kLb_dc) - Tr_flux_3d(i,j_dc,k_dc)
               else
-                kLa = k0a_Lv(i,k,J)
-                wt_b = deep_wt_Lv(I,k,J) ; wt_a = 1.0 - wt_b
-                tr_flux_conv(i,j,kLa) = tr_flux_conv(i,j,kLa) - (wt_a*Tr_flux_3d(i,J,k) + Tr_adj_vert_L(i,J,k))
-                tr_flux_conv(i,j,kLb) = tr_flux_conv(i,j,kLb) - (wt_b*Tr_flux_3d(i,J,k) - Tr_adj_vert_L(i,J,k))
+                kLa_dc = k0a_Lv(i,k_dc,j_dc)
+                wt_b_dc = deep_wt_Lv(I,k_dc,j_dc) ; wt_a_dc = 1.0 - wt_b_dc
+                tr_flux_conv(i,j_dc,kLa_dc) = tr_flux_conv(i,j_dc,kLa_dc) - &
+                                    (wt_a_dc*Tr_flux_3d(i,j_dc,k_dc) + Tr_adj_vert_L(i,j_dc,k_dc))
+                tr_flux_conv(i,j_dc,kLb_dc) = tr_flux_conv(i,j_dc,kLb_dc) - &
+                                    (wt_b_dc*Tr_flux_3d(i,j_dc,k_dc) - Tr_adj_vert_L(i,j_dc,k_dc))
               endif
-              if (deep_wt_Rv(I,k,J) >= 1.0) then
-                tr_flux_conv(i,j+1,kRb) = tr_flux_conv(i,j+1,kRb) + Tr_flux_3d(i,J,k)
+              if (deep_wt_Rv(I,k_dc,j_dc) >= 1.0) then
+                tr_flux_conv(i,j_dc+1,kRb_dc) = tr_flux_conv(i,j_dc+1,kRb_dc) + Tr_flux_3d(i,j_dc,k_dc)
               else
-                kRa = k0a_Rv(i,k,J)
-                wt_b = deep_wt_Rv(I,k,J) ; wt_a = 1.0 - wt_b
-                tr_flux_conv(i,j+1,kRa) = tr_flux_conv(i,j+1,kRa) + &
-                                                (wt_a*Tr_flux_3d(i,J,k) - Tr_adj_vert_R(i,J,k))
-                tr_flux_conv(i,j+1,kRb) = tr_flux_conv(i,j+1,kRb) + &
-                                                (wt_b*Tr_flux_3d(i,J,k) + Tr_adj_vert_R(i,J,k))
+                kRa_dc = k0a_Rv(i,k_dc,j_dc)
+                wt_b_dc = deep_wt_Rv(I,k_dc,j_dc) ; wt_a_dc = 1.0 - wt_b_dc
+                tr_flux_conv(i,j_dc+1,kRa_dc) = tr_flux_conv(i,j_dc+1,kRa_dc) + &
+                                                (wt_a_dc*Tr_flux_3d(i,j_dc,k_dc) - Tr_adj_vert_R(i,j_dc,k_dc))
+                tr_flux_conv(i,j_dc+1,kRb_dc) = tr_flux_conv(i,j_dc+1,kRb_dc) + &
+                                                (wt_b_dc*Tr_flux_3d(i,j_dc,k_dc) + Tr_adj_vert_R(i,j_dc,k_dc))
               endif
             enddo
           endif ; enddo
         enddo
       else
         ! Update of tr_flux_N/S can be done independently so both i and j can be parallelised.
-        do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0) DO_LOCALITY(local(k, kLb, kRb, kLa, wt_b, wt_a, kRa))
-          do k=1,nPv(i,J)
-            kLb = k0b_Lv(i,k,J) ; kRb = k0b_Rv(i,k,J)
-            if (deep_wt_Lv(I,k,J) >= 1.0) then
-              tr_flux_N(i,j,kLb) = tr_flux_N(i,j,kLb) + Tr_flux_3d(i,J,k)
+        do concurrent (J=js-1:je, i=is:ie, G%mask2dCv(i,J) > 0.0) &
+            DO_LOCALITY(local(k_dc, kLb_dc, kRb_dc, kLa_dc, wt_b_dc, wt_a_dc, kRa_dc))
+          do k_dc=1,nPv(i,J)
+            kLb_dc = k0b_Lv(i,k_dc,J) ; kRb_dc = k0b_Rv(i,k_dc,J)
+            if (deep_wt_Lv(I,k_dc,J) >= 1.0) then
+              tr_flux_N(i,j,kLb_dc) = tr_flux_N(i,j,kLb_dc) + Tr_flux_3d(i,J,k_dc)
             else
-              kLa = k0a_Lv(i,k,J)
-              wt_b = deep_wt_Lv(I,k,J) ; wt_a = 1.0 - wt_b
-              tr_flux_N(i,j,kLa) = tr_flux_N(i,j,kLa) + (wt_a*Tr_flux_3d(i,J,k) + Tr_adj_vert_L(i,J,k))
-              tr_flux_N(i,j,kLb) = tr_flux_N(i,j,kLb) + (wt_b*Tr_flux_3d(i,J,k) - Tr_adj_vert_L(i,J,k))
+              kLa_dc = k0a_Lv(i,k_dc,J)
+              wt_b_dc = deep_wt_Lv(I,k_dc,J) ; wt_a_dc = 1.0 - wt_b_dc
+              tr_flux_N(i,j,kLa_dc) = tr_flux_N(i,j,kLa_dc) + (wt_a_dc*Tr_flux_3d(i,J,k_dc) + Tr_adj_vert_L(i,J,k_dc))
+              tr_flux_N(i,j,kLb_dc) = tr_flux_N(i,j,kLb_dc) + (wt_b_dc*Tr_flux_3d(i,J,k_dc) - Tr_adj_vert_L(i,J,k_dc))
             endif
-            if (deep_wt_Rv(I,k,J) >= 1.0) then
-              tr_flux_S(i,j+1,kRb) = tr_flux_S(i,j+1,kRb) + Tr_flux_3d(i,J,k)
+            if (deep_wt_Rv(I,k_dc,J) >= 1.0) then
+              tr_flux_S(i,j+1,kRb_dc) = tr_flux_S(i,j+1,kRb_dc) + Tr_flux_3d(i,J,k_dc)
             else
-              kRa = k0a_Rv(i,k,J)
-              wt_b = deep_wt_Rv(I,k,J) ; wt_a = 1.0 - wt_b
-              tr_flux_S(i,j+1,kRa) = tr_flux_S(i,j+1,kRa) + (wt_a*Tr_flux_3d(i,J,k) - Tr_adj_vert_R(i,J,k))
-              tr_flux_S(i,j+1,kRb) = tr_flux_S(i,j+1,kRb) + (wt_b*Tr_flux_3d(i,J,k) + Tr_adj_vert_R(i,J,k))
+              kRa_dc = k0a_Rv(i,k_dc,J)
+              wt_b_dc = deep_wt_Rv(I,k_dc,J) ; wt_a_dc = 1.0 - wt_b_dc
+              tr_flux_S(i,j+1,kRa_dc) = tr_flux_S(i,j+1,kRa_dc) + (wt_a_dc*Tr_flux_3d(i,J,k_dc) - Tr_adj_vert_R(i,J,k_dc))
+              tr_flux_S(i,j+1,kRb_dc) = tr_flux_S(i,j+1,kRb_dc) + (wt_b_dc*Tr_flux_3d(i,J,k_dc) + Tr_adj_vert_R(i,J,k_dc))
             endif
           enddo
         enddo

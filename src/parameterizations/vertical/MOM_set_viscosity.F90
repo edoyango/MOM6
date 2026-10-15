@@ -329,6 +329,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   logical :: use_BBL_EOS, do_i(SZIB_(G),SZJB_(G))
   integer, dimension(2,2) :: EOSdom ! The computational domain for the equation of state
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, m, n, K2, nkmb, nkml, jstart
+  integer :: kk            ! k for the OBC loops (amdflang: a second privatizer for k clashes with private(k) below)
   integer :: is_OBC, ie_OBC, js_OBC, je_OBC
   type(ocean_OBC_type), pointer :: OBC => NULL()
 
@@ -580,79 +581,79 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         ! Apply a zero gradient projection of thickness across OBC points.
         if (m==1) then
           do concurrent (I=is:ie, do_i(I,j) .and. (OBC%segnum_u(I,j) /= 0)) &
-              DO_LOCALITY(local(k))
+              DO_LOCALITY(local(kk))
             if (OBC%segnum_u(I,j) > 0) then  ! OBC_DIRECTION_E
-              do k=1,nz
-                h_at_vel(I,j,k) = h(i,j,k) ; h_vel(I,j,k) = h(i,j,k)
-                dz_at_vel(I,j,k) = dz(i,j,k) ; dz_vel(I,j,k) = dz(i,j,k)
+              do kk=1,nz
+                h_at_vel(I,j,kk) = h(i,j,kk) ; h_vel(I,j,kk) = h(i,j,kk)
+                dz_at_vel(I,j,kk) = dz(i,j,kk) ; dz_vel(I,j,kk) = dz(i,j,kk)
               enddo
               if (use_BBL_EOS) then
-                do k=1,nz
-                  T_vel(I,j,k) = tv%T(i,j,k) ; S_vel(I,j,k) = tv%S(i,j,k)
+                do kk=1,nz
+                  T_vel(I,j,kk) = tv%T(i,j,kk) ; S_vel(I,j,kk) = tv%S(i,j,kk)
                 enddo
               else
-                do k=1,nkmb
-                  Rml_vel(I,j,k) = Rml(i,j,k)
+                do kk=1,nkmb
+                  Rml_vel(I,j,kk) = Rml(i,j,kk)
                 enddo
               endif
-              if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                SpV_vel(I,j,k) = tv%SpV_avg(i,j,k)
+              if (allocated(tv%SpV_avg)) then ; do kk=1,nz
+                SpV_vel(I,j,kk) = tv%SpV_avg(i,j,kk)
               enddo ; endif
             elseif (OBC%segnum_u(I,j) < 0) then  ! OBC_DIRECTION_W
-              do k=1,nz
-                h_at_vel(I,j,k) = h(i+1,j,k) ; h_vel(I,j,k) = h(i+1,j,k)
-                dz_at_vel(I,j,k) = dz(i+1,j,k) ; dz_vel(I,j,k) = dz(i+1,j,k)
+              do kk=1,nz
+                h_at_vel(I,j,kk) = h(i+1,j,kk) ; h_vel(I,j,kk) = h(i+1,j,kk)
+                dz_at_vel(I,j,kk) = dz(i+1,j,kk) ; dz_vel(I,j,kk) = dz(i+1,j,kk)
               enddo
               if (use_BBL_EOS) then
-                do k=1,nz
-                  T_vel(I,j,k) = tv%T(i+1,j,k) ; S_vel(I,j,k) = tv%S(i+1,j,k)
+                do kk=1,nz
+                  T_vel(I,j,kk) = tv%T(i+1,j,kk) ; S_vel(I,j,kk) = tv%S(i+1,j,kk)
                 enddo
               else
-                do k=1,nkmb
-                  Rml_vel(I,j,k) = Rml(i+1,j,k)
+                do kk=1,nkmb
+                  Rml_vel(I,j,kk) = Rml(i+1,j,kk)
                 enddo
               endif
-              if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                SpV_vel(I,j,k) = tv%SpV_avg(i+1,j,k)
+              if (allocated(tv%SpV_avg)) then ; do kk=1,nz
+                SpV_vel(I,j,kk) = tv%SpV_avg(i+1,j,kk)
               enddo ; endif
             endif
           enddo
         else
           do concurrent (i=is:ie, do_i(i,j) .and. (OBC%segnum_v(i,J) /= 0)) &
-              DO_LOCALITY(local(k))
+              DO_LOCALITY(local(kk))
             if (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
-              do k=1,nz
-                h_at_vel(i,j,k) = h(i,j,k) ; h_vel(i,j,k) = h(i,j,k)
-                dz_at_vel(i,j,k) = dz(i,j,k) ; dz_vel(i,j,k) = dz(i,j,k)
+              do kk=1,nz
+                h_at_vel(i,j,kk) = h(i,j,kk) ; h_vel(i,j,kk) = h(i,j,kk)
+                dz_at_vel(i,j,kk) = dz(i,j,kk) ; dz_vel(i,j,kk) = dz(i,j,kk)
               enddo
               if (use_BBL_EOS) then
-                do k=1,nz
-                  T_vel(i,j,k) = tv%T(i,j,k) ; S_vel(i,j,k) = tv%S(i,j,k)
+                do kk=1,nz
+                  T_vel(i,j,kk) = tv%T(i,j,kk) ; S_vel(i,j,kk) = tv%S(i,j,kk)
                 enddo
               else
-                do k=1,nkmb
-                  Rml_vel(i,j,k) = Rml(i,j,k)
+                do kk=1,nkmb
+                  Rml_vel(i,j,kk) = Rml(i,j,kk)
                 enddo
               endif
-              if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                SpV_vel(i,j,k) = tv%SpV_avg(i,j,k)
+              if (allocated(tv%SpV_avg)) then ; do kk=1,nz
+                SpV_vel(i,j,kk) = tv%SpV_avg(i,j,kk)
               enddo ;  endif
             elseif (OBC%segnum_v(i,J) < 0) then  ! OBC_DIRECTION_S
-              do k=1,nz
-                h_at_vel(i,j,k) = h(i,j+1,k) ; h_vel(i,j,k) = h(i,j+1,k)
-                dz_at_vel(i,j,k) = dz(i,j+1,k) ; dz_vel(i,j,k) = dz(i,j+1,k)
+              do kk=1,nz
+                h_at_vel(i,j,kk) = h(i,j+1,kk) ; h_vel(i,j,kk) = h(i,j+1,kk)
+                dz_at_vel(i,j,kk) = dz(i,j+1,kk) ; dz_vel(i,j,kk) = dz(i,j+1,kk)
               enddo
               if (use_BBL_EOS) then
-                do k=1,nz
-                  T_vel(i,j,k) = tv%T(i,j+1,k) ; S_vel(i,j,k) = tv%S(i,j+1,k)
+                do kk=1,nz
+                  T_vel(i,j,kk) = tv%T(i,j+1,kk) ; S_vel(i,j,kk) = tv%S(i,j+1,kk)
                 enddo
               else
-                do k=1,nkmb
-                  Rml_vel(i,j,k) = Rml(i,j+1,k)
+                do kk=1,nkmb
+                  Rml_vel(i,j,kk) = Rml(i,j+1,kk)
                 enddo
               endif
-              if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                SpV_vel(i,j,k) = tv%SpV_avg(i,j+1,k)
+              if (allocated(tv%SpV_avg)) then ; do kk=1,nz
+                SpV_vel(i,j,kk) = tv%SpV_avg(i,j+1,kk)
               enddo ; endif
             endif
           enddo
