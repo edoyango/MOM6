@@ -330,6 +330,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   integer, dimension(2,2) :: EOSdom ! The computational domain for the equation of state
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, m, n, K2, nkmb, nkml, jstart
   integer :: kk            ! k for the OBC loops (amdflang: a second privatizer for k clashes with private(k) below)
+  real :: cdrag_sqrt_H_i   ! Per-iteration copy of cdrag_sqrt_H (amdflang does not support local_init) [H L-1 ~> nondim or kg m-3]
   integer :: is_OBC, ie_OBC, js_OBC, je_OBC
   type(ocean_OBC_type), pointer :: OBC => NULL()
 
@@ -755,16 +756,17 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
           endif
         enddo
       else
-        do concurrent (i=is:ie) DO_LOCALITY(local(cdrag_sqrt)) DO_LOCALITY(local_init(cdrag_sqrt_H))
+        do concurrent (i=is:ie) DO_LOCALITY(local(cdrag_sqrt, cdrag_sqrt_H_i))
+          cdrag_sqrt_H_i = cdrag_sqrt_H
           if (CS%bottomdragmap) then
             if (m==1) then
               cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
             else
               cdrag_sqrt = sqrt(CS%cdrag_v(i,j))
             endif
-            cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
+            cdrag_sqrt_H_i = cdrag_sqrt * US%L_to_m * GV%m_to_H
           endif
-          ustar(i,j) = cdrag_sqrt_H * CS%drag_bg_vel
+          ustar(i,j) = cdrag_sqrt_H_i * CS%drag_bg_vel
         enddo
       endif ! Not linear_drag
 
