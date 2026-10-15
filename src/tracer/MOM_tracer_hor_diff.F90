@@ -947,11 +947,12 @@ subroutine tracer_epipycnal_ML_diff(h, dt, Tr, ntr, khdt_epi_x, khdt_epi_y, G, &
       endif ; enddo
     endif ; enddo
   enddo
-  do concurrent (j=js-1:je+1) DO_LOCALITY(local(itmp))
+  do concurrent (j=js-1:je+1) DO_LOCALITY(local(itmp, i))
     ! max_srt(j) = 0
     itmp = 0
     ! nvfortran do concurrent cannot reduce array elements
-    do concurrent (i=is-1:ie+1) DO_LOCALITY(reduce(max:itmp))
+    ! amdflang crashes on reduce() of the enclosing loop's local variable, so this is a sequential loop
+    do i=is-1,ie+1
       itmp = max(itmp, num_srt(i,j))
     enddo
     max_srt(j) = itmp
