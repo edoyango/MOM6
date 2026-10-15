@@ -725,15 +725,21 @@ subroutine zonal_mass_flux(u, h_in, h_W, h_E, uh, dt, G, GV, US, CS, OBC, por_fa
       do_I(ii,jj) = .true.
     enddo
     ! Set uh and duhdu.
-    !$omp target teams num_teams(nteams)
-    do k=1,nz
-      if (use_visc_rem) then
+    ! amdflang maps every variable a target region names, even an absent optional argument, and that fails,
+    ! so visc_rem_u is copied in its own kernel, launched only when it is present.
+    if (use_visc_rem) then
+      !$omp target teams num_teams(nteams)
+      do k=1,nz
         !$omp loop collapse(2) private(ii,jj)
         do j=j_start,j_end ; do I=i_start,i_end
           ii=I-i_start+1 ; jj=j-j_start+1
           visc_rem(ii,jj,k) = visc_rem_u(I,j,k)
         enddo ; enddo
-      endif
+      enddo
+      !$omp end target teams
+    endif
+    !$omp target teams num_teams(nteams)
+    do k=1,nz
       !$omp loop collapse(2) private(ii,jj)
       do j=j_start,j_end ; do i=i_start,i_end
         ii=i-i_start+1 ; jj=j-j_start+1
@@ -1277,15 +1283,21 @@ subroutine zonal_flux_thickness(u, h, h_W, h_E, h_u, dt, G, GV, US, LB, vol_CFL,
  !             (h_W(i+1,j,k) + h_E(i,j,k) + GV%H_subroundoff)
     endif
 
-    if (present(visc_rem_u)) then
-      ! Scale back the thickness to account for the effects of viscosity and the fractional open
-      ! thickness to give an appropriate non-normalized weight for each layer in determining the
-      ! barotropic acceleration.
-      h_u(I,j,k) = h_u(I,j,k) * (visc_rem_u(I,j,k) * por_face_areaU(I,j,k))
-    else
-      h_u(I,j,k) = h_u(I,j,k) * por_face_areaU(I,j,k)
-    endif
   enddo
+
+  ! Scale back the thickness to account for the effects of viscosity and the fractional open
+  ! thickness to give an appropriate non-normalized weight for each layer in determining the
+  ! barotropic acceleration.
+  ! amdflang: an absent optional argument must not appear in an offloaded loop, so present() is tested outside it.
+  if (present(visc_rem_u)) then
+    do concurrent (k=1:nz, j=jsh:jeh, I=ish-1:ieh)
+      h_u(I,j,k) = h_u(I,j,k) * (visc_rem_u(I,j,k) * por_face_areaU(I,j,k))
+    enddo
+  else
+    do concurrent (k=1:nz, j=jsh:jeh, I=ish-1:ieh)
+      h_u(I,j,k) = h_u(I,j,k) * por_face_areaU(I,j,k)
+    enddo
+  endif
 
   local_open_BC = .false.
   if (associated(OBC)) local_open_BC = OBC%open_u_BCs_exist_globally
@@ -1829,15 +1841,21 @@ subroutine meridional_mass_flux(v, h_in, h_S, h_N, vh, dt, G, GV, US, CS, OBC, p
       do_I(ii,JJ) = .true.
     enddo
     ! This sets vh and dvhdv.
-    !$omp target teams num_teams(nteams)
-    do k=1,nz
-      if (use_visc_rem) then
+    ! amdflang maps every variable a target region names, even an absent optional argument, and that fails,
+    ! so visc_rem_v is copied in its own kernel, launched only when it is present.
+    if (use_visc_rem) then
+      !$omp target teams num_teams(nteams)
+      do k=1,nz
         !$omp loop collapse(2) private(ii,jj)
         do J=j_start,j_end ; do i=i_start,i_end
           ii=i-i_start+1 ; jj=j-j_start+1
           visc_rem(ii,JJ,k) = visc_rem_v(i,J,k)
         enddo ; enddo
-      endif
+      enddo
+      !$omp end target teams
+    endif
+    !$omp target teams num_teams(nteams)
+    do k=1,nz
       !$omp loop collapse(2) private(ii,JJ)
       do J=j_start,j_end ; do i=i_start,i_end
         ii=i-i_start+1 ; jj=j-j_start+1
@@ -2280,15 +2298,21 @@ subroutine meridional_flux_thickness(v, h, h_S, h_N, h_v, dt, G, GV, US, LB, vol
  !             (h_S(i,j+1,k) + h_N(i,j,k) + GV%H_subroundoff)
     endif
 
-    if (present(visc_rem_v)) then
-      ! Scale back the thickness to account for the effects of viscosity and the fractional open
-      ! thickness to give an appropriate non-normalized weight for each layer in determining the
-      ! barotropic acceleration.
-      h_v(i,J,k) = h_v(i,J,k) * (visc_rem_v(i,J,k) * por_face_areaV(i,J,k))
-    else
-      h_v(i,J,k) = h_v(i,J,k) * por_face_areaV(i,J,k)
-    endif
   enddo
+
+  ! Scale back the thickness to account for the effects of viscosity and the fractional open
+  ! thickness to give an appropriate non-normalized weight for each layer in determining the
+  ! barotropic acceleration.
+  ! amdflang: an absent optional argument must not appear in an offloaded loop, so present() is tested outside it.
+  if (present(visc_rem_v)) then
+    do concurrent (k=1:nz, J=jsh-1:jeh, i=ish:ieh)
+      h_v(i,J,k) = h_v(i,J,k) * (visc_rem_v(i,J,k) * por_face_areaV(i,J,k))
+    enddo
+  else
+    do concurrent (k=1:nz, J=jsh-1:jeh, i=ish:ieh)
+      h_v(i,J,k) = h_v(i,J,k) * por_face_areaV(i,J,k)
+    enddo
+  endif
 
   local_open_BC = .false.
   if (associated(OBC)) local_open_BC = OBC%open_v_BCs_exist_globally
