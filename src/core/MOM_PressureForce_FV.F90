@@ -996,7 +996,7 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, 
   real, dimension(SZI_(G)) :: &
     Rho_cv_BL   ! The coordinate potential density in the deepest variable
                 ! density near-surface layer [R ~> kg m-3].
-  real, dimension(SZI_(G),SZJ_(G)) :: &
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
     dz_geo      ! The change in geopotential thickness through a layer [L2 T-2 ~> m2 s-2].
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: &
     pa          ! The pressure anomaly (i.e. pressure + g*RHO_0*e) at the
@@ -1375,17 +1375,18 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, 
     !$omp target exit data map(release: tv)
   else
     !$omp target data map(alloc: dz_geo)
-    do k=1,nz
-      do concurrent (j=Jsq:Jeq+1, i=Isq:Ieq+1)
-        dz_geo(i,j) = GV%g_Earth * GV%H_to_Z*h(i,j,k)
-        dpa(i,j,k) = (GV%Rlay(k) - rho_ref) * dz_geo(i,j)
-        intz_dpa(i,j,k) = 0.5*(GV%Rlay(k) - rho_ref) * dz_geo(i,j)*h(i,j,k)
+    do kstart=1,nz,nkblock
+      kend = min(kstart+nkblock-1, nz)
+      do concurrent (k=kstart:kend, j=Jsq:Jeq+1, i=Isq:Ieq+1)
+        dz_geo(i,j,k) = GV%g_Earth * GV%H_to_Z*h(i,j,k)
+        dpa(i,j,k) = (GV%Rlay(k) - rho_ref) * dz_geo(i,j,k)
+        intz_dpa(i,j,k) = 0.5*(GV%Rlay(k) - rho_ref) * dz_geo(i,j,k)*h(i,j,k)
       enddo
-      do concurrent (j=js:je, I=Isq:Ieq)
-        intx_dpa(I,j,k) = 0.5*(GV%Rlay(k) - rho_ref) * (dz_geo(i,j) + dz_geo(i+1,j))
+      do concurrent (k=kstart:kend, j=js:je, I=Isq:Ieq)
+        intx_dpa(I,j,k) = 0.5*(GV%Rlay(k) - rho_ref) * (dz_geo(i,j,k) + dz_geo(i+1,j,k))
       enddo
-      do concurrent (J=Jsq:Jeq, i=is:ie)
-        inty_dpa(i,J,k) = 0.5*(GV%Rlay(k) - rho_ref) * (dz_geo(i,j) + dz_geo(i,j+1))
+      do concurrent (k=kstart:kend, J=Jsq:Jeq, i=is:ie)
+        inty_dpa(i,J,k) = 0.5*(GV%Rlay(k) - rho_ref) * (dz_geo(i,j,k) + dz_geo(i,j+1,k))
       enddo
     enddo
     !$omp end target data
