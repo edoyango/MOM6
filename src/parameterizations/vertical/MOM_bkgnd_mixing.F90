@@ -353,6 +353,7 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
   real :: min_sinlat ! The minimum value of the sine of latitude [nondim]
   real :: bckgrnd_vdc_psin !< PSI diffusivity in northern hemisphere [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
   real :: bckgrnd_vdc_psis !< PSI diffusivity in southern hemisphere [H Z T-1 ~> m2 s-1 or kg m-1 s-1]
+  real :: lon_E      !< Longitude in the range [0, 360) [degrees_E]
   integer :: i, j, k, nz, ii, jj, iie, jje
 
   nz = GV%ke
@@ -407,8 +408,15 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
 
   elseif (CS%horiz_varying_background) then
     !### Note that there are lots of hard-coded parameters (mostly latitudes and longitudes) here.
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j,lon_E))
       j = jsb+jj-1 ; i = isb+ii-1
+#if defined(__flang__) && __flang_major__ < 23
+      ! amdflang 22 (ROCm 7.2.4) has no device runtime for mod() of reals, so remove the whole
+      ! multiples of 360 explicitly.  This matches mod() except within roundoff of 360.
+      lon_E = (G%geoLonT(i,j)+360.0) - 360.0*aint((G%geoLonT(i,j)+360.0)/360.0)
+#else
+      lon_E = mod(G%geoLonT(i,j)+360.0,360.0)
+#endif
       bckgrnd_vdc_psis = CS%bckgrnd_vdc_psim * exp(-(0.4*(G%geoLatT(i,j)+28.9))**2)
       bckgrnd_vdc_psin = CS%bckgrnd_vdc_psim * exp(-(0.4*(G%geoLatT(i,j)-28.9))**2)
       Kd_int(ii,jj,1) = (CS%bckgrnd_vdc_eq + bckgrnd_vdc_psin) + bckgrnd_vdc_psis
@@ -423,22 +431,22 @@ subroutine calculate_bkgnd_mixing(h, tv, N2_lay, Kd_lay, Kd_int, Kv_bkgnd, &
 
       ! North Banda Sea
       if ( (G%geoLatT(i,j) < -1.0)  .and. (G%geoLatT(i,j) > -4.0) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) > 103.0) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) < 134.0) ) then
+           ( lon_E > 103.0) .and. &
+           ( lon_E < 134.0) ) then
         Kd_int(ii,jj,1) = CS%bckgrnd_vdc_Banda
       endif
 
       ! Middle Banda Sea
       if ( (G%geoLatT(i,j) <= -4.0) .and. (G%geoLatT(i,j) > -7.0) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) > 106.0) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) < 140.0) ) then
+           ( lon_E > 106.0) .and. &
+           ( lon_E < 140.0) ) then
         Kd_int(ii,jj,1) = CS%bckgrnd_vdc_Banda
       endif
 
       ! South Banda Sea
       if ( (G%geoLatT(i,j) <= -7.0) .and. (G%geoLatT(i,j) > -8.3) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) > 111.0) .and. &
-           ( mod(G%geoLonT(i,j)+360.0,360.0) < 142.0) ) then
+           ( lon_E > 111.0) .and. &
+           ( lon_E < 142.0) ) then
         Kd_int(ii,jj,1) = CS%bckgrnd_vdc_Banda
       endif
 
