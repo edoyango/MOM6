@@ -290,9 +290,10 @@ subroutine wave_speed(h, tv, G, GV, US, cg1, CS, halo_size, use_ebt_mode, mono_N
     !   First merge very thin layers with the one above (or below if they are
     ! at the top), and find the interface quantities that the equation of state
     ! needs.
-    do concurrent (jj=1:jje, ii=1:iie, G%mask2dT(isb+ii-1,jsb+jj-1) > 0.0) &
-      DO_LOCALITY(local(i, j, k, hmin, H_here, HxT_here, HxS_here, HxR_here)) &
-      DO_LOCALITY(reduce(max:max_kf))
+    ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+    !$omp target teams distribute parallel do collapse(2) reduction(max: max_kf) &
+    !$omp   private(i, j, k, hmin, H_here, HxT_here, HxS_here, HxR_here) map(tofrom: max_kf)
+    do jj=1,jje ; do ii=1,iie ; if (G%mask2dT(isb+ii-1,jsb+jj-1) > 0.0) then
       i = isb + ii - 1
       j = jsb + jj - 1
       htot(ii,jj) = 0.0
@@ -367,7 +368,7 @@ subroutine wave_speed(h, tv, G, GV, US, cg1, CS, halo_size, use_ebt_mode, mono_N
           S_int(ii,jj,K) = 0.5*(Sf(ii,jj,k)+Sf(ii,jj,k-1))
         enddo
       endif
-    enddo
+    endif ; enddo ; enddo
 
     if (use_EOS) then
       if (nonBous) then
