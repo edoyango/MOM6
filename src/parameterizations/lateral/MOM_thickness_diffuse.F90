@@ -775,6 +775,8 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
   real :: drdjA, drdjB  ! Along layer meridional potential density  gradients in the layers above (A)
                         ! and below (B) the interface times the grid spacing [R ~> kg m-3].
   real :: drdkL, drdkR  ! Vertical density differences across an interface [R ~> kg m-3].
+  real :: drdiA_i, drdiB_i, drdjA_i, drdjB_i, drdkL_i, drdkR_i ! Per-iteration copies of the above in the
+                        ! do concurrent loops (amdflang does not support local_init) [R ~> kg m-3].
   real :: drdi_u(niblock,njblock,SZK_(GV)) ! Copy of drdi at u-points [R ~> kg m-3].
   real :: drdj_v(niblock,njblock,SZK_(GV)) ! Copy of drdj at v-points [R ~> kg m-3].
   real :: drdkDe_u(niblock,njblock,SZK_(GV)+1) ! Lateral difference of product of drdk and e at u-points
@@ -1019,33 +1021,35 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
       ! Adding variables to local_init and local enables parallelization, but may change
       ! answers.
       do concurrent (jj=1:jje, II=1:IIe) &
-        DO_LOCALITY(local_init(drdiA,drdiB,drdkL,drdkR) local(drdz,hg2A,hg2B,haA,haB,I,j))
+        DO_LOCALITY(local(drdiA_i,drdiB_i,drdkL_i,drdkR_i,drdz,hg2A,hg2B,haA,haB,I,j))
+        ! local_init is not supported by amdflang, so copy in at the start of each iteration
+        drdiA_i = drdiA ; drdiB_i = drdiB ; drdkL_i = drdkL ; drdkR_i = drdkR
         j = jsb + jj - 1 ; I = IsbB + II - 1
         if (calc_derivatives) then
           ! Estimate the horizontal density gradients along layers.
-          drdiA = drho_dT_u(II,jj) * (T(i+1,j,k-1)-T(i,j,k-1)) + &
+          drdiA_i = drho_dT_u(II,jj) * (T(i+1,j,k-1)-T(i,j,k-1)) + &
                   drho_dS_u(II,jj) * (S(i+1,j,k-1)-S(i,j,k-1))
-          drdiB = drho_dT_u(II,jj) * (T(i+1,j,k)-T(i,j,k)) + &
+          drdiB_i = drho_dT_u(II,jj) * (T(i+1,j,k)-T(i,j,k)) + &
                   drho_dS_u(II,jj) * (S(i+1,j,k)-S(i,j,k))
 
           ! Estimate the vertical density gradients times the grid spacing.
-          drdkL = (drho_dT_u(II,jj) * (T(i,j,k)-T(i,j,k-1)) + &
+          drdkL_i = (drho_dT_u(II,jj) * (T(i,j,k)-T(i,j,k-1)) + &
                    drho_dS_u(II,jj) * (S(i,j,k)-S(i,j,k-1)))
-          drdkR = (drho_dT_u(II,jj) * (T(i+1,j,k)-T(i+1,j,k-1)) + &
+          drdkR_i = (drho_dT_u(II,jj) * (T(i+1,j,k)-T(i+1,j,k-1)) + &
                    drho_dS_u(II,jj) * (S(i+1,j,k)-S(i+1,j,k-1)))
-          drdkDe_u(II,jj,K) = (drdkR * e(i+1,j,K)) - (drdkL * e(i,j,K))
+          drdkDe_u(II,jj,K) = (drdkR_i * e(i+1,j,K)) - (drdkL_i * e(i,j,K))
         elseif (find_work) then ! This is used in pure stacked SW mode
-          drdkDe_u(II,jj,K) = (drdkR * e(i+1,j,K)) - (drdkL * e(i,j,K))
+          drdkDe_u(II,jj,K) = (drdkR_i * e(i+1,j,K)) - (drdkL_i * e(i,j,K))
         endif
         if (use_stanley) then
           ! Correction to the horizontal density gradient due to nonlinearity in
           ! the EOS rectifying SGS temperature anomalies
-          drdiA = drdiA + 0.5 * ((drho_dT_dT_h(ii+1,jj) * tv%varT(i+1,j,k-1)) - &
+          drdiA_i = drdiA_i + 0.5 * ((drho_dT_dT_h(ii+1,jj) * tv%varT(i+1,j,k-1)) - &
                                 (drho_dT_dT_h(ii,jj) * tv%varT(i,j,k-1)) )
-          drdiB = drdiB + 0.5 * ((drho_dT_dT_h(ii+1,jj) * tv%varT(i+1,j,k)) - &
+          drdiB_i = drdiB_i + 0.5 * ((drho_dT_dT_h(ii+1,jj) * tv%varT(i+1,j,k)) - &
                                 (drho_dT_dT_h(ii,jj) * tv%varT(i,j,k)) )
         endif
-        if (find_work) drdi_u(II,jj,k) = drdiB
+        if (find_work) drdi_u(II,jj,k) = drdiB_i
 
         if (k > nk_linear) then
           if (use_EOS) then
@@ -1067,7 +1071,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
               ! These unnormalized weights have been rearranged to minimize divisions.
               wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
 
-              drdz = ((wtL * drdkL) + (wtR * drdkR)) / ((dzaL*wtL) + (dzaR*wtR))
+              drdz = ((wtL * drdkL_i) + (wtR * drdkR_i)) / ((dzaL*wtL) + (dzaR*wtR))
               ! The expression for drdz above is mathematically equivalent to:
               !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
               !          ((hg2L/haL) + (hg2R/haR))
@@ -1080,7 +1084,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
                 N2_unlim = drdz*G_rho0
               else
                 N2_unlim = (GV%g_Earth*GV%RZ_to_H) * &
-                           (((wtL * drdkL) + (wtR * drdkR)) / ((haL*wtL) + (haR*wtR)))
+                           (((wtL * drdkL_i) + (wtR * drdkR_i)) / ((haL*wtL) + (haR*wtR)))
               endif
 
               dzg2A = dz(i,j,k-1)*dz(i+1,j,k-1) + dz_neglect2
@@ -1101,7 +1105,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
               ! These unnormalized weights have been rearranged to minimize divisions.
               wtA = hg2A*haB ; wtB = hg2B*haA
               ! This is the gradient of density along geopotentials.
-              drdx = ((wtA * drdiA + wtB * drdiB) / (wtA + wtB) - &
+              drdx = ((wtA * drdiA_i + wtB * drdiB_i) / (wtA + wtB) - &
                       drdz * (e(i,j,K)-e(i+1,j,K))) * G%IdxCu(I,j)
 
               ! This estimate of slope is accurate for small slopes, but bounded
@@ -1378,34 +1382,36 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
                      tv%eqn_of_state, EOSdom_v)
       endif
       do concurrent (jj=1:JJe, ii=1:iie) &
-        DO_LOCALITY(local_init(drdjA,drdjB,drdkL,drdkR) local(i,j))
+        DO_LOCALITY(local(drdjA_i,drdjB_i,drdkL_i,drdkR_i,i,j))
+        ! local_init is not supported by amdflang, so copy in at the start of each iteration
+        drdjA_i = drdjA ; drdjB_i = drdjB ; drdkL_i = drdkL ; drdkR_i = drdkR
         j = JsbB + jj - 1 ; i = isb + ii - 1
         if (calc_derivatives) then
           ! Estimate the horizontal density gradients along layers.
-          drdjA = drho_dT_v(ii,JJ) * (T(i,j+1,k-1)-T(i,j,k-1)) + &
+          drdjA_i = drho_dT_v(ii,JJ) * (T(i,j+1,k-1)-T(i,j,k-1)) + &
                   drho_dS_v(ii,JJ) * (S(i,j+1,k-1)-S(i,j,k-1))
-          drdjB = drho_dT_v(ii,JJ) * (T(i,j+1,k)-T(i,j,k)) + &
+          drdjB_i = drho_dT_v(ii,JJ) * (T(i,j+1,k)-T(i,j,k)) + &
                   drho_dS_v(ii,JJ) * (S(i,j+1,k)-S(i,j,k))
 
           ! Estimate the vertical density gradients times the grid spacing.
-          drdkL = (drho_dT_v(ii,JJ) * (T(i,j,k)-T(i,j,k-1)) + &
+          drdkL_i = (drho_dT_v(ii,JJ) * (T(i,j,k)-T(i,j,k-1)) + &
                    drho_dS_v(ii,JJ) * (S(i,j,k)-S(i,j,k-1)))
-          drdkR = (drho_dT_v(ii,JJ) * (T(i,j+1,k)-T(i,j+1,k-1)) + &
+          drdkR_i = (drho_dT_v(ii,JJ) * (T(i,j+1,k)-T(i,j+1,k-1)) + &
                    drho_dS_v(ii,JJ) * (S(i,j+1,k)-S(i,j+1,k-1)))
-          drdkDe_v(ii,JJ,K) =  (drdkR * e(i,j+1,K)) - (drdkL * e(i,j,K))
+          drdkDe_v(ii,JJ,K) =  (drdkR_i * e(i,j+1,K)) - (drdkL_i * e(i,j,K))
         elseif (find_work) then ! This is used in pure stacked SW mode
-          drdkDe_v(ii,JJ,K) =  (drdkR * e(i,j+1,K)) - (drdkL * e(i,j,K))
+          drdkDe_v(ii,JJ,K) =  (drdkR_i * e(i,j+1,K)) - (drdkL_i * e(i,j,K))
         endif
         if (use_stanley) then
           ! Correction to the horizontal density gradient due to nonlinearity in
           ! the EOS rectifying SGS temperature anomalies
-          drdjA = drdjA + 0.5 * ((drho_dT_dT_hr(ii,JJ) * tv%varT(i,j+1,k-1)) - &
+          drdjA_i = drdjA_i + 0.5 * ((drho_dT_dT_hr(ii,JJ) * tv%varT(i,j+1,k-1)) - &
                                 (drho_dT_dT_h(ii,JJ) * tv%varT(i,j,k-1)) )
-          drdjB = drdjB + 0.5 * ((drho_dT_dT_hr(ii,JJ) * tv%varT(i,j+1,k)) - &
+          drdjB_i = drdjB_i + 0.5 * ((drho_dT_dT_hr(ii,JJ) * tv%varT(i,j+1,k)) - &
                                 (drho_dT_dT_h(ii,JJ) * tv%varT(i,j,k)) )
         endif
 
-        if (find_work) drdj_v(ii,JJ,k) = drdjB
+        if (find_work) drdj_v(ii,JJ,k) = drdjB_i
 
         if (k > nk_linear) then
           if (use_EOS) then
@@ -1428,7 +1434,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
               ! These unnormalized weights have been rearranged to minimize divisions.
               wtL = hg2L*(haR*dzaR) ; wtR = hg2R*(haL*dzaL)
 
-              drdz = ((wtL * drdkL) + (wtR * drdkR)) / ((dzaL*wtL) + (dzaR*wtR))
+              drdz = ((wtL * drdkL_i) + (wtR * drdkR_i)) / ((dzaL*wtL) + (dzaR*wtR))
               ! The expression for drdz above is mathematically equivalent to:
               !   drdz = ((hg2L/haL) * drdkL/dzaL + (hg2R/haR) * drdkR/dzaR) / &
               !          ((hg2L/haL) + (hg2R/haR))
@@ -1441,7 +1447,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
                 N2_unlim = drdz*G_rho0
               else
                 N2_unlim = (GV%g_Earth*GV%RZ_to_H) * &
-                           (((wtL * drdkL) + (wtR * drdkR)) / ((haL*wtL) + (haR*wtR)))
+                           (((wtL * drdkL_i) + (wtR * drdkR_i)) / ((haL*wtL) + (haR*wtR)))
               endif
 
               dzg2A = dz(i,j,k-1)*dz(i,j+1,k-1) + dz_neglect2
@@ -1462,7 +1468,7 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
               ! These unnormalized weights have been rearranged to minimize divisions.
               wtA = hg2A*haB ; wtB = hg2B*haA
               ! This is the gradient of density along geopotentials.
-              drdy = ((wtA * drdjA + wtB * drdjB) / (wtA + wtB) - &
+              drdy = ((wtA * drdjA_i + wtB * drdjB_i) / (wtA + wtB) - &
                       drdz * (e(i,j,K)-e(i,j+1,K))) * G%IdyCv(i,J)
 
               ! This estimate of slope is accurate for small slopes, but bounded
