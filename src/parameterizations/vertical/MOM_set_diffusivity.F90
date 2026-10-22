@@ -1074,6 +1074,8 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, isb, ieb, jsb, jeb, nii, njj,
 
   integer, dimension(2,2) :: EOSdom ! The computational domain for the equation of state
   integer :: i, j, k, nz, i_rem, kmb, kb_min, ii, jj, iie, jje
+  integer :: i_dc, j_dc ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                        ! clashes with the omp private())
 
   !$omp target enter data map(alloc: htot, mFkb, p_ref, Rcv_kmb, p_0, do_i, ds_dsp1, dsp1_ds, &
   !$omp   rho_0, maxEnt)
@@ -1093,9 +1095,9 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, isb, ieb, jsb, jeb, nii, njj,
 
   ! Simple but coordinate-independent estimate of Kd/TKE
   if (CS%simple_TKE_to_Kd) then
-    do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
-      hN2pO2 = dz(i,j,k) * (N2_lay(ii,jj,k) + Omega2) ! Units of Z T-2.
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+      hN2pO2 = dz(i_dc,j_dc,k) * (N2_lay(ii,jj,k) + Omega2) ! Units of Z T-2.
       if (hN2pO2 > 0.) then
         TKE_to_Kd(ii,jj,k) = 1.0 / hN2pO2 ! Units of T2 H-1.
       else ; TKE_to_Kd(ii,jj,k) = 0. ; endif
@@ -1125,18 +1127,18 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, isb, ieb, jsb, jeb, nii, njj,
     call calculate_density(tv%T(:,:,kmb), tv%S(:,:,kmb), p_ref, Rcv_kmb, tv%eqn_of_state, EOSdom)
 
     kb_min = kmb+1
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
       !   Determine the next denser layer than the buffer layer in the
       ! coordinate density (sigma-2).
-      do k=kmb+1,nz-1 ; if (Rcv_kmb(i,j) <= GV%Rlay(k)) exit ; enddo
+      do k=kmb+1,nz-1 ; if (Rcv_kmb(i_dc,j_dc) <= GV%Rlay(k)) exit ; enddo
       kb(ii,jj) = k
 
     !   Backtrack, in case there are massive layers above that are stable
     ! in sigma-0.
       do k=kb(ii,jj)-1,kmb+1,-1
-        if (rho_0(i,j,kmb) > rho_0(i,j,k)) exit
-        if (h(i,j,k)>2.0*GV%Angstrom_H) kb(ii,jj) = k
+        if (rho_0(i_dc,j_dc,kmb) > rho_0(i_dc,j_dc,k)) exit
+        if (h(i_dc,j_dc,k)>2.0*GV%Angstrom_H) kb(ii,jj) = k
       enddo
     enddo
     call set_density_ratios(h, tv, kb, G, GV, US, CS, isb, ieb, jsb, jeb, nii, njj, &
@@ -1161,26 +1163,26 @@ subroutine find_TKE_to_Kd(h, tv, dRho_int, N2_lay, isb, ieb, jsb, jeb, nii, njj,
 
   if (CS%bulkmixedlayer) then
     kmb = GV%nk_rho_varies
-    do concurrent (jj=1:jje) DO_LOCALITY(local(j))
-      j = jsb+jj-1
-      do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-        i = isb+ii-1
-        htot(ii,jj) = h(i,j,kmb)
+    do concurrent (jj=1:jje) DO_LOCALITY(local(j_dc))
+      j_dc = jsb+jj-1
+      do concurrent (ii=1:iie) DO_LOCALITY(local(i_dc))
+        i_dc = isb+ii-1
+        htot(ii,jj) = h(i_dc,j_dc,kmb)
         mFkb(ii,jj) = 0.0
-        if (kb(ii,jj) < nz) mFkb(ii,jj) = ds_dsp1(ii,jj,kb(ii,jj)) * (h(i,j,kmb) - GV%Angstrom_H)
+        if (kb(ii,jj) < nz) mFkb(ii,jj) = ds_dsp1(ii,jj,kb(ii,jj)) * (h(i_dc,j_dc,kmb) - GV%Angstrom_H)
       enddo
       do k=1,kmb-1
-        do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-          i = isb+ii-1
-          htot(ii,jj) = htot(ii,jj) + h(i,j,k)
-          mFkb(ii,jj) = mFkb(ii,jj) + ds_dsp1(ii,jj,k+1)*(h(i,j,k) - GV%Angstrom_H)
+        do concurrent (ii=1:iie) DO_LOCALITY(local(i_dc))
+          i_dc = isb+ii-1
+          htot(ii,jj) = htot(ii,jj) + h(i_dc,j_dc,k)
+          mFkb(ii,jj) = mFkb(ii,jj) + ds_dsp1(ii,jj,k+1)*(h(i_dc,j_dc,k) - GV%Angstrom_H)
         enddo
       enddo
     enddo
   else
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
-      maxEnt(ii,jj,1) = 0.0 ; htot(ii,jj) = h(i,j,1) - GV%Angstrom_H
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+      maxEnt(ii,jj,1) = 0.0 ; htot(ii,jj) = h(i_dc,j_dc,1) - GV%Angstrom_H
     enddo
   endif
   !$omp target
@@ -1351,6 +1353,8 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
   logical :: do_i(nii,njj), do_any
   integer, dimension(2, 2) :: EOSdom ! The i-computational domain for the equation of state
   integer :: i, j, k, nz, ii, jj, iie, jje
+  integer :: i_dc, j_dc ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                        ! clashes with the omp private())
 
   nz = GV%ke
   iie = ieb-isb+1 ; jje = jeb-jsb+1
@@ -1375,9 +1379,9 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
     EOSdom(2,1) = 1
     EOSdom(2,2) = jje
     if (associated(fluxes%p_surf)) then
-      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-        j = jsb+jj-1 ; i = isb+ii-1
-        pres(ii,jj,1) = fluxes%p_surf(i,j)
+      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+        j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+        pres(ii,jj,1) = fluxes%p_surf(i_dc,j_dc)
       enddo
     else
       do concurrent (jj=1:jje, ii=1:iie)
@@ -1386,20 +1390,20 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
     endif
     ! TODO: block k loop for better performance on GPU.
     do K=2,nz
-      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-        j = jsb+jj-1 ; i = isb+ii-1
-        pres(ii,jj,K) = pres(ii,jj,K-1) + (GV%g_Earth*GV%H_to_RZ)*h(i,j,k-1)
-        Temp_Int(ii,jj) = 0.5 * (T_f(i,j,k) + T_f(i,j,k-1))
-        Salin_Int(ii,jj) = 0.5 * (S_f(i,j,k) + S_f(i,j,k-1))
+      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+        j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+        pres(ii,jj,K) = pres(ii,jj,K-1) + (GV%g_Earth*GV%H_to_RZ)*h(i_dc,j_dc,k-1)
+        Temp_Int(ii,jj) = 0.5 * (T_f(i_dc,j_dc,k) + T_f(i_dc,j_dc,k-1))
+        Salin_Int(ii,jj) = 0.5 * (S_f(i_dc,j_dc,k) + S_f(i_dc,j_dc,k-1))
       enddo
       call calculate_density_derivs(Temp_int, Salin_int, pres(:,:,K), &
                                     dRho_dT, dRho_dS, tv%eqn_of_state, EOSdom)
-      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-        j = jsb+jj-1 ; i = isb+ii-1
-        dRho_int(ii,jj,K) = max(dRho_dT(ii,jj)*(T_f(i,j,k) - T_f(i,j,k-1)) + &
-                              dRho_dS(ii,jj)*(S_f(i,j,k) - S_f(i,j,k-1)), 0.0)
-        dRho_int_unfilt(ii,jj,K) = max(dRho_dT(ii,jj)*(tv%T(i,j,k) - tv%T(i,j,k-1)) + &
-                                       dRho_dS(ii,jj)*(tv%S(i,j,k) - tv%S(i,j,k-1)), 0.0)
+      do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+        j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+        dRho_int(ii,jj,K) = max(dRho_dT(ii,jj)*(T_f(i_dc,j_dc,k) - T_f(i_dc,j_dc,k-1)) + &
+                              dRho_dS(ii,jj)*(S_f(i_dc,j_dc,k) - S_f(i_dc,j_dc,k-1)), 0.0)
+        dRho_int_unfilt(ii,jj,K) = max(dRho_dT(ii,jj)*(tv%T(i_dc,j_dc,k) - tv%T(i_dc,j_dc,k-1)) + &
+                                       dRho_dS(ii,jj)*(tv%S(i_dc,j_dc,k) - tv%S(i_dc,j_dc,k-1)), 0.0)
       enddo
     enddo
   else
@@ -1409,27 +1413,27 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
   endif
 
   ! Set the buoyancy frequencies.
-  do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-    j = jsb+jj-1 ; i = isb+ii-1
+  do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+    j_dc = jsb+jj-1 ; i_dc = isb+ii-1
     N2_lay(ii,jj,k) = G_Rho0 * 0.5*(dRho_int(ii,jj,K) + dRho_int(ii,jj,K+1)) / &
-                    (h(i,j,k) + H_neglect)
+                    (h(i_dc,j_dc,k) + H_neglect)
   enddo
   do concurrent (jj=1:jje, ii=1:iie)
     N2_int(ii,jj,1) = 0.0
     N2_int(ii,jj,nz+1) = 0.0
   enddo
-  do concurrent (K=2:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-    j = jsb+jj-1 ; i = isb+ii-1
+  do concurrent (K=2:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+    j_dc = jsb+jj-1 ; i_dc = isb+ii-1
     N2_int(ii,jj,K) = G_Rho0 * dRho_int(ii,jj,K) / &
-                    (0.5*(h(i,j,k-1) + h(i,j,k) + H_neglect))
+                    (0.5*(h(i_dc,j_dc,k-1) + h(i_dc,j_dc,k) + H_neglect))
   enddo
 
   ! Find the bottom boundary layer stratification, and use this in the deepest layers.
-  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-    j = jsb+jj-1 ; i = isb+ii-1
-    hb(ii,jj) = 0.0 ; dRho_bot(ii,jj) = 0.0 ; h_amp(i,jj) = 0.0
-    z_from_bot(ii,jj) = 0.5*dz(i,j,nz)
-    do_i(ii,jj) = (G%mask2dT(i,j) > 0.0)
+  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+    j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+    hb(ii,jj) = 0.0 ; dRho_bot(ii,jj) = 0.0 ; h_amp(i_dc,jj) = 0.0
+    z_from_bot(ii,jj) = 0.5*dz(i_dc,j_dc,nz)
+    do_i(ii,jj) = (G%mask2dT(i_dc,j_dc) > 0.0)
   enddo
 
   if (CS%use_tidal_mixing) then
@@ -1476,13 +1480,13 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
   enddo
   !$omp end target
 
-  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-    j = jsb+jj-1 ; i = isb+ii-1
+  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+    j_dc = jsb+jj-1 ; i_dc = isb+ii-1
     if (hb(ii,jj) > 0.0) then
       N2_bot(ii,jj) = (G_Rho0 * drho_bot(ii,jj)) / hb(ii,jj)
     else ;  N2_bot(ii,jj) = 0.0 ; endif
-    z_from_bot(ii,jj) = 0.5*dz(i,j,nz)
-    do_i(ii,jj) = (G%mask2dT(i,j) > 0.0)
+    z_from_bot(ii,jj) = 0.5*dz(i_dc,j_dc,nz)
+    do_i(ii,jj) = (G%mask2dT(i_dc,j_dc) > 0.0)
   enddo
 
   !$omp target
@@ -1523,9 +1527,9 @@ subroutine find_N2(h, tv, T_f, S_f, fluxes, isb, ieb, jsb, jeb, nii, njj, dz, G,
   endif
 
   ! Average over the larger of the envelope of the topography or a minimal distance.
-  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i))
-    i = isb+ii-1
-    dz_BBL_avg(ii,jj) = max(h_amp(i,jj), CS%dz_BBL_avg_min)
+  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc))
+    i_dc = isb+ii-1
+    dz_BBL_avg(ii,jj) = max(h_amp(i_dc,jj), CS%dz_BBL_avg_min)
   enddo
 
   call find_rho_bottom(G, GV, US, tv, h, dz, pres, dz_BBL_avg, isb, ieb, jsb, jeb, &
@@ -1718,6 +1722,8 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, isb, ieb, jsb, jeb, n
   logical :: do_diag_Kd_BBL
 
   integer :: i, j, k, nz, i_rem, kb_min, ii, jj, iie, jje
+  integer :: i_dc, j_dc ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                        ! clashes with the omp private())
   nz = GV%ke
   iie = ieb-isb+1 ; jje = jeb-jsb+1
 
@@ -1738,18 +1744,18 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, isb, ieb, jsb, jeb, n
   ! The turbulence decay scale is 0.5*ustar/f from K&E & MOM_vertvisc.F90
   ! Any turbulence that makes it into the mixed layers is assumed
   ! to be relatively small and is discarded.
-  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-    j = jsb+jj-1 ; i = isb+ii-1
-    ustar_h = visc%ustar_BBL(i,j)
+  do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+    j_dc = jsb+jj-1 ; i_dc = isb+ii-1
+    ustar_h = visc%ustar_BBL(i_dc,j_dc)
     if (associated(fluxes%ustar_tidal)) then
       if (allocated(tv%SpV_avg)) then
-        ustar_h = ustar_h + GV%RZ_to_H*rho_bot(ii,jj) * fluxes%ustar_tidal(i,j)
+        ustar_h = ustar_h + GV%RZ_to_H*rho_bot(ii,jj) * fluxes%ustar_tidal(i_dc,j_dc)
       else
-        ustar_h = ustar_h + GV%Z_to_H * fluxes%ustar_tidal(i,j)
+        ustar_h = ustar_h + GV%Z_to_H * fluxes%ustar_tidal(i_dc,j_dc)
       endif
     endif
-    absf = 0.25 * ((abs(G%CoriolisBu(I-1,J-1)) + abs(G%CoriolisBu(I,J))) + &
-                   (abs(G%CoriolisBu(I-1,J)) + abs(G%CoriolisBu(I,J-1))))
+    absf = 0.25 * ((abs(G%CoriolisBu(I_dc-1,J_dc-1)) + abs(G%CoriolisBu(I_dc,J_dc))) + &
+                   (abs(G%CoriolisBu(I_dc-1,J_dc)) + abs(G%CoriolisBu(I_dc,J_dc-1))))
     if ((ustar_h > 0.0) .and. (absf > 0.5*CS%IMax_decay*ustar_h))  then
       I2decay(ii,jj) = absf / ustar_h
     else
@@ -1758,15 +1764,15 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, isb, ieb, jsb, jeb, n
       I2decay(ii,jj) = 0.5*CS%IMax_decay
     endif
     if (CS%drag_diff_answer_date <= 20250301) then
-      TKE(ii,jj) = ((CS%BBL_effic * cdrag_sqrt) * exp_repro(-I2decay(ii,jj)*h(i,j,nz)) ) * &
-                   visc%BBL_meanKE_loss_sqrtCd(i,j)
+      TKE(ii,jj) = ((CS%BBL_effic * cdrag_sqrt) * exp_repro(-I2decay(ii,jj)*h(i_dc,j_dc,nz)) ) * &
+                   visc%BBL_meanKE_loss_sqrtCd(i_dc,j_dc)
     else
-      TKE(ii,jj) = (CS%BBL_effic * exp_repro(-I2decay(ii,jj)*h(i,j,nz)) ) * visc%BBL_meanKE_loss(i,j)
+      TKE(ii,jj) = (CS%BBL_effic * exp_repro(-I2decay(ii,jj)*h(i_dc,j_dc,nz)) ) * visc%BBL_meanKE_loss(i_dc,j_dc)
     endif
 
     if (associated(fluxes%BBL_tidal_dis)) &
-      TKE(ii,jj) = TKE(ii,jj) + fluxes%BBL_tidal_dis(i,j) * GV%RZ_to_H * &
-           (CS%BBL_effic * exp_repro(-I2decay(ii,jj)*h(i,j,nz)))
+      TKE(ii,jj) = TKE(ii,jj) + fluxes%BBL_tidal_dis(i_dc,j_dc) * GV%RZ_to_H * &
+           (CS%BBL_effic * exp_repro(-I2decay(ii,jj)*h(i_dc,j_dc,nz)))
 
     ! Distribute the work over a BBL of depth 20^2 ustar^2 / g' following
     ! Killworth & Edwards (1999) and Zilitikevich & Mironov (1996).
@@ -1775,9 +1781,9 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, isb, ieb, jsb, jeb, n
 
     gh_sum_top(ii,jj) = R0_g * 400.0 * ustar_h**2
 
-    do_i(ii,jj) = (G%mask2dT(i,j) > 0.0)
-    htot(ii,jj) = h(i,j,nz)
-    rho_htot(ii,jj) = GV%Rlay(nz)*(h(i,j,nz))
+    do_i(ii,jj) = (G%mask2dT(i_dc,j_dc) > 0.0)
+    htot(ii,jj) = h(i_dc,j_dc,nz)
+    rho_htot(ii,jj) = GV%Rlay(nz)*(h(i_dc,j_dc,nz))
     Rho_top(ii,jj) = GV%Rlay(1)
     if (CS%bulkmixedlayer .and. do_i(ii,jj)) Rho_top(ii,jj) = GV%Rlay(kb(ii,jj)-1)
   enddo

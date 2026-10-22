@@ -729,6 +729,8 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, isb, ieb, 
   logical :: use_EOS
   integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
   integer :: i, j, k, nz, ii, jj, iie, jje
+  integer :: i_dc, j_dc ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                        ! clashes with the private(i,j) of the omp loops)
 
   nz = GV%ke
   iie = ieb-isb+1 ; jje = jeb-jsb+1
@@ -744,12 +746,12 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, isb, ieb, 
     enddo
 
     ! Obtain bottom boundary layer thickness and index of top layer
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
       hb(ii,jj) = 0.0 ; h_bot(ii,jj) = 0.0 ; k_bot(ii,jj) = nz
-      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(ii,jj))
+      dz_bbl_rem(ii,jj) = G%mask2dT(i_dc,j_dc) * max(0.0, dz_avg(ii,jj))
       do_i(ii,jj) = .true.
-      if (G%mask2dT(i,j) <= 0.0) then
+      if (G%mask2dT(i_dc,j_dc) <= 0.0) then
         h_bbl_frac(ii,jj) = 0.0
         do_i(ii,jj) = .false.
       endif
@@ -810,12 +812,12 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, isb, ieb, 
     ! Set the bottom density to the inverse of the in situ specific volume averaged over the
     ! specified distance, with care taken to avoid having compressibility lead to an imprint
     ! of the layer thicknesses on this density.
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
       hb(ii,jj) = 0.0 ; SpV_h_bot(ii,jj) = 0.0 ; h_bot(ii,jj) = 0.0 ; k_bot(ii,jj) = nz
-      dz_bbl_rem(ii,jj) = G%mask2dT(i,j) * max(0.0, dz_avg(ii,jj))
+      dz_bbl_rem(ii,jj) = G%mask2dT(i_dc,j_dc) * max(0.0, dz_avg(ii,jj))
       do_i(ii,jj) = .true.
-      if (G%mask2dT(i,j) <= 0.0) then
+      if (G%mask2dT(i_dc,j_dc) <= 0.0) then
         ! Set acceptable values for calling the equation of state over land.
         T_bbl(ii,jj) = 0.0 ; S_bbl(ii,jj) = 0.0 ; dp(ii,jj) = 0.0 ; P_bbl(ii,jj) = 0.0
         SpV_bbl(ii,jj) = 1.0 ! This value is arbitrary, provided it is non-zero.
@@ -869,18 +871,18 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, isb, ieb, 
 #endif
     enddo
     !$omp end target
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
       if (do_i(ii,jj)) then
       ! The nominal bottom boundary layer is thicker than the water column, but layer 1 is
       ! already included in the averages.  These values are set so that the call to find
       ! the layer-average specific volume will behave sensibly.
       if (use_EOS) then
-        T_bbl(ii,jj) = tv%T(i,j,1) ; S_bbl(ii,jj) = tv%S(i,j,1)
+        T_bbl(ii,jj) = tv%T(i_dc,j_dc,1) ; S_bbl(ii,jj) = tv%S(i_dc,j_dc,1)
         dp(ii,jj) = 0.0
         P_bbl(ii,jj) = pres_int(ii,jj,1)
       else
-        SpV_bbl(ii,jj) = tv%SpV_avg(i,j,1)
+        SpV_bbl(ii,jj) = tv%SpV_avg(i_dc,j_dc,1)
       endif
       h_bbl_frac(ii,jj) = 0.0
       endif
@@ -899,10 +901,10 @@ subroutine find_rho_bottom_2d(G, GV, US, tv, h, dz, pres_int, dz_avg, isb, ieb, 
       !$omp target update to(SpV_bbl)
     endif
 
-    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i,j))
-      j = jsb+jj-1 ; i = isb+ii-1
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+      j_dc = jsb+jj-1 ; i_dc = isb+ii-1
       if (hb(ii,jj) + h_bbl_frac(ii,jj) < GV%H_subroundoff) h_bbl_frac(ii,jj) = GV%H_subroundoff
-      rho_bot(ii,jj) = G%mask2dT(i,j) * (hb(ii,jj) + h_bbl_frac(ii,jj)) / &
+      rho_bot(ii,jj) = G%mask2dT(i_dc,j_dc) * (hb(ii,jj) + h_bbl_frac(ii,jj)) / &
                      (SpV_h_bot(ii,jj) + h_bbl_frac(ii,jj)*SpV_bbl(ii,jj))
       h_bot(ii,jj) = hb(ii,jj) + h_bbl_frac(ii,jj)
     enddo

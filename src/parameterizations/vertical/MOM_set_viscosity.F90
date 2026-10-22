@@ -2216,6 +2216,8 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
   logical :: nonBous_ML  ! If true, use the non-Boussinesq form of some energy and
                          ! stratification calculations.
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, K2, nkmb, nkml, n, EOSdom(2,2)
+  integer :: i_dc, j_dc   ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                          ! clashes with the omp private())
   integer :: isb, ieb   !< The i-index bounds of the current block (centre-indexed).
   integer :: jsb, jeb   !< The j-index bounds of the current block (centre-indexed).
   integer :: IsbB, IebB !< The I-index bounds of the current block (face-indexed).
@@ -2330,27 +2332,27 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
     EOSdom(2,1) = 1 ; EOSdom(2,2) = jje
     if (CS%dynamic_viscous_ML) then
       do_any = .false.
-      do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i,j) reduce(.or.:do_any))
-        I = IsbB + II - 1
-        j = jsb + jj - 1
+      do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i_dc,j_dc) reduce(.or.:do_any))
+        I_dc = IsbB + II - 1
+        j_dc = jsb + jj - 1
 
         htot(II,jj) = 0.0
-        if (G%mask2dCu(I,j) < 0.5) then
-          do_ij(II,jj) = .false. ; visc%nkml_visc_u(I,j) = nkml
+        if (G%mask2dCu(I_dc,j_dc) < 0.5) then
+          do_ij(II,jj) = .false. ; visc%nkml_visc_u(I_dc,j_dc) = nkml
         else
           do_ij(II,jj) = .true. ; do_any = .true.
           k_massive(II,jj) = nkml
           Thtot(II,jj) = 0.0 ; Shtot(II,jj) = 0.0 ; Rhtot(II,jj) = 0.0
-          uhtot(II,jj) = dt_Rho0 * forces%taux(I,j)
-          vhtot(II,jj) = 0.25 * dt_Rho0 * ((forces%tauy(i,J) + forces%tauy(i+1,J-1)) + &
-                                       (forces%tauy(i,J-1) + forces%tauy(i+1,J)))
+          uhtot(II,jj) = dt_Rho0 * forces%taux(I_dc,j_dc)
+          vhtot(II,jj) = 0.25 * dt_Rho0 * ((forces%tauy(i_dc,J_dc) + forces%tauy(i_dc+1,J_dc-1)) + &
+                                       (forces%tauy(i_dc,J_dc-1) + forces%tauy(i_dc+1,J_dc)))
 
           if (CS%omega_frac >= 1.0) then ; absf = 2.0*CS%omega ; else
-            absf = 0.5*(abs(G%CoriolisBu(I,J)) + abs(G%CoriolisBu(I,J-1)))
+            absf = 0.5*(abs(G%CoriolisBu(I_dc,J_dc)) + abs(G%CoriolisBu(I_dc,J_dc-1)))
             if (CS%omega_frac > 0.0) &
               absf = sqrt(CS%omega_frac*4.0*CS%omega**2 + (1.0-CS%omega_frac)*absf**2)
           endif
-          U_star = max(CS%ustar_min, 0.5*(U_star_2d(i,j) + U_star_2d(i+1,j)))
+          U_star = max(CS%ustar_min, 0.5*(U_star_2d(i_dc,j_dc) + U_star_2d(i_dc+1,j_dc)))
           Idecay_len_TKE(II,jj) = (absf / U_star) * CS%TKE_decay
         endif
       enddo
@@ -2384,16 +2386,16 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
         k2 = max(1,nkml)
         if (use_EOS .and. (nz>nkml)) then
           ! Find dRho/dT and dRho_dS.
-          do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i,j))
-            I = IsbB + II - 1
-            j = jsb + jj - 1
+          do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i_dc,j_dc))
+            I_dc = IsbB + II - 1
+            j_dc = jsb + jj - 1
 
             press(II,jj) = (GV%H_to_RZ*GV%g_Earth) * htot(II,jj)
             if (associated(tv%p_surf)) &
-              press(II,jj) = press(II,jj) + 0.5*(tv%p_surf(i,j)+tv%p_surf(i+1,j))
-            I_2hlay = 1.0 / (h(i,j,k2) + h(i+1,j,k2) + h_neglect)
-            T_EOS(II,jj) = ((h(i,j,k2)*tv%T(i,j,k2)) + (h(i+1,j,k2)*tv%T(i+1,j,k2))) * I_2hlay
-            S_EOS(II,jj) = ((h(i,j,k2)*tv%S(i,j,k2)) + (h(i+1,j,k2)*tv%S(i+1,j,k2))) * I_2hlay
+              press(II,jj) = press(II,jj) + 0.5*(tv%p_surf(i_dc,j_dc)+tv%p_surf(i_dc+1,j_dc))
+            I_2hlay = 1.0 / (h(i_dc,j_dc,k2) + h(i_dc+1,j_dc,k2) + h_neglect)
+            T_EOS(II,jj) = ((h(i_dc,j_dc,k2)*tv%T(i_dc,j_dc,k2)) + (h(i_dc+1,j_dc,k2)*tv%T(i_dc+1,j_dc,k2))) * I_2hlay
+            S_EOS(II,jj) = ((h(i_dc,j_dc,k2)*tv%S(i_dc,j_dc,k2)) + (h(i_dc+1,j_dc,k2)*tv%S(i_dc+1,j_dc,k2))) * I_2hlay
           enddo
           call calculate_density_derivs(T_EOS, S_EOS, press, dR_dT, dR_dS, &
                                         tv%eqn_of_state, EOSdom)
@@ -2492,12 +2494,12 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
       endif
 
       if (do_any) then
-        do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i,j))
-          I = IsbB + II - 1
-          j = jsb + jj - 1
+        do concurrent (jj=1:jje, II=1:IIe) DO_LOCALITY(local(i_dc,j_dc))
+          I_dc = IsbB + II - 1
+          j_dc = jsb + jj - 1
 
           if (do_ij(II,jj)) then
-            visc%nkml_visc_u(I,j) = k_massive(II,jj)
+            visc%nkml_visc_u(I_dc,j_dc) = k_massive(II,jj)
           endif
         enddo
       endif
@@ -2699,28 +2701,28 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
     EOSdom(2,1) = 1 ; EOSdom(2, 2) = JJe
     if (CS%dynamic_viscous_ML) then
       do_any = .false.
-      do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i,j) reduce(.or.:do_any))
-        i = isb + ii - 1
-        J = JsbB + JJ - 1
+      do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc) reduce(.or.:do_any))
+        i_dc = isb + ii - 1
+        J_dc = JsbB + JJ - 1
 
         htot(ii,JJ) = 0.0
-        if (G%mask2dCv(i,J) < 0.5) then
-          do_ij(ii,JJ) = .false. ; visc%nkml_visc_v(i,J) = nkml
+        if (G%mask2dCv(i_dc,J_dc) < 0.5) then
+          do_ij(ii,JJ) = .false. ; visc%nkml_visc_v(i_dc,J_dc) = nkml
         else
           do_ij(ii,JJ) = .true. ; do_any = .true.
           k_massive(ii,JJ) = nkml
           Thtot(ii,JJ) = 0.0 ; Shtot(ii,JJ) = 0.0 ; Rhtot(ii,JJ) = 0.0
-          vhtot(ii,JJ) = dt_Rho0 * forces%tauy(i,J)
-          uhtot(ii,JJ) = 0.25 * dt_Rho0 * ((forces%taux(I,j) + forces%taux(I-1,j+1)) + &
-                                       (forces%taux(I-1,j) + forces%taux(I,j+1)))
+          vhtot(ii,JJ) = dt_Rho0 * forces%tauy(i_dc,J_dc)
+          uhtot(ii,JJ) = 0.25 * dt_Rho0 * ((forces%taux(I_dc,j_dc) + forces%taux(I_dc-1,j_dc+1)) + &
+                                       (forces%taux(I_dc-1,j_dc) + forces%taux(I_dc,j_dc+1)))
 
           if (CS%omega_frac >= 1.0) then ; absf = 2.0*CS%omega ; else
-            absf = 0.5*(abs(G%CoriolisBu(I-1,J)) + abs(G%CoriolisBu(I,J)))
+            absf = 0.5*(abs(G%CoriolisBu(I_dc-1,J_dc)) + abs(G%CoriolisBu(I_dc,J_dc)))
             if (CS%omega_frac > 0.0) &
               absf = sqrt(CS%omega_frac*4.0*CS%omega**2 + (1.0-CS%omega_frac)*absf**2)
           endif
 
-          U_star = max(CS%ustar_min, 0.5*(U_star_2d(i,j) + U_star_2d(i,j+1)))
+          U_star = max(CS%ustar_min, 0.5*(U_star_2d(i_dc,j_dc) + U_star_2d(i_dc,j_dc+1)))
           Idecay_len_TKE(ii,JJ) = (absf / U_star) * CS%TKE_decay
 
         endif
@@ -2755,17 +2757,17 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
         if (use_EOS .and. (nz > nkml)) then
           k2 = max(1,nkml)
           ! Find dRho/dT and dRho_dS.
-          do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i,j))
-            i = isb + ii - 1
-            J = JsbB + JJ - 1
+          do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+            i_dc = isb + ii - 1
+            J_dc = JsbB + JJ - 1
 
             press(ii,JJ) = (GV%H_to_RZ * GV%g_Earth) * htot(ii,JJ)
             if (associated(tv%p_surf)) press(ii,JJ) = press(ii,JJ) + &
-              0.5*(tv%p_surf(i,j)+tv%p_surf(i,j+1))
+              0.5*(tv%p_surf(i_dc,j_dc)+tv%p_surf(i_dc,j_dc+1))
 
-            I_2hlay = 1.0 / (h(i,j,k2) + h(i,j+1,k2) + h_neglect)
-            T_EOS(ii,JJ) = ((h(i,j,k2)*tv%T(i,j,k2)) + (h(i,j+1,k2)*tv%T(i,j+1,k2))) * I_2hlay
-            S_EOS(ii,JJ) = ((h(i,j,k2)*tv%S(i,j,k2)) + (h(i,j+1,k2)*tv%S(i,j+1,k2))) * I_2hlay
+            I_2hlay = 1.0 / (h(i_dc,j_dc,k2) + h(i_dc,j_dc+1,k2) + h_neglect)
+            T_EOS(ii,JJ) = ((h(i_dc,j_dc,k2)*tv%T(i_dc,j_dc,k2)) + (h(i_dc,j_dc+1,k2)*tv%T(i_dc,j_dc+1,k2))) * I_2hlay
+            S_EOS(ii,JJ) = ((h(i_dc,j_dc,k2)*tv%S(i_dc,j_dc,k2)) + (h(i_dc,j_dc+1,k2)*tv%S(i_dc,j_dc+1,k2))) * I_2hlay
           enddo
           call calculate_density_derivs(T_EOS, S_EOS, press, dR_dT, dR_dS, &
                                         tv%eqn_of_state, EOSdom)
@@ -2868,12 +2870,12 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS, nIIB, nJ
       endif
 
       if (do_any) then
-        do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i,j))
-          i = isb + ii - 1
-          J = JsbB + JJ - 1
+        do concurrent (JJ=1:JJe, ii=1:iie) DO_LOCALITY(local(i_dc,j_dc))
+          i_dc = isb + ii - 1
+          J_dc = JsbB + JJ - 1
 
           if (do_ij(ii,JJ)) then
-            visc%nkml_visc_v(i,J) = k_massive(ii,JJ)
+            visc%nkml_visc_v(i_dc,J_dc) = k_massive(ii,JJ)
           endif
         enddo
       endif

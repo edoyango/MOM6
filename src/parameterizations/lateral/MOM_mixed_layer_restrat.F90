@@ -876,6 +876,8 @@ subroutine mixedlayer_restrat_Bodner(CS, G, GV, US, h, uhtr, vhtr, tv, forces, d
   real :: muzb            ! mu(z) at bottom of the layer [nondim]
   real :: muza            ! mu(z) at top of the layer [nondim]
   real :: dh              ! Portion of the layer thickness that is in the mixed layer [H ~> m or kg m-2]
+  real :: dh_dc           ! dh in the do concurrent loop (amdflang: a second privatizer for dh clashes
+                          ! with the omp private()) [H ~> m or kg m-2]
   real :: Z3_T3_to_m3_s3  ! Conversion factors to undo scaling and permit terms to be raised to a
                           ! fractional power [T3 m3 Z-3 s-3 ~> 1]
   real :: m2_s2_to_Z2_T2  ! Conversion factors to restore scaling after a term is raised to a
@@ -892,6 +894,8 @@ subroutine mixedlayer_restrat_Bodner(CS, G, GV, US, h, uhtr, vhtr, tv, forces, d
   integer :: jstart, jend ! The first and last row of the tile being worked on [nondim]
   integer :: istart, iend ! The first and last column of the tile being worked on [nondim]
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: k_dc         ! k in the do concurrent loop (amdflang: a second privatizer for k clashes
+                          ! with the omp private())
   logical :: Lam2_available
 
   is  = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
@@ -1152,13 +1156,13 @@ subroutine mixedlayer_restrat_Bodner(CS, G, GV, US, h, uhtr, vhtr, tv, forces, d
             call calculate_density(tv%T(:,:,kstart:kend), tv%S(:,:,kstart:kend), &
                                    p_blk, rho_blk, tv%eqn_of_state, EOSdom3)
 
-            do concurrent (j=jstart:jend, i=istart:iend) DO_LOCALITY(local(k, dh))
-              do k=kstart,kend
+            do concurrent (j=jstart:jend, i=istart:iend) DO_LOCALITY(local(k_dc, dh_dc))
+              do k_dc=kstart,kend
                 if (htot(i,j) < big_H(i,j)) then
-                  dh = min( h(i,j,k), big_H(i,j) - htot(i,j) )
+                  dh_dc = min( h(i,j,k_dc), big_H(i,j) - htot(i,j) )
                   ! Rml_blk is in [R H ~> kg m-2]
-                  Rml_blk(i,j) = Rml_blk(i,j) + dh*rho_blk(i,j,k-kstart+1)
-                  htot(i,j) = htot(i,j) + dh
+                  Rml_blk(i,j) = Rml_blk(i,j) + dh_dc*rho_blk(i,j,k_dc-kstart+1)
+                  htot(i,j) = htot(i,j) + dh_dc
                 endif
               enddo
             enddo

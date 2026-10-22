@@ -4398,6 +4398,8 @@ subroutine extract_surface_state(CS, sfc_state_in)
   real :: delT(SZI_(CS%G))   !< Depth integral of T-T_freeze [H C ~> m degC or degC kg m-2]
   logical :: use_temperature !< If true, temperature and salinity are used as state variables.
   integer :: i, j, k, is, ie, js, je, nz, numberOfErrors, ig, jg
+  integer :: k_dc     ! k in the do concurrent loops (amdflang: a second privatizer for k clashes
+                      ! with the implicitly private k of the target teams loops)
   integer :: isd, ied, jsd, jed
   integer :: iscB, iecB, jscB, jecB, isdB, iedB, jsdB, jedB
   logical :: localError
@@ -4724,12 +4726,12 @@ subroutine extract_surface_state(CS, sfc_state_in)
       sfc_state%ocean_salt(i,j) = 0.
     enddo
 
-    do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k, mass))
-      do k=1,nz
-        mass = GV%H_to_RZ * h(i,j,k)
+    do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k_dc, mass))
+      do k_dc=1,nz
+        mass = GV%H_to_RZ * h(i,j,k_dc)
         sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + mass
-        sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass * CS%tv%T(i,j,k)
-        sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1e-3 * CS%tv%S(i,j,k))
+        sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass * CS%tv%T(i,j,k_dc)
+        sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1e-3 * CS%tv%S(i,j,k_dc))
       enddo
     enddo
   else
@@ -4738,9 +4740,9 @@ subroutine extract_surface_state(CS, sfc_state_in)
         sfc_state%ocean_mass(i,j) = 0.
       enddo
 
-      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k))
-        do k=1,nz
-          sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + GV%H_to_RZ * h(i,j,k)
+      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k_dc))
+        do k_dc=1,nz
+          sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + GV%H_to_RZ * h(i,j,k_dc)
         enddo
       enddo
     endif
@@ -4750,10 +4752,10 @@ subroutine extract_surface_state(CS, sfc_state_in)
         sfc_state%ocean_heat(i,j) = 0.
       enddo
 
-      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k, mass))
-        do k=1,nz
-          mass = GV%H_to_RZ * h(i,j,k)
-          sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass * CS%tv%T(i,j,k)
+      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k_dc, mass))
+        do k_dc=1,nz
+          mass = GV%H_to_RZ * h(i,j,k_dc)
+          sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass * CS%tv%T(i,j,k_dc)
         enddo
       enddo
     endif
@@ -4763,10 +4765,10 @@ subroutine extract_surface_state(CS, sfc_state_in)
         sfc_state%ocean_salt(i,j) = 0.
       enddo
 
-      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k, mass))
-        do k=1,nz
-          mass = GV%H_to_RZ*h(i,j,k)
-          sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1e-3 * CS%tv%S(i,j,k))
+      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k_dc, mass))
+        do k_dc=1,nz
+          mass = GV%H_to_RZ*h(i,j,k_dc)
+          sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1e-3 * CS%tv%S(i,j,k_dc))
         enddo
       enddo
     endif

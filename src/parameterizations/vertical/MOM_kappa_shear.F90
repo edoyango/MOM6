@@ -264,6 +264,8 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
                         ! allocated and are being used as state variables.
   integer, dimension(3,2) :: EOSdom    !< 1-based EOS domain density deriv calculations
   integer :: is, ie, js, je, i, j, k, nz, nzc
+  integer :: i_dc, j_dc ! i and j in the do concurrent loops (amdflang: a second privatizer for i and j
+                        ! clashes with the private() of the target teams loop)
   integer :: nii, njj   ! The block sizes actually used, with 0 resolved to the full domain.
   integer :: isb, ieb   ! I-block bounds of the current block.
   integer :: jsb, jeb   ! J-block bounds of the current block.
@@ -514,12 +516,12 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
       !$omp target update to(dbuoy_dT, dbuoy_dS)
     endif
 
-    do concurrent( jj=1:jje, ii=1:iie ) DO_LOCALITY(local( f2, k, i, j ))
-      i = isb + ii - 1 ; j = jsb + jj - 1
-      if (G%mask2dT(i,j) > 0.0) then
+    do concurrent( jj=1:jje, ii=1:iie ) DO_LOCALITY(local( f2, k, i_dc, j_dc ))
+      i_dc = isb + ii - 1 ; j_dc = jsb + jj - 1
+      if (G%mask2dT(i_dc,j_dc) > 0.0) then
 
-      f2 = 0.25 * ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
-                    (G%Coriolis2Bu(I,J-1) + G%Coriolis2Bu(I-1,J)))
+      f2 = 0.25 * ((G%Coriolis2Bu(I_dc,J_dc) + G%Coriolis2Bu(I_dc-1,J_dc-1)) + &
+                    (G%Coriolis2Bu(I_dc,J_dc-1) + G%Coriolis2Bu(I_dc-1,J_dc)))
 
       call kappa_shear_column(kappa, tke, dt, nzc_2d(ii,jj), f2, dbuoy_dT, dbuoy_dS, &
                              h_lay, dz_lay, I_dz_int, kappa_avg, u, v, T, Sal, &
@@ -538,16 +540,16 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
           endif
         enddo
         if (CS%id_N2_mean>0) then ; do K=1,nz+1
-          diag_N2_mean(i,j,K) = N2_mean(ii,jj,K)
+          diag_N2_mean(i_dc,j_dc,K) = N2_mean(ii,jj,K)
         enddo ; endif
         if (CS%id_S2_mean>0) then ; do K=1,nz+1
-          diag_S2_mean(i,j,K) = S2_mean(ii,jj,K)
+          diag_S2_mean(i_dc,j_dc,K) = S2_mean(ii,jj,K)
         enddo ; endif
         if ((CS%id_N2_init>0) .or. CS%debug) then ; do K=1,nz+1
-          diag_N2_init(i,j,K) = N2_init(ii,jj,K)
+          diag_N2_init(i_dc,j_dc,K) = N2_init(ii,jj,K)
         enddo ; endif
         if ((CS%id_S2_init>0) .or. CS%debug) then ; do K=1,nz+1
-          diag_S2_init(i,j,K) = S2_init(ii,jj,K)
+          diag_S2_init(i_dc,j_dc,K) = S2_init(ii,jj,K)
         enddo ; endif
       else
         do K=1,nz+1
@@ -563,22 +565,22 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
         enddo
         do K=1,nz+1
           if (kf(ii,jj,K) == 0.0) then
-            if (CS%id_N2_mean>0) diag_N2_mean(i,j,K) = N2_mean(ii,jj,kc(ii,jj,K))
-            if (CS%id_S2_mean>0) diag_S2_mean(i,j,K) = S2_mean(ii,jj,kc(ii,jj,K))
-            if ((CS%id_N2_init>0) .or. CS%debug) diag_N2_init(i,j,K) = N2_init(ii,jj,kc(ii,jj,K))
-            if ((CS%id_S2_init>0) .or. CS%debug) diag_S2_init(i,j,K) = S2_init(ii,jj,kc(ii,jj,K))
+            if (CS%id_N2_mean>0) diag_N2_mean(i_dc,j_dc,K) = N2_mean(ii,jj,kc(ii,jj,K))
+            if (CS%id_S2_mean>0) diag_S2_mean(i_dc,j_dc,K) = S2_mean(ii,jj,kc(ii,jj,K))
+            if ((CS%id_N2_init>0) .or. CS%debug) diag_N2_init(i_dc,j_dc,K) = N2_init(ii,jj,kc(ii,jj,K))
+            if ((CS%id_S2_init>0) .or. CS%debug) diag_S2_init(i_dc,j_dc,K) = S2_init(ii,jj,kc(ii,jj,K))
           else
             if (CS%id_N2_mean>0) &
-              diag_N2_mean(i,j,K) = (1.0-kf(ii,jj,K)) * N2_mean(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
+              diag_N2_mean(i_dc,j_dc,K) = (1.0-kf(ii,jj,K)) * N2_mean(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
                                     * N2_mean(ii,jj,kc(ii,jj,K)+1)
             if (CS%id_S2_mean>0) &
-              diag_S2_mean(i,j,K) = (1.0-kf(ii,jj,K)) * S2_mean(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
+              diag_S2_mean(i_dc,j_dc,K) = (1.0-kf(ii,jj,K)) * S2_mean(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
                                     * S2_mean(ii,jj,kc(ii,jj,K)+1)
             if ((CS%id_N2_init>0) .or. CS%debug) &
-              diag_N2_init(i,j,K) = (1.0-kf(ii,jj,K)) * N2_init(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
+              diag_N2_init(i_dc,j_dc,K) = (1.0-kf(ii,jj,K)) * N2_init(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
                                     * N2_init(ii,jj,kc(ii,jj,K)+1)
             if ((CS%id_S2_init>0) .or. CS%debug) &
-              diag_S2_init(i,j,K) = (1.0-kf(ii,jj,K)) * S2_init(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
+              diag_S2_init(i_dc,j_dc,K) = (1.0-kf(ii,jj,K)) * S2_init(ii,jj,kc(ii,jj,K)) + kf(ii,jj,K) &
                                     * S2_init(ii,jj,kc(ii,jj,K)+1)
           endif
         enddo
@@ -590,26 +592,26 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
         kappa_full(ii,jj,K) = 0.0 ; tke_full(ii,jj,K) = 0.0
       enddo
       if (CS%id_N2_mean>0) then ; do K=1,nz+1
-        diag_N2_mean(i,j,K) = 0.0
+        diag_N2_mean(i_dc,j_dc,K) = 0.0
       enddo ; endif
       if (CS%id_S2_mean>0) then ; do K=1,nz+1
-        diag_S2_mean(i,j,K) = 0.0
+        diag_S2_mean(i_dc,j_dc,K) = 0.0
       enddo ; endif
       if ((CS%id_N2_init>0) .or. CS%debug) then ; do K=1,nz+1
-        diag_N2_init(i,j,K) = 0.0
+        diag_N2_init(i_dc,j_dc,K) = 0.0
       enddo ; endif
       if ((CS%id_S2_init>0) .or. CS%debug) then ; do K=1,nz+1
-        diag_S2_init(i,j,K) = 0.0
+        diag_S2_init(i_dc,j_dc,K) = 0.0
       enddo ; endif
     endif ; enddo ! end of j-loop, ! end of i-loop, !end of if (G%mask2dT(i,j) > 0.0)
 
     ! Write the results to full domain output arrays outside of ji loop to vectorize on CPU
     ! This mirrors what Calc_kappa_shear_vertex already does with kappa_full and tke_full.
-    do concurrent( K=1:nz+1, jj=1:jje, ii=1:iie ) DO_LOCALITY(local(i, j))
-      i = isb + ii - 1 ; j = jsb + jj - 1
-      kappa_io(i,j,K) = kappa_full(ii,jj,K)
-      tke_io(i,j,K) = tke_full(ii,jj,K)
-      kv_io(i,j,K) = kappa_full(ii,jj,K) * CS%Prandtl_turb
+    do concurrent( K=1:nz+1, jj=1:jje, ii=1:iie ) DO_LOCALITY(local(i_dc, j_dc))
+      i_dc = isb + ii - 1 ; j_dc = jsb + jj - 1
+      kappa_io(i_dc,j_dc,K) = kappa_full(ii,jj,K)
+      tke_io(i_dc,j_dc,K) = tke_full(ii,jj,K)
+      kv_io(i_dc,j_dc,K) = kappa_full(ii,jj,K) * CS%Prandtl_turb
     enddo
 
   enddo ; enddo ! end of the i- and j-block loops
@@ -787,6 +789,8 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   real :: H_tiny        ! A sub-roundoff thickness to use in the denominator when calculating
                         ! thickness-weighted averages [H ~> m or kg m-2]
   integer :: IsB, IeB, JsB, JeB, i, j, k, nz, nzc
+  integer :: i_dc, j_dc, nzc_dc ! i, j and nzc in the do concurrent loops (amdflang: a second privatizer
+                               ! for these clashes with the private() of the target teams loop)
   integer :: nIIB, nJJB ! The block sizes actually used, with 0 resolved to the full domain.
   integer :: delta_i, delta_j  ! The block strides, one less than the block sizes because
                                ! consecutive blocks overlap by a column and a row.
@@ -847,59 +851,59 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
                          i_lo=IsbB, i_hi=IebB_read, j_lo=JsbB, j_hi=JebB_read)
 
     if (CS%vertex_shear_OBC_bug) then
-      do concurrent( k=1:nz, JJ=1:JebB_read-JsbB+1, II=1:IIe ) DO_LOCALITY(local(I, j))
-        I = IsbB + II - 1 ; j = JsbB + JJ - 1
-        h_at_u(II,JJ,k) = G%mask2dCu(I,j) * (h(i,j,k) + h(i+1,j,k)) * 0.5
+      do concurrent( k=1:nz, JJ=1:JebB_read-JsbB+1, II=1:IIe ) DO_LOCALITY(local(I_dc, j_dc))
+        I_dc = IsbB + II - 1 ; j_dc = JsbB + JJ - 1
+        h_at_u(II,JJ,k) = G%mask2dCu(I_dc,j_dc) * (h(i_dc,j_dc,k) + h(i_dc+1,j_dc,k)) * 0.5
       enddo
-      do concurrent( k=1:nz, JJ=1:JJe, II=1:IebB_read-IsbB+1 ) DO_LOCALITY(local(i, J))
-        i = IsbB + II - 1 ; J = JsbB + JJ - 1
-        h_at_v(II,JJ,k) = G%mask2dCv(i,J) * (h(i,j,k) + h(i,j+1,k)) * 0.5
+      do concurrent( k=1:nz, JJ=1:JJe, II=1:IebB_read-IsbB+1 ) DO_LOCALITY(local(i_dc, J_dc))
+        i_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+        h_at_v(II,JJ,k) = G%mask2dCv(i_dc,J_dc) * (h(i_dc,j_dc,k) + h(i_dc,j_dc+1,k)) * 0.5
       enddo
     else
       ! Because G%mask2dCu(I,j) is zero if either G%mask2dT(i,j) or G%mask2dT(i+1,j) except at OBC
       ! faces, the following form give equivalent answers to those above unless OBCs are in use,
       ! although the former is clearly less complicated and costly.
-      do concurrent( k=1:nz, JJ=1:JebB_read-JsbB+1, II=1:IIe ) DO_LOCALITY(local(I, j))
-        I = IsbB + II - 1 ; j = JsbB + JJ - 1
-        h_at_u(II,JJ,k) = G%mask2dCu(I,j) * (G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j) * h(i+1,j,k)) / &
-                                        (G%mask2dT(i,j) + G%mask2dT(i+1,j) + 1.0e-36)
+      do concurrent( k=1:nz, JJ=1:JebB_read-JsbB+1, II=1:IIe ) DO_LOCALITY(local(I_dc, j_dc))
+        I_dc = IsbB + II - 1 ; j_dc = JsbB + JJ - 1
+        h_at_u(II,JJ,k) = G%mask2dCu(I_dc,j_dc) * (G%mask2dT(i_dc,j_dc) * h(i_dc,j_dc,k) + G%mask2dT(i_dc+1,j_dc) * h(i_dc+1,j_dc,k)) / &
+                                        (G%mask2dT(i_dc,j_dc) + G%mask2dT(i_dc+1,j_dc) + 1.0e-36)
       enddo
-      do concurrent( k=1:nz, JJ=1:JJe, II=1:IebB_read-IsbB+1 ) DO_LOCALITY(local(i, J))
-        i = IsbB + II - 1 ; J = JsbB + JJ - 1
-        h_at_v(II,JJ,k) = G%mask2dCv(i,J) * (G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k)) / &
-                                        (G%mask2dT(i,j) + G%mask2dT(i,j+1) + 1.0e-36)
+      do concurrent( k=1:nz, JJ=1:JJe, II=1:IebB_read-IsbB+1 ) DO_LOCALITY(local(i_dc, J_dc))
+        i_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+        h_at_v(II,JJ,k) = G%mask2dCv(i_dc,J_dc) * (G%mask2dT(i_dc,j_dc) * h(i_dc,j_dc,k) + G%mask2dT(i_dc,j_dc+1) * h(i_dc,j_dc+1,k)) / &
+                                        (G%mask2dT(i_dc,j_dc) + G%mask2dT(i_dc,j_dc+1) + 1.0e-36)
       enddo
     endif
 
 
     ! Interpolate the various quantities to the corners, using masks.
-    do concurrent( k=1:nz, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I_hwt, I, J))
-      I = IsbB + II - 1 ; J = JsbB + JJ - 1
-      u_vrt(II,JJ,k) = ( (u_in(I,j,k) * h_at_u(II,JJ,k)) + (u_in(I,j+1,k) * h_at_u(II,JJ+1,k)) ) / &
+    do concurrent( k=1:nz, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I_hwt, I_dc, J_dc))
+      I_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+      u_vrt(II,JJ,k) = ( (u_in(I_dc,j_dc,k) * h_at_u(II,JJ,k)) + (u_in(I_dc,j_dc+1,k) * h_at_u(II,JJ+1,k)) ) / &
                   ( (h_at_u(II,JJ,k) + h_at_u(II,JJ+1,k)) + H_tiny )
-      v_vrt(II,JJ,k) = ( (v_in(i,J,k) * h_at_v(II,JJ,k)) + (v_in(i+1,J,k) * h_at_v(II+1,JJ,k)) ) / &
+      v_vrt(II,JJ,k) = ( (v_in(i_dc,J_dc,k) * h_at_v(II,JJ,k)) + (v_in(i_dc+1,J_dc,k) * h_at_v(II+1,JJ,k)) ) / &
                   ( (h_at_v(II,JJ,k) + h_at_v(II+1,JJ,k)) + H_tiny )
-      I_hwt = 1.0 / (((G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) + &
-                      (G%mask2dT(i+1,j) * h(i+1,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k))) + &
+      I_hwt = 1.0 / (((G%mask2dT(i_dc,j_dc) * h(i_dc,j_dc,k) + G%mask2dT(i_dc+1,j_dc+1) * h(i_dc+1,j_dc+1,k)) + &
+                      (G%mask2dT(i_dc+1,j_dc) * h(i_dc+1,j_dc,k) + G%mask2dT(i_dc,j_dc+1) * h(i_dc,j_dc+1,k))) + &
                      GV%H_subroundoff)
       if (use_temperature) then
-        T_vrt(II,JJ,k) = ( (G%mask2dT(i,j) * (h(i,j,k) * T_in(i,j,k)) + &
-                       G%mask2dT(i+1,j+1) * (h(i+1,j+1,k) * T_in(i+1,j+1,k))) + &
-                      (G%mask2dT(i+1,j) * (h(i+1,j,k) * T_in(i+1,j,k)) + &
-                       G%mask2dT(i,j+1) * (h(i,j+1,k) * T_in(i,j+1,k))) ) * I_hwt
-        S_vrt(II,JJ,k) = ( (G%mask2dT(i,j) * (h(i,j,k) * S_in(i,j,k)) + &
-                       G%mask2dT(i+1,j+1) * (h(i+1,j+1,k) * S_in(i+1,j+1,k))) + &
-                      (G%mask2dT(i+1,j) * (h(i+1,j,k) * S_in(i+1,j,k)) + &
-                       G%mask2dT(i,j+1) * (h(i,j+1,k) * S_in(i,j+1,k))) ) * I_hwt
+        T_vrt(II,JJ,k) = ( (G%mask2dT(i_dc,j_dc) * (h(i_dc,j_dc,k) * T_in(i_dc,j_dc,k)) + &
+                       G%mask2dT(i_dc+1,j_dc+1) * (h(i_dc+1,j_dc+1,k) * T_in(i_dc+1,j_dc+1,k))) + &
+                      (G%mask2dT(i_dc+1,j_dc) * (h(i_dc+1,j_dc,k) * T_in(i_dc+1,j_dc,k)) + &
+                       G%mask2dT(i_dc,j_dc+1) * (h(i_dc,j_dc+1,k) * T_in(i_dc,j_dc+1,k))) ) * I_hwt
+        S_vrt(II,JJ,k) = ( (G%mask2dT(i_dc,j_dc) * (h(i_dc,j_dc,k) * S_in(i_dc,j_dc,k)) + &
+                       G%mask2dT(i_dc+1,j_dc+1) * (h(i_dc+1,j_dc+1,k) * S_in(i_dc+1,j_dc+1,k))) + &
+                      (G%mask2dT(i_dc+1,j_dc) * (h(i_dc+1,j_dc,k) * S_in(i_dc+1,j_dc,k)) + &
+                       G%mask2dT(i_dc,j_dc+1) * (h(i_dc,j_dc+1,k) * S_in(i_dc,j_dc+1,k))) ) * I_hwt
       endif
-      h_vrt(II,JJ,k) = ((G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) + &
-                   (G%mask2dT(i+1,j) * h(i+1,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k)) ) / &
-                  ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
-                   (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) + 1.0e-36 )
-      dz_vrt(II,JJ,k) = ((G%mask2dT(i,j) * dz_3d(II,JJ,k) + G%mask2dT(i+1,j+1) * dz_3d(II+1,JJ+1,k)) + &
-                    (G%mask2dT(i+1,j) * dz_3d(II+1,JJ,k) + G%mask2dT(i,j+1) * dz_3d(II,JJ+1,k)) ) / &
-                   ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
-                    (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) + 1.0e-36 )
+      h_vrt(II,JJ,k) = ((G%mask2dT(i_dc,j_dc) * h(i_dc,j_dc,k) + G%mask2dT(i_dc+1,j_dc+1) * h(i_dc+1,j_dc+1,k)) + &
+                   (G%mask2dT(i_dc+1,j_dc) * h(i_dc+1,j_dc,k) + G%mask2dT(i_dc,j_dc+1) * h(i_dc,j_dc+1,k)) ) / &
+                  ((G%mask2dT(i_dc,j_dc) + G%mask2dT(i_dc+1,j_dc+1)) + &
+                   (G%mask2dT(i_dc+1,j_dc) + G%mask2dT(i_dc,j_dc+1)) + 1.0e-36 )
+      dz_vrt(II,JJ,k) = ((G%mask2dT(i_dc,j_dc) * dz_3d(II,JJ,k) + G%mask2dT(i_dc+1,j_dc+1) * dz_3d(II+1,JJ+1,k)) + &
+                    (G%mask2dT(i_dc+1,j_dc) * dz_3d(II+1,JJ,k) + G%mask2dT(i_dc,j_dc+1) * dz_3d(II,JJ+1,k)) ) / &
+                   ((G%mask2dT(i_dc,j_dc) + G%mask2dT(i_dc+1,j_dc+1)) + &
+                    (G%mask2dT(i_dc+1,j_dc) + G%mask2dT(i_dc,j_dc+1)) + 1.0e-36 )
 !       h_vrt(II,JJ,k) = 0.25*((h(i,j,k) + h(i+1,j+1,k)) + (h(i+1,j,k) + h(i,j+1,k)))
 !       h_vrt(II,JJ,k) = (((h(i,j,k)**2) + (h(i+1,j+1,k)**2)) + &
 !                    ((h(i+1,j,k)**2) + (h(i,j+1,k)**2))) * I_hwt
@@ -1137,20 +1141,20 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   !---------------------------------------
   ! Work on each column.
   !---------------------------------------
-    do concurrent( JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(nzc, f2, I, J))
-      I = IsbB + II - 1 ; J = JsbB + JJ - 1
-      if ((G%mask2dCu(I,j) + G%mask2dCu(I,j+1)) + &
-          (G%mask2dCv(i,J) + G%mask2dCv(i+1,J)) > 0.0) then
-        nzc = nzc_2d(II,JJ)
-        f2 = G%Coriolis2Bu(I,J)
+    do concurrent( JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(nzc_dc, f2, I_dc, J_dc))
+      I_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+      if ((G%mask2dCu(I_dc,j_dc) + G%mask2dCu(I_dc,j_dc+1)) + &
+          (G%mask2dCv(i_dc,J_dc) + G%mask2dCv(i_dc+1,J_dc)) > 0.0) then
+        nzc_dc = nzc_2d(II,JJ)
+        f2 = G%Coriolis2Bu(I_dc,J_dc)
 
-        call kappa_shear_column(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, &
+        call kappa_shear_column(kappa, tke, dt, nzc_dc, f2, dbuoy_dT, dbuoy_dS, &
                                 h_lay, dz_lay, I_dz_int, kappa_avg, u, v, T, Sal, &
                                 tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
                                 CS, GV, US, nIIB, nJJB, II, JJ)
 
       ! Extrapolate from the vertically reduced grid back to the original layers.
-        if (nz == nzc) then
+        if (nz == nzc_dc) then
           do K=1,nz+1
             kappa_full(II,JJ,K) = kappa_avg(II,JJ,K)
             if (CS%all_layer_TKE_bug) then
@@ -1160,16 +1164,16 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
             endif
           enddo
           if (CS%id_N2_mean>0) then ; do K=1,nz+1
-            diag_N2_mean(I,J,K) = N2_mean(II,JJ,K)
+            diag_N2_mean(I_dc,J_dc,K) = N2_mean(II,JJ,K)
           enddo ; endif
           if (CS%id_S2_mean>0) then ; do K=1,nz+1
-            diag_S2_mean(I,J,K) = S2_mean(II,JJ,K)
+            diag_S2_mean(I_dc,J_dc,K) = S2_mean(II,JJ,K)
           enddo ; endif
           if ((CS%id_N2_init>0) .or. CS%debug) then ; do K=1,nz+1
-            diag_N2_init(I,J,K) = N2_init(II,JJ,K)
+            diag_N2_init(I_dc,J_dc,K) = N2_init(II,JJ,K)
           enddo ; endif
           if ((CS%id_S2_init>0) .or. CS%debug) then ; do K=1,nz+1
-            diag_S2_init(I,J,K) = S2_init(II,JJ,K)
+            diag_S2_init(I_dc,J_dc,K) = S2_init(II,JJ,K)
           enddo ; endif
         else
           do K=1,nz+1
@@ -1185,22 +1189,22 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
           enddo
           do K=1,nz+1
             if (kf(II,JJ,K) == 0.0) then
-              if (CS%id_N2_mean>0) diag_N2_mean(I,J,K) = N2_mean(II,JJ,kc(II,JJ,K))
-              if (CS%id_S2_mean>0) diag_S2_mean(I,J,K) = S2_mean(II,JJ,kc(II,JJ,K))
-              if ((CS%id_N2_init>0) .or. CS%debug) diag_N2_init(I,J,K) = N2_init(II,JJ,kc(II,JJ,K))
-              if ((CS%id_S2_init>0) .or. CS%debug) diag_S2_init(I,J,K) = S2_init(II,JJ,kc(II,JJ,K))
+              if (CS%id_N2_mean>0) diag_N2_mean(I_dc,J_dc,K) = N2_mean(II,JJ,kc(II,JJ,K))
+              if (CS%id_S2_mean>0) diag_S2_mean(I_dc,J_dc,K) = S2_mean(II,JJ,kc(II,JJ,K))
+              if ((CS%id_N2_init>0) .or. CS%debug) diag_N2_init(I_dc,J_dc,K) = N2_init(II,JJ,kc(II,JJ,K))
+              if ((CS%id_S2_init>0) .or. CS%debug) diag_S2_init(I_dc,J_dc,K) = S2_init(II,JJ,kc(II,JJ,K))
             else
               if (CS%id_N2_mean>0) &
-                diag_N2_mean(I,J,K) = (1.0-kf(II,JJ,K)) * N2_mean(II,JJ,kc(II,JJ,K)) + &
+                diag_N2_mean(I_dc,J_dc,K) = (1.0-kf(II,JJ,K)) * N2_mean(II,JJ,kc(II,JJ,K)) + &
                                       kf(II,JJ,K) * N2_mean(II,JJ,kc(II,JJ,K)+1)
               if (CS%id_S2_mean>0) &
-                diag_S2_mean(I,J,K) = (1.0-kf(II,JJ,K)) * S2_mean(II,JJ,kc(II,JJ,K)) + &
+                diag_S2_mean(I_dc,J_dc,K) = (1.0-kf(II,JJ,K)) * S2_mean(II,JJ,kc(II,JJ,K)) + &
                                       kf(II,JJ,K) * S2_mean(II,JJ,kc(II,JJ,K)+1)
               if ((CS%id_N2_init>0) .or. CS%debug) &
-                diag_N2_init(I,J,K) = (1.0-kf(II,JJ,K)) * N2_init(II,JJ,kc(II,JJ,K)) + &
+                diag_N2_init(I_dc,J_dc,K) = (1.0-kf(II,JJ,K)) * N2_init(II,JJ,kc(II,JJ,K)) + &
                                       kf(II,JJ,K) * N2_init(II,JJ,kc(II,JJ,K)+1)
               if ((CS%id_S2_init>0) .or. CS%debug) &
-                diag_S2_init(I,J,K) = (1.0-kf(II,JJ,K)) * S2_init(II,JJ,kc(II,JJ,K)) + &
+                diag_S2_init(I_dc,J_dc,K) = (1.0-kf(II,JJ,K)) * S2_init(II,JJ,kc(II,JJ,K)) + &
                                       kf(II,JJ,K) * S2_init(II,JJ,kc(II,JJ,K)+1)
             endif
           enddo
@@ -1214,18 +1218,18 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
 
     ! Store the results for restarts or interpolation back to tracer points.
     if (CS%VS_viscosity_bug) then
-      do concurrent( K=1:nz+1, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I, J))
-        I = IsbB + II - 1 ; J = JsbB + JJ - 1
-        kappa_vertex(I,J,K) = kappa_full(II,JJ,K)
-        tke_io(I,J,K) = G%mask2dBu(I,J) * tke_full(II,JJ,K)
-        kv_io(I,J,K) = ( G%mask2dBu(I,J) * kappa_vertex(I,J,K) ) * Prandtl_turb
+      do concurrent( K=1:nz+1, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I_dc, J_dc))
+        I_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+        kappa_vertex(I_dc,J_dc,K) = kappa_full(II,JJ,K)
+        tke_io(I_dc,J_dc,K) = G%mask2dBu(I_dc,J_dc) * tke_full(II,JJ,K)
+        kv_io(I_dc,J_dc,K) = ( G%mask2dBu(I_dc,J_dc) * kappa_vertex(I_dc,J_dc,K) ) * Prandtl_turb
       enddo
     else
-      do concurrent( K=1:nz+1, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I, J))
-        I = IsbB + II - 1 ; J = JsbB + JJ - 1
-        kappa_vertex(I,J,K) = kappa_full(II,JJ,K)
-        tke_io(I,J,K) = tke_full(II,JJ,K)
-        kv_io(I,J,K) = kappa_vertex(I,J,K) * Prandtl_turb
+      do concurrent( K=1:nz+1, JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I_dc, J_dc))
+        I_dc = IsbB + II - 1 ; J_dc = JsbB + JJ - 1
+        kappa_vertex(I_dc,J_dc,K) = kappa_full(II,JJ,K)
+        tke_io(I_dc,J_dc,K) = tke_full(II,JJ,K)
+        kv_io(I_dc,J_dc,K) = kappa_vertex(I_dc,J_dc,K) * Prandtl_turb
       enddo
     endif
 
@@ -1248,19 +1252,19 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
       jebB = min(jsbB + delta_j - 1, G%jec)
 
       ! +2 so that we write h_vrt over the entire nIIB x nJJB extent
-      do concurrent( k=1:nz, jj=1:jebB-jsbB+2, ii=1:iebB-isbB+2 ) DO_LOCALITY(local(I, J))
-        I = isbB + ii - 2 ; J = jsbB + jj - 2
-        h_vrt(ii,jj,k) = ((G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) + &
-                     (G%mask2dT(i+1,j) * h(i+1,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k)) ) / &
-                    ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
-                     (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) + 1.0e-36 )
+      do concurrent( k=1:nz, jj=1:jebB-jsbB+2, ii=1:iebB-isbB+2 ) DO_LOCALITY(local(I_dc, J_dc))
+        I_dc = isbB + ii - 2 ; J_dc = jsbB + jj - 2
+        h_vrt(ii,jj,k) = ((G%mask2dT(i_dc,j_dc) * h(i_dc,j_dc,k) + G%mask2dT(i_dc+1,j_dc+1) * h(i_dc+1,j_dc+1,k)) + &
+                     (G%mask2dT(i_dc+1,j_dc) * h(i_dc+1,j_dc,k) + G%mask2dT(i_dc,j_dc+1) * h(i_dc,j_dc+1,k)) ) / &
+                    ((G%mask2dT(i_dc,j_dc) + G%mask2dT(i_dc+1,j_dc+1)) + &
+                     (G%mask2dT(i_dc+1,j_dc) + G%mask2dT(i_dc,j_dc+1)) + 1.0e-36 )
       enddo
 
       if (CS%VS_GeometricMean) then
         ! +1 so that we only read h_vrt over delta_i/j
         do concurrent( K=2:nz, jj=1:jebB-jsbB+1, ii=1:iebB-isbB+1 ) &
-                     DO_LOCALITY(local(h_SW, h_NE, h_NW, h_SE, I_htot, I, J))
-          I = isbB + ii - 1 ; J = jsbB + jj - 1
+                     DO_LOCALITY(local(h_SW, h_NE, h_NW, h_SE, I_htot, I_dc, J_dc))
+          I_dc = isbB + ii - 1 ; J_dc = jsbB + jj - 1
           h_SW = 0.5 * (h_vrt(ii,jj,k) + h_vrt(ii,jj,k-1))
           h_NE = 0.5 * (h_vrt(ii+1,jj+1,k) + h_vrt(ii+1,jj+1,k-1))
           h_NW = 0.5 * (h_vrt(ii,jj+1,k) + h_vrt(ii,jj+1,k-1))
@@ -1269,33 +1273,33 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
             !  The geometric mean is zero if any component is zero, hence the need to use a floor
             !  on the value of kappa_trunc in regions on boundaries of shear zones.
             I_htot = 1.0 / ((h_SW + h_NE) + (h_NW + h_SE))
-            kappa_io(i,j,K) = G%mask2dT(i,j) * mks_to_HZ_T * &
-                            ( ((GV%HZ_T_to_MKS * max(kappa_vertex(I-1,J-1,K), CS%VS_GeoMean_Kdmin))**(h_SW*I_htot) * &
-                               (GV%HZ_T_to_MKS * max(kappa_vertex(I,J,K), CS%VS_GeoMean_Kdmin))**(h_NE*I_htot)) * &
-                              ((GV%HZ_T_to_MKS * max(kappa_vertex(I-1,J,K), CS%VS_GeoMean_Kdmin))**(h_NW*I_htot) * &
-                               (GV%HZ_T_to_MKS * max(kappa_vertex(I,J-1,K), CS%VS_GeoMean_Kdmin))**(h_SE*I_htot)) )
+            kappa_io(i_dc,j_dc,K) = G%mask2dT(i_dc,j_dc) * mks_to_HZ_T * &
+                            ( ((GV%HZ_T_to_MKS * max(kappa_vertex(I_dc-1,J_dc-1,K), CS%VS_GeoMean_Kdmin))**(h_SW*I_htot) * &
+                               (GV%HZ_T_to_MKS * max(kappa_vertex(I_dc,J_dc,K), CS%VS_GeoMean_Kdmin))**(h_NE*I_htot)) * &
+                              ((GV%HZ_T_to_MKS * max(kappa_vertex(I_dc-1,J_dc,K), CS%VS_GeoMean_Kdmin))**(h_NW*I_htot) * &
+                               (GV%HZ_T_to_MKS * max(kappa_vertex(I_dc,J_dc-1,K), CS%VS_GeoMean_Kdmin))**(h_SE*I_htot)) )
           else
             ! If all points have zero thickness, the thickness-weighted geometric mean is undefined, so use
             ! the non-thickness weighted geometric mean instead.
-            kappa_io(i,j,K) = G%mask2dT(i,j) * sqrt(sqrt( &
-              (max(kappa_vertex(I-1,J-1,K),CS%VS_GeoMean_Kdmin) * max(kappa_vertex(I,J,K),CS%VS_GeoMean_Kdmin)) * &
-              (max(kappa_vertex(I-1,J,K),CS%VS_GeoMean_Kdmin) * max(kappa_vertex(I,J-1,K),CS%VS_GeoMean_Kdmin)) ))
+            kappa_io(i_dc,j_dc,K) = G%mask2dT(i_dc,j_dc) * sqrt(sqrt( &
+              (max(kappa_vertex(I_dc-1,J_dc-1,K),CS%VS_GeoMean_Kdmin) * max(kappa_vertex(I_dc,J_dc,K),CS%VS_GeoMean_Kdmin)) * &
+              (max(kappa_vertex(I_dc-1,J_dc,K),CS%VS_GeoMean_Kdmin) * max(kappa_vertex(I_dc,J_dc-1,K),CS%VS_GeoMean_Kdmin)) ))
           endif
         enddo
       else   ! Use thickness-weighted arithmetic mean diffusivities.
         ! +1 so that we only read h_vrt over delta_i/j
         do concurrent( K=2:nz, jj=1:jebB-jsbB+1, ii=1:iebB-isbB+1 ) &
-                     DO_LOCALITY(local(h_SW, h_NE, h_NW, h_SE, I_htot, I, J))
-          I = isbB + ii - 1 ; J = jsbB + jj - 1
+                     DO_LOCALITY(local(h_SW, h_NE, h_NW, h_SE, I_htot, I_dc, J_dc))
+          I_dc = isbB + ii - 1 ; J_dc = jsbB + jj - 1
           h_SW = 0.5 * (h_vrt(ii,jj,k) + h_vrt(ii,jj,k-1))
           h_NE = 0.5 * (h_vrt(ii+1,jj+1,k) + h_vrt(ii+1,jj+1,k-1))
           h_NW = 0.5 * (h_vrt(ii,jj+1,k) + h_vrt(ii,jj+1,k-1))
           h_SE = 0.5 * (h_vrt(ii+1,jj,k) + h_vrt(ii+1,jj,k-1))
           ! The following expression is a thickness weighted arithmetic mean at tracer points:
           I_htot = 1.0 / (((h_SW + h_NE) + (h_NW + h_SE)) + GV%H_subroundoff)
-          kappa_io(i,j,K) = G%mask2dT(i,j) * &
-            (((kappa_vertex(I-1,J-1,K)*h_SW) + (kappa_vertex(I,J,K)*h_NE)) + &
-             ((kappa_vertex(I-1,J,K)*h_NW) + (kappa_vertex(I,J-1,K)*h_SE))) * I_htot
+          kappa_io(i_dc,j_dc,K) = G%mask2dT(i_dc,j_dc) * &
+            (((kappa_vertex(I_dc-1,J_dc-1,K)*h_SW) + (kappa_vertex(I_dc,J_dc,K)*h_NE)) + &
+             ((kappa_vertex(I_dc-1,J_dc,K)*h_NW) + (kappa_vertex(I_dc,J_dc-1,K)*h_SE))) * I_htot
         enddo
       endif
     enddo ; enddo ! end of the i- and j-block loops
