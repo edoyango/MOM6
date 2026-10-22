@@ -652,6 +652,10 @@ subroutine increment_block_ints(array, is, ie, js, je, descale, ints_sum, &
     ! The EPF representation of each array element
   integer(kind=int64) :: block_sum(efp_digits), array_sum(efp_digits)
     ! The cumulant per-block and total array EFP sums
+#if defined(__flang__) && __flang_major__ < 23
+  integer(kind=int64) :: bs1, bs2, bs3, bs4, bs5, bs6
+    ! The efp_digits (= 6) elements of block_sum, reduced as scalars
+#endif
   real :: r, rmag
     ! Local array element value and its magnitude [a]
   real :: max_pos, max_neg, block_max_pos, block_max_neg
@@ -717,10 +721,21 @@ subroutine increment_block_ints(array, is, ie, js, je, descale, ints_sum, &
     block_max_neg = 0.
 
     ! Compute the sum of each block
+#if defined(__flang__) && __flang_major__ < 23
+    ! amdflang 22 (ROCm 7.2.4) faults on an offloaded reduction of the array block_sum, and loses the
+    ! result of an offloaded do concurrent reduce(), so reduce the elements of block_sum as scalars.
+    bs1 = 0 ; bs2 = 0 ; bs3 = 0 ; bs4 = 0 ; bs5 = 0 ; bs6 = 0
+    !$omp target teams distribute parallel do collapse(2) private(r, e, rmag, lnan, lovf) &
+    !$omp   reduction(+: bs1, bs2, bs3, bs4, bs5, bs6) &
+    !$omp   reduction(max: block_max_pos, block_max_neg, inan, iovf) &
+    !$omp   map(tofrom: bs1, bs2, bs3, bs4, bs5, bs6, block_max_pos, block_max_neg, inan, iovf)
+    do j=jbs,jbe ; do i=ibs,ibe
+#else
     do concurrent (j=jbs:jbe, i=ibs:ibe) &
         DO_LOCALITY(local(r, e, rmag, lnan, lovf)) &
         DO_LOCALITY(reduce(+: block_sum)) &
         DO_LOCALITY(reduce(max: block_max_pos, block_max_neg, inan, iovf))
+#endif
 
       ! Convert array(i,j) to EFP form
       r = descale * array(i,j)
@@ -737,8 +752,15 @@ subroutine increment_block_ints(array, is, ie, js, je, descale, ints_sum, &
       endif
 
       ! Add the EFP result (including potential carry bits)
+#if defined(__flang__) && __flang_major__ < 23
+      bs1 = bs1 + e(1) ; bs2 = bs2 + e(2) ; bs3 = bs3 + e(3)
+      bs4 = bs4 + e(4) ; bs5 = bs5 + e(5) ; bs6 = bs6 + e(6)
+    enddo ; enddo
+    block_sum(:) = [bs1, bs2, bs3, bs4, bs5, bs6]
+#else
       block_sum(:) = block_sum(:) + e(:)
     enddo
+#endif
 
     array_sum(:) = array_sum(:) + block_sum(:)
 
