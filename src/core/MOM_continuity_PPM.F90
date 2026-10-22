@@ -1539,6 +1539,8 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   real, dimension(SZIB_(G), SZJ_(G), SZK_(G)), &
                                     intent(in) :: por_face_areaU !< fractional open area of U-faces [nondim]
   ! Local variables
+  type(ocean_OBC_type), pointer :: OBC_null => NULL() ! Passed as OBC to zonal_flux_adjust: amdflang
+                                    ! crashes on a target region that names an absent optional pointer.
   real, dimension(niblock,njblock) :: &
     du0           ! The barotropic velocity increment that gives 0 transport [L T-1 ~> m s-1].
   real, dimension(niblock,njblock) :: &
@@ -1587,7 +1589,7 @@ subroutine set_zonal_BT_cont(u, h_in, h_W, h_E, BT_cont, uh_tot_0, duhdu_tot_0, 
   enddo
   call zonal_flux_adjust(u, h_in, h_W, h_E, zeros, uh_tot_0, duhdu_tot_0, du0, &
                         du_max_CFL, du_min_CFL, dt, G, GV, US, CS, visc_rem, &
-                        i_start, i_end, j_start, j_end, do_I, por_face_areaU, niblock, njblock, uh_tmp)
+                        i_start, i_end, j_start, j_end, do_I, por_face_areaU, niblock, njblock, uh_tmp, OBC=OBC_null)
 
   ! Determine the westerly- and easterly- fluxes.  Choose a sufficiently
   ! negative velocity correction for the easterly-flux, and a sufficiently
@@ -2561,6 +2563,8 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, vh_tot_0, dvhdv_tot_0, 
   real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
                           intent(in) :: por_face_areaV !< fractional open area of V-faces [nondim]
   ! Local variables
+  type(ocean_OBC_type), pointer :: OBC_null => NULL() ! Passed as OBC to meridional_flux_adjust: amdflang
+                                    ! crashes on a target region that names an absent optional pointer.
   real, dimension(niblock,njblock) :: &
     dv0, &        ! The barotropic velocity increment that gives 0 transport [L T-1 ~> m s-1].
     dvL, dvR, &   ! The barotropic velocity increments that give the southerly
@@ -2609,7 +2613,7 @@ subroutine set_merid_BT_cont(v, h_in, h_S, h_N, BT_cont, vh_tot_0, dvhdv_tot_0, 
   call meridional_flux_adjust(v, h_in, h_S, h_N, zeros, vh_tot_0, dvhdv_tot_0, dv0, &
                               dv_max_CFL, dv_min_CFL, dt, G, GV, US, CS, visc_rem, &
                               i_start, i_end, j_start, j_end, do_I, por_face_areaV, &
-                              niblock, njblock, vh_tmp)
+                              niblock, njblock, vh_tmp, OBC=OBC_null)
 
   !   Determine the southerly- and northerly- fluxes.  Choose a sufficiently
   ! negative velocity correction for the northerly-flux, and a sufficiently
