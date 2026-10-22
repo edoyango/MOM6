@@ -1930,7 +1930,7 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, 
         !$omp target data map(alloc: p0)
 
         !$omp target
-        !$omp parallel loop collapse(2)
+        !$omp parallel do collapse(2)
         do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1
           p0(i,j) = 0.
         enddo ; enddo
@@ -1942,7 +1942,7 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, ADp, 
       endif
 
       !$omp target
-      !$omp parallel loop collapse(2)
+      !$omp parallel do collapse(2)
       do j=Jsq,Jeq+1 ; do i=Isq,Ieq+1
         dM(i,j) = (CS%GFS_scale - 1.0) * (G_Rho0 * rho_in_situ(i,j)) * (e(i,j,1) - G%Z_ref)
       enddo ; enddo
