@@ -601,6 +601,7 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   real :: accel_underflow  ! An acceleration magnitude that is so small that values that are less
                            ! than this are diagnosed as 0 [L T-2 ~> m s-2].
   real :: zDS, h_a         ! Temporary thickness variables used with direct_stress [H ~> m or kg m-2]
+  logical :: stress_done ! True once the direct wind stress has been spread over Hmix
   real :: hfr              ! Temporary ratio of thicknesses used with direct_stress [nondim]
   real :: surface_stress(SZIB_(G), SZJB_(G))
     ! The same as stress, unless the wind stress is applied as a body force
@@ -699,13 +700,15 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       surface_stress(I,j) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%taux(I,j)
-      do k=1,nz
-        h_a = 0.5 * (h(i,j,k) + h(i+1,j,k)) + h_neglect
-        hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
-        u(I,j,k) = u(I,j,k) + I_Hmix * hfr * stress
-        if (associated(ADp%du_dt_str)) ADp%du_dt_str(I,j,k) = (I_Hmix * hfr * stress) * Idt
-        zDS = zDS + h_a ; if (zDS >= Hmix) exit
-      enddo
+      ! amdflang does not offload a do concurrent loop whose body contains EXIT, so the EXIT is a flag.
+      stress_done = .false.
+      do k=1,nz ; if (.not.stress_done) then
+          h_a = 0.5 * (h(i,j,k) + h(i+1,j,k)) + h_neglect
+          hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
+          u(I,j,k) = u(I,j,k) + I_Hmix * hfr * stress
+          if (associated(ADp%du_dt_str)) ADp%du_dt_str(I,j,k) = (I_Hmix * hfr * stress) * Idt
+          zDS = zDS + h_a ; stress_done = (zDS >= Hmix)
+      endif ; enddo
     enddo
   else
     do concurrent (j=G%jsc:G%jec, I=Isq:Ieq)
@@ -928,13 +931,15 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       surface_stress(i,J) = 0.0
       zDS = 0.0
       stress = dt_Rho0 * forces%tauy(i,J)
-      do k=1,nz
-        h_a = 0.5 * (h(i,J,k) + h(i,J+1,k)) + h_neglect
-        hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
-        v(i,J,k) = v(i,J,k) + I_Hmix * hfr * stress
-        if (associated(ADp%dv_dt_str)) ADp%dv_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
-        zDS = zDS + h_a ; if (zDS >= Hmix) exit
-      enddo
+      ! amdflang does not offload a do concurrent loop whose body contains EXIT, so the EXIT is a flag.
+      stress_done = .false.
+      do k=1,nz ; if (.not.stress_done) then
+          h_a = 0.5 * (h(i,J,k) + h(i,J+1,k)) + h_neglect
+          hfr = 1.0 ; if ((zDS+h_a) > Hmix) hfr = (Hmix - zDS) / h_a
+          v(i,J,k) = v(i,J,k) + I_Hmix * hfr * stress
+          if (associated(ADp%dv_dt_str)) ADp%dv_dt_str(i,J,k) = (I_Hmix * hfr * stress) * Idt
+          zDS = zDS + h_a ; stress_done = (zDS >= Hmix)
+      endif ; enddo
     enddo
   else
     do concurrent (J=Jsq:Jeq, i=is:ie)
