@@ -3176,8 +3176,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       vel_report(I,j) = 3.0e8 * US%m_s_to_L_T
     enddo
 
-    do concurrent (k=1:nz, j=js:je, I=Isq:Ieq) &
-        DO_LOCALITY(reduce(.or.: trunc_any, do_any_write))
+    ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+    ! k is a serial loop inside each (j,i) point so that dowrite and vel_report are not updated by several threads.
+    !$omp target teams distribute parallel do collapse(2) reduction(.or.: trunc_any, do_any_write) &
+    !$omp   private(CFL) map(tofrom: trunc_any, do_any_write)
+    do j=js,je ; do I=Isq,Ieq ; do k=1,nz
       if (abs(u(I,j,k)) < CS%vel_underflow) u(I,j,k) = 0.0
       if (u(I,j,k) < 0.0) then
         CFL = (-u(I,j,k) * dt) * (G%dy_Cu(I,j) * G%IareaT(i+1,j))
@@ -3190,7 +3193,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
         do_any_write = .true.
         vel_report(I,j) = min(vel_report(I,j), abs(u(I,j,k)))
       endif
-    enddo
+    enddo ; enddo ; enddo
 
     do concurrent (j=js:je, I=Isq:Ieq, dowrite(I,j))
       u_old(I,j,:) = u(I,j,:)
@@ -3198,7 +3201,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
     if (trunc_any) then
       ntrunc = 0
-      do concurrent (k=1:nz, j=js:je, I=Isq:Ieq) DO_LOCALITY(reduce(+: ntrunc))
+      ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) map(tofrom: ntrunc)
+      do k=1,nz ; do j=js,je ; do I=Isq,Ieq
         if ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
           u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
           if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
@@ -3208,7 +3213,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
           if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
               (CS%h_u(I,j,k) > H_report)) ntrunc = ntrunc + 1
         endif
-      enddo
+      enddo ; enddo ; enddo
       CS%ntrunc = CS%ntrunc + ntrunc
     endif
 
@@ -3222,7 +3227,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
-    do concurrent (k=1:nz, j=js:je, I=Isq:Ieq) DO_LOCALITY(reduce(+: ntrunc))
+    ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) map(tofrom: ntrunc)
+    do k=1,nz ; do j=js,je ; do I=Isq,Ieq
       if (abs(u(I,j,k)) < CS%vel_underflow) then ; u(I,j,k) = 0.0
       elseif ((u(I,j,k) * (dt * G%dy_Cu(I,j))) * G%IareaT(i+1,j) < -CS%CFL_trunc) then
         u(I,j,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i+1,j) / (dt * G%dy_Cu(I,j)))
@@ -3233,7 +3240,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
         if (((I >= G%isc) .and. (I <= G%iec) .and. (j >= G%jsc) .and. (j <= G%jec)) .and. &
             (CS%h_u(I,j,k) > H_report)) ntrunc = ntrunc + 1
       endif
-    enddo
+    enddo ; enddo ; enddo
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
 
@@ -3246,8 +3253,11 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
       vel_report(i,J) = 3.0e8 * US%m_s_to_L_T
     enddo
 
-    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie) &
-        DO_LOCALITY(reduce(.or.: trunc_any, do_any_write))
+    ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+    ! k is a serial loop inside each (j,i) point so that dowrite and vel_report are not updated by several threads.
+    !$omp target teams distribute parallel do collapse(2) reduction(.or.: trunc_any, do_any_write) &
+    !$omp   private(CFL) map(tofrom: trunc_any, do_any_write)
+    do J=Jsq,Jeq ; do i=is,ie ; do k=1,nz
       if (abs(v(i,J,k)) < CS%vel_underflow) v(i,J,k) = 0.0
       if (v(i,J,k) < 0.0) then
         CFL = (-v(i,J,k) * dt) * (G%dx_Cv(i,J) * G%IareaT(i,j+1))
@@ -3260,7 +3270,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
         do_any_write = .true.
         vel_report(i,J) = min(vel_report(i,J), abs(v(i,J,k)))
       endif
-    enddo
+    enddo ; enddo ; enddo
 
     do concurrent (J=Jsq:Jeq, i=is:ie, dowrite(i,J))
       v_old(i,J,:) = v(i,J,:)
@@ -3268,7 +3278,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
 
     if (trunc_any) then
       ntrunc = 0
-      do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie) DO_LOCALITY(reduce(+: ntrunc))
+      ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+      !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) map(tofrom: ntrunc)
+      do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
         if ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
           v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
           if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
@@ -3278,7 +3290,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
           if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
               (CS%h_v(i,J,k) > H_report)) ntrunc = ntrunc + 1
         endif
-      enddo
+      enddo ; enddo ; enddo
       CS%ntrunc = CS%ntrunc + ntrunc
     endif
 
@@ -3292,7 +3304,9 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
     endif
   else  ! Do not report accelerations leading to large velocities.
     ntrunc = 0
-    do concurrent (k=1:nz, J=Jsq:Jeq, i=is:ie) DO_LOCALITY(reduce(+: ntrunc))
+    ! amdflang 7.2.4 loses the result of a do concurrent reduce() offloaded to the GPU, so explicit OpenMP.
+    !$omp target teams distribute parallel do collapse(3) reduction(+: ntrunc) map(tofrom: ntrunc)
+    do k=1,nz ; do J=Jsq,Jeq ; do i=is,ie
       if (abs(v(i,J,k)) < CS%vel_underflow) then ; v(i,J,k) = 0.0
       elseif ((v(i,J,k) * (dt * G%dx_Cv(i,J))) * G%IareaT(i,j+1) < -CS%CFL_trunc) then
         v(i,J,k) = (-0.9*CS%CFL_trunc) * (G%areaT(i,j+1) / (dt * G%dx_Cv(i,J)))
@@ -3303,7 +3317,7 @@ subroutine vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, US, CS
         if (((i >= G%isc) .and. (i <= G%iec) .and. (J >= G%jsc) .and. (J <= G%jec)) .and. &
             (CS%h_v(i,J,k) > H_report)) ntrunc = ntrunc + 1
       endif
-    enddo
+    enddo ; enddo ; enddo
     CS%ntrunc = CS%ntrunc + ntrunc
   endif
 
