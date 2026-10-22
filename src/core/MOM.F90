@@ -4500,9 +4500,12 @@ subroutine extract_surface_state(CS, sfc_state_in)
   endif
 
   ! copy Hml into sfc_state, so that caps can access it
+  ! The pointer CS%Hml is not mapped elsewhere, and amdflang 22 does not map its data implicitly.
+  !$omp target data map(to: CS%Hml)
   do concurrent (j=js:je, i=is:ie)
     sfc_state%Hml(i,j) = CS%Hml(i,j)
   enddo
+  !$omp end target data
 
   if (CS%Hmix < 0.0) then  ! A bulk mixed layer is in use, so layer 1 has the properties
     if (use_temperature) then ; do concurrent (j=js:je, i=is:ie)
