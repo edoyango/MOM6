@@ -152,7 +152,7 @@ module procedure exp_repro
   ! Nonfinites must be handled first to prevent their appearance in
   ! calculations, which may raise unwanted floating point signals.
 
-  xb = transfer(x, int_mold)
+  xb = real_to_bits(x)
   nonfinite = iand(xb, pos_inf_bits) == pos_inf_bits
 
   if (nonfinite) then
@@ -174,7 +174,7 @@ module procedure exp_repro
 
   ! Compute Z = ndiv K + idiv, where r = x - Z (ln 2 / ndiv)
   Z = NEAREST_INT(xc * n_ln2)
-  Zi = transfer(Z + round_bias, int_mold) - round_bias_bits
+  Zi = real_to_bits(Z + round_bias) - round_bias_bits
 
   ! Compute the subdivision index and integer offset K
   idiv = iand(Zi, idiv_mask)
@@ -211,11 +211,11 @@ module procedure exp_repro
   j = merge(Kbias, 0_int_kind, K < Kmin) + merge(-Kbias, 0_int_kind, K > Kmax)
 
   ! Get the bit representation of e
-  eb = transfer(e, int_mold)
+  eb = real_to_bits(e)
 
   ! Rescale to e to exp(x), possibly including the j bias.
   eb = eb + ishft(k + j, expbit)
-  a = transfer(eb, real_mold)
+  a = bits_to_real(eb)
 
   ! Undo the 2**j bias as floating point multiplication.
   ! - For "normals", this has no effect.
@@ -223,7 +223,7 @@ module procedure exp_repro
   ! - For resolvable K beyond this range, it triggers an over/underflow.
   ! - Extreme values of K have already been filtered out by the min/max step.
   fb = ishft(int(expbias, int_kind) - j, expbit)
-  a = a * transfer(fb, real_mold)
+  a = a * bits_to_real(fb)
 end procedure exp_repro
 
 

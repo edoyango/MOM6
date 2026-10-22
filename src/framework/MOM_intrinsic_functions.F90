@@ -7,7 +7,7 @@
 module MOM_intrinsic_functions
 
 use iso_fortran_env, only : stdout => output_unit, stderr => error_unit
-use iso_fortran_env, only : int64
+use iso_fortran_env, only : int32, int64
 
 implicit none ; private
 
@@ -40,8 +40,44 @@ integer, parameter :: expbit = signbit - explen
   !< Position of lowest exponent bit
 integer, parameter :: fraclen = expbit
   !< Length of fractional part
+integer, parameter :: bits_kind = merge(int64, int32, storage_size(1.) > storage_size(0_int32))
+  !< Integer kind with the same storage size as default real
 
 contains
+
+!> The bit pattern of a real number, as an integer of the same size.  This is transfer(x, 0_bits_kind).
+pure function real_to_bits(x) result(xb)
+  !$omp declare target
+  real, intent(in) :: x  !< A real number in arbitrary units [A]
+  integer(kind=bits_kind) :: xb  !< The bit pattern of x
+#if defined(__flang__) && __flang_major__ < 23
+  ! amdflang 22 (ROCm 7.2.4) has no device runtime for transfer(), so use storage association.
+  real :: xr
+  integer(kind=bits_kind) :: xi
+  equivalence (xr, xi)
+
+  xr = x ; xb = xi
+#else
+  xb = transfer(x, 0_bits_kind)
+#endif
+end function real_to_bits
+
+!> The real number with a given bit pattern, the inverse of real_to_bits.  This is transfer(xb, 0.).
+pure function bits_to_real(xb) result(x)
+  !$omp declare target
+  integer(kind=bits_kind), intent(in) :: xb  !< The bit pattern of a real number
+  real :: x  !< The real number with bit pattern xb in arbitrary units [A]
+#if defined(__flang__) && __flang_major__ < 23
+  ! amdflang 22 (ROCm 7.2.4) has no device runtime for transfer(), so use storage association.
+  real :: xr
+  integer(kind=bits_kind) :: xi
+  equivalence (xr, xi)
+
+  xi = xb ; x = xr
+#else
+  x = transfer(xb, 0.)
+#endif
+end function bits_to_real
 
 !> Evaluate the inverse cosh, either using a math library or an
 !! equivalent expression
@@ -211,7 +247,7 @@ pure subroutine rescale_cbrt(a, x, e_r, s_a)
     ! Exponent of `x`
 
   ! Pack bits of a into xb and extract its exponent and sign.
-  xb = transfer(a, 1_int64)
+  xb = real_to_bits(a)
   s_a = ibits(xb, signbit, 1)
   e_a = ibits(xb, expbit, explen) - bias
 
@@ -252,7 +288,7 @@ pure subroutine rescale_cbrt(a, x, e_r, s_a)
   ! Insert the new 11-bit exponent into xb and write to x and extend the
   ! bitcount to 12, so that the sign bit is zero and x is always positive.
   call mvbits(e_x + bias, 0, explen + 1, xb, fraclen)
-  x = transfer(xb, 1.)
+  x = bits_to_real(xb)
 end subroutine rescale_cbrt
 
 
@@ -274,11 +310,11 @@ pure function descale(x, e_a, s_a) result(a)
     ! Biased exponent of x
 
   ! Apply the corrected exponent and sign to x.
-  xb = transfer(x, 1_int64)
+  xb = real_to_bits(x)
   e_x = ibits(xb, expbit, explen)
   call mvbits(e_a + e_x, 0, explen, xb, expbit)
   call mvbits(s_a, 0, 1, xb, signbit)
-  a = transfer(xb, 1.)
+  a = bits_to_real(xb)
 end function descale
 
 
