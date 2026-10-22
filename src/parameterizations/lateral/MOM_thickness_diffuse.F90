@@ -1849,15 +1849,17 @@ subroutine thickness_diffuse_full(h, e, Kh_u, Kh_v, tv, uhD, vhD, cg1, dt, G, GV
 end subroutine thickness_diffuse_full
 
 !> Tridiagonal solver for streamfunction at interfaces
+!! The arrays are assumed-shape because the callers pass non-contiguous sections, which explicit-shape
+!! arguments would copy in and out through the Fortran runtime (absent on the device for amdflang 22).
 pure subroutine streamfn_solver(nk, c2_h, hN2, sfn)
-  integer,               intent(in)    :: nk   !< Number of layers
-  real, dimension(nk),   intent(in)    :: c2_h !< Wave speed squared over thickness in layers, rescaled to
-                                               !! [H L2 Z-2 T-2 ~> m s-2 or kg m-2 s-2]
-  real, dimension(nk+1), intent(in)    :: hN2  !< Thickness times N2 at interfaces times rescaling factors
-                                               !! [H L2 Z-2 T-2 ~> m s-2 or kg m-2 s-2]
-  real, dimension(nk+1), intent(inout) :: sfn  !< Streamfunction [H L2 T-1 ~> m3 s-1 or kg s-1] or arbitrary units
-                                               !! On entry, equals diffusivity times slope.
-                                               !! On exit, equals the streamfunction.
+  integer,            intent(in)    :: nk   !< Number of layers
+  real, dimension(:), intent(in)    :: c2_h !< Wave speed squared over thickness in the nk layers, rescaled to
+                                            !! [H L2 Z-2 T-2 ~> m s-2 or kg m-2 s-2]
+  real, dimension(:), intent(in)    :: hN2  !< Thickness times N2 at the nk+1 interfaces times rescaling factors
+                                            !! [H L2 Z-2 T-2 ~> m s-2 or kg m-2 s-2]
+  real, dimension(:), intent(inout) :: sfn  !< Streamfunction at the nk+1 interfaces [H L2 T-1 ~> m3 s-1 or kg s-1]
+                                            !! or arbitrary units.  On entry, equals diffusivity times slope.
+                                            !! On exit, equals the streamfunction.
   ! Local variables
   real :: c1(nk)  ! The dependence of the final streamfunction on the values below [nondim]
   real :: d1      ! The complement of c1(k) (i.e., 1 - c1(k)) [nondim]
