@@ -415,7 +415,7 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
       do k=1,nz ; if (domore_k(k) > 0) then
         ! First, advect zonally.
         call advect_x(Reg%Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
-                      isv, iev, jsv-stencil, jev+stencil, k, G, GV, US, &
+                      isv, iev, jsv-stencil, jev+stencil, k, nkk, G, GV, US, &
                       flux_type_ctrl, advect_this_tracer, local_advect_scheme)
       endif ; enddo
 
@@ -446,7 +446,7 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
       do k=1,nz ; if (domore_k(k) > 0) then
         ! Next, advect zonally.
         call advect_x(Reg%Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
-                      isv, iev, jsv, jev, k, G, GV, US, flux_type_ctrl, advect_this_tracer, &
+                      isv, iev, jsv, jev, k, nkk, G, GV, US, flux_type_ctrl, advect_this_tracer, &
                       local_advect_scheme)
 
         ! Update domore_k(k) for the next iteration
@@ -546,7 +546,7 @@ end subroutine advect_tracer
 !> This subroutine does 1-d flux-form advection in the zonal direction using
 !! a monotonic piecewise linear scheme.
 subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
-                    is, ie, js, je, k, G, GV, US, flux_type, advect_this_tracer,  &
+                    is, ie, js, je, k, nkk, G, GV, US, flux_type, advect_this_tracer,  &
                     advect_schemes)
   type(ocean_grid_type),                     intent(inout) :: G    !< The ocean's grid structure
   type(verticalGrid_type),                   intent(in)    :: GV   !< The ocean's vertical grid structure
@@ -567,6 +567,8 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
   integer,                                   intent(in)    :: js  !< The starting tracer j-index to work on
   integer,                                   intent(in)    :: je  !< The ending tracer j-index to work on
   integer,                                   intent(in)    :: k   !< The k-level to work on
+  integer,                                   intent(in)    :: nkk     !< The k block size that sizes the work arrays
+                                                                  !! [nondim]
   type(unit_scale_type),                     intent(in)    :: US  !< A dimensional unit scaling type
   integer,                                   intent(in)    :: flux_type !< Indicates whether uhtr, vhtr are the flux
                                                                         !! due to the residual (= 0), resolved (= 1),
@@ -576,8 +578,9 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
 
   real, dimension(SZI_(G),ntr) :: &
     slope_x             ! The concentration slope per grid point [conc].
-  real, dimension(SZIB_(G),SZJ_(G),ntr) :: &
-    flux_x              ! The tracer flux across a boundary [H L2 conc ~> m3 conc or kg conc].
+  real, dimension(SZIB_(G),SZJ_(G),ntr,nkk) :: &
+    flux_x              ! The tracer flux across a boundary in each layer of the k block
+                        ! [H L2 conc ~> m3 conc or kg conc].
   real, dimension(SZI_(G),ntr) :: &
     T_tmp               ! The copy of the tracer concentration at constant i,k [conc].
 
@@ -605,7 +608,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
   real :: dA            ! Difference between the reconstruction tracer edge values [conc]
   real :: mA            ! Average of the reconstruction tracer edge values [conc]
   real :: a6            ! Curvature of the reconstruction tracer values [conc]
-  logical :: do_i(SZI_(G),SZJ_(G))     ! If true, work on given points.
+  logical :: do_i(SZI_(G),SZJ_(G),nkk)     ! If true, work on given points in each layer of the k block.
   logical :: usePLMslope, domore_u_jk
   integer :: i, j, m, n, i_up, stencil, ntr_id
   type(OBC_segment_type), pointer :: segment=>NULL()
@@ -772,10 +775,10 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
           a6 = 6.*Tc - 3. * (aR + aL) ! Curvature
 
           if (uhh(I) >= 0.0) then
-            flux_x(I,j,m) = uhh(I)*( aR - 0.5 * CFL(I) * ( &
+            flux_x(I,j,m,1) = uhh(I)*( aR - 0.5 * CFL(I) * ( &
                  ( aR - aL ) - a6 * ( 1. - 2./3. * CFL(I) ) ) )
           else
-            flux_x(I,j,m) = uhh(I)*( aL + 0.5 * CFL(I) * ( &
+            flux_x(I,j,m,1) = uhh(I)*( aL + 0.5 * CFL(I) * ( &
                  ( aR - aL ) + a6 * ( 1. - 2./3. * CFL(I) ) ) )
           endif
         enddo
@@ -788,7 +791,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
            !flux_x(I,j,m) = uhh(I)*( aR - 0.5 * (aR-aL) * CFL(I) )
             ! Alternative implementation of PLM
             Tc = T_tmp(i,m)
-            flux_x(I,j,m) = uhh(I)*( Tc + 0.5 * slope_x(i,m) * ( 1. - CFL(I) ) )
+            flux_x(I,j,m,1) = uhh(I)*( Tc + 0.5 * slope_x(i,m) * ( 1. - CFL(I) ) )
           else
             ! Indirect implementation of PLM
            !aL = Tr(m)%t(i+1,j,k) - 0.5 * slope_x(i+1,m)
@@ -796,7 +799,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
            !flux_x(I,j,m) = uhh(I)*( aL + 0.5 * (aR-aL) * CFL(I) )
             ! Alternative implementation of PLM
             Tc = T_tmp(i+1,m)
-            flux_x(I,j,m) = uhh(I)*( Tc - 0.5 * slope_x(i+1,m) * ( 1. - CFL(I) ) )
+            flux_x(I,j,m,1) = uhh(I)*( Tc - 0.5 * slope_x(i+1,m) * ( 1. - CFL(I) ) )
           endif
         enddo
       endif
@@ -819,7 +822,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
                 do concurrent (m=1:OBC%segment(n)%tr_Reg%ntseg)
                   ntr_id = OBC%segment(n)%tr_reg%Tr(m)%ntr_index
                   if (advect_this_tracer(ntr_id)) then
-                    flux_x(I,j,ntr_id) = uhh(I) &
+                    flux_x(I,j,ntr_id,1) = uhh(I) &
                         * OBC%segment(n)%tr_Reg%Tr(m)%tres(I,j,k)
                   endif
                 enddo
@@ -844,7 +847,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
               do concurrent (m=1:OBC%segment(n)%tr_Reg%ntseg)
                 ntr_id = OBC%segment(n)%tr_reg%Tr(m)%ntr_index
                 if (advect_this_tracer(ntr_id)) then
-                  flux_x(I,j,ntr_id) = uhh(I) &
+                  flux_x(I,j,ntr_id,1) = uhh(I) &
                       * OBC%segment(n)%tr_Reg%Tr(m)%tres(I,j,k)
                 endif
               enddo
@@ -862,16 +865,16 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
     enddo
     do concurrent (i=is:ie)
       if ((uhh(I) /= 0.0) .or. (uhh(I-1) /= 0.0)) then
-        do_i(i,j) = .true.
+        do_i(i,j,1) = .true.
         hlst(i) = hprev(i,j,k)
         hprev(i,j,k) = hprev(i,j,k) - (uhh(I) - uhh(I-1))
-        if (hprev(i,j,k) <= 0.0) then ; do_i(i,j) = .false.
+        if (hprev(i,j,k) <= 0.0) then ; do_i(i,j,1) = .false.
         elseif (hprev(i,j,k) < h_neglect*G%areaT(i,j)) then
           hlst(i) = hlst(i) + (h_neglect*G%areaT(i,j) - hprev(i,j,k))
           Ihnew(i) = 1.0 / (h_neglect*G%areaT(i,j))
         else ;  Ihnew(i) = 1.0 / hprev(i,j,k) ; endif
       else
-        do_i(i,j) = .false.
+        do_i(i,j,1) = .false.
       endif
     enddo
 
@@ -881,7 +884,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
           .and. (OBC%specified_u_BCs_exist_globally .or. OBC%open_u_BCs_exist_globally)) then
         ! OBC_DIRECTION_E / OBC_DIRECTION_W on the west / east edge
         do concurrent (i=is:ie, OBC%segnum_u(I-1,j) > 0 .or. OBC%segnum_u(I,j) < 0)
-          do_i(i,j) = .false.
+          do_i(i,j,1) = .false.
         enddo
       endif
     endif
@@ -891,10 +894,10 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
       ! Update tracer
       if (flux_type == 0) then ! Only update tracer if using residual flux
         do concurrent (i=is:ie)
-          if (do_i(i,j)) then
+          if (do_i(i,j,1)) then
             if (Ihnew(i) > 0.0) then
               Tr(m)%t(i,j,k) = (Tr(m)%t(i,j,k) * hlst(i) &
-                  - (flux_x(I,j,m) - flux_x(I-1,j,m))) * Ihnew(i)
+                  - (flux_x(I,j,m,1) - flux_x(I-1,j,m,1))) * Ihnew(i)
             endif
           endif
         enddo
@@ -904,29 +907,29 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
       if (flux_type == 0) then
         if (associated(Tr(m)%ad_x)) then
           do concurrent (I=is-1:ie)
-            Tr(m)%ad_x(I,j,k) = Tr(m)%ad_x(I,j,k) + flux_x(I,j,m) * Idt
+            Tr(m)%ad_x(I,j,k) = Tr(m)%ad_x(I,j,k) + flux_x(I,j,m,1) * Idt
           enddo
         endif
 
         ! diagnose convergence of flux_x (do not use the Ihnew(i) part of the logic).
         ! division by areaT to get into W/m2 for heat and kg/(s*m2) for salt.
         if (associated(Tr(m)%advection_xy)) then
-          do concurrent (i=is:ie, do_i(i,j))
+          do concurrent (i=is:ie, do_i(i,j,1))
             Tr(m)%advection_xy(i,j,k) = Tr(m)%advection_xy(i,j,k) &
-                - (flux_x(I,j,m) - flux_x(I-1,j,m)) * Idt * G%IareaT(i,j)
+                - (flux_x(I,j,m,1) - flux_x(I-1,j,m,1)) * Idt * G%IareaT(i,j)
           enddo
         endif
       elseif (flux_type == 1) then
         if (associated(Tr(m)%ad_x_resolved)) then
           do concurrent (I=is-1:ie)
             Tr(m)%ad_x_resolved(I,j,k) = Tr(m)%ad_x_resolved(I,j,k) &
-                + flux_x(I,j,m) * Idt
+                + flux_x(I,j,m,1) * Idt
           enddo
         endif
       elseif (flux_type == 2) then
         if (associated(Tr(m)%ad_x_param)) then
           do concurrent (I=is-1:ie)
-            Tr(m)%ad_x_param(I,j,k) = Tr(m)%ad_x_param(I,j,k) + flux_x(I,j,m)*Idt
+            Tr(m)%ad_x_param(I,j,k) = Tr(m)%ad_x_param(I,j,k) + flux_x(I,j,m,1)*Idt
           enddo
         endif
       endif
@@ -947,7 +950,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, ntr, Idt, &
     do m=1,ntr ; if (associated(Tr(m)%ad2d_x)) then
       do concurrent (j=js:je, domore_u_initial(j,k))
         do concurrent (I=is-1:ie)
-          Tr(m)%ad2d_x(I,j) = Tr(m)%ad2d_x(I,j) + flux_x(I,j,m) * Idt
+          Tr(m)%ad2d_x(I,j) = Tr(m)%ad2d_x(I,j) + flux_x(I,j,m,1) * Idt
         enddo
       enddo
     endif ; enddo ! End of m-loop.
