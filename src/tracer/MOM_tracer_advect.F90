@@ -1371,10 +1371,10 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
 
   ! Calculate new tracer concentration in each cell after accounting
   ! for the j-direction fluxes.
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  !$omp target teams loop collapse(2) private(hlst, Ihnew, i, m, k)
+  do kk=1,kke ; do j=js,je
     k = ksb + kk - 1
-    !$omp target teams loop private(hlst, Ihnew, i, m)
-    do j=js,je ; if (do_j_tr(j,kk)) then
+    if (do_j_tr(j,kk)) then
       do concurrent (i=is:ie)
         if ((vhh(i,J,kk) /= 0.0) .or. (vhh(i,J-1,kk) /= 0.0)) then
           do_i(i,j,kk) = .true.
@@ -1417,8 +1417,8 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
           endif
         endif
       enddo
-    endif ; enddo ! End of j-loop.
-  endif ; enddo ! End of k-loop over the tracer updates.
+    endif
+  enddo ; enddo ! End of the k- and j-loops.
 
   ! Do user controlled underflow of the tracer concentrations.
   if (flux_type == 0) then ! Only update tracer if using residual flux
