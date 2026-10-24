@@ -974,16 +974,15 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
   endif
 
   if (flux_type == 0) then
-    do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
-      k = ksb + kk - 1
-      do m=1,ntr ; if (associated(Tr(m)%ad2d_x)) then
-        do concurrent (j=js:je, domore_u_initial(j,kk))
-          do concurrent (I=is-1:ie)
+    do m=1,ntr ; if (associated(Tr(m)%ad2d_x)) then
+      ! The layers of the block are added in order, as if they were handled one at a time.
+      do concurrent (j=js:je, I=is-1:ie) DO_LOCALITY(local(kk))
+        do kk=1,kke
+          if (domore_u_initial(j,kk)) &
             Tr(m)%ad2d_x(I,j) = Tr(m)%ad2d_x(I,j) + flux_x(I,j,m,kk) * Idt
-          enddo
         enddo
-      endif ; enddo ! End of m-loop.
-    endif ; enddo ! End of k-loop.
+      enddo
+    endif ; enddo ! End of m-loop.
   endif
 
   !$omp target exit data &
