@@ -964,14 +964,13 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
   ! Do user controlled underflow of the tracer concentrations.
   if (flux_type == 0) then
     ! Only update tracer if using residual flux
-    do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+    do concurrent (kk=1:kke, m=1:ntr, &
+                   (domore_k(ksb + kk - 1) > 0) .and. (Tr(m)%conc_underflow > 0.0)) DO_LOCALITY(local(k))
       k = ksb + kk - 1
-      do concurrent (m=1:ntr, Tr(m)%conc_underflow > 0.0)
-        do concurrent (j=js:je, i=is:ie)
-          if (abs(Tr(m)%t(i,j,k)) < Tr(m)%conc_underflow) Tr(m)%t(i,j,k) = 0.0
-        enddo
+      do concurrent (j=js:je, i=is:ie)
+        if (abs(Tr(m)%t(i,j,k)) < Tr(m)%conc_underflow) Tr(m)%t(i,j,k) = 0.0
       enddo
-    endif ; enddo
+    enddo
   endif
 
   if (flux_type == 0) then
