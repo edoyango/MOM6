@@ -627,11 +627,8 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
   logical :: usePLMslope, domore_u_jk
   integer :: i, j, k, kk, kke, m, n, i_up, stencil, ntr_id
   type(OBC_segment_type), pointer :: segment=>NULL()
-  logical, dimension(SZJ_(G),SZK_(GV)) :: domore_u_initial
-
-  ! keep a local copy of the initial values of domore_u, which is to be used when computing ad2d_x
-  ! diagnostic at the end of this subroutine.
-  domore_u_initial = domore_u
+  logical :: domore_u_initial(SZJ_(G),nkk)     ! If true, there was more advection to be done in this u-row of a
+                                               ! layer of the k block when this subroutine was called.
 
   kke = keb - ksb + 1
 
@@ -651,12 +648,20 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
   ! do I=is-1,ie ; CFL(I) = 0.0 ; enddo
 
   !$omp target enter data &
-  !$omp   map(alloc: slope_x, T_tmp, uhh, CFL, hlst, Ihnew, do_i, flux_x)
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  !$omp   map(alloc: slope_x, T_tmp, uhh, CFL, hlst, Ihnew, do_i, flux_x, domore_u_initial)
+
+  ! Keep a local copy of the initial values of domore_u in the layers that are being worked on.  It selects
+  ! the rows to work on and is used when computing the ad2d_x diagnostic at the end of this subroutine.
+  do concurrent (kk=1:kke, j=js:je) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    !$omp target teams loop private(slope_x, T_tmp, uhh, CFL, hlst, Ihnew, Tp, dMx, dMn, m, i, n, &
-    !$omp                           ntr_id, hup, hlos, i_up, Tc, Tm, aL, aR, dA, mA, a6, domore_u_jk)
-    do j=js,je ; if (domore_u(j,k)) then
+    domore_u_initial(j,kk) = (domore_k(k) > 0) .and. domore_u(j,k)
+  enddo
+
+  !$omp target teams loop collapse(2) private(slope_x, T_tmp, uhh, CFL, hlst, Ihnew, Tp, dMx, dMn, m, i, n, &
+  !$omp                           ntr_id, hup, hlos, i_up, Tc, Tm, aL, aR, dA, mA, a6, domore_u_jk, k)
+  do kk=1,kke ; do j=js,je
+    k = ksb + kk - 1
+    if (domore_u_initial(j,kk)) then
       domore_u_jk = .false.
 
       ! Calculate the i-direction profiles (slopes) of each tracer that is being advected.
@@ -953,8 +958,8 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
           endif
         endif
       enddo
-    endif ; enddo ! End of j-loop.
-  endif ; enddo ! End of k-loop over the zonal fluxes.
+    endif
+  enddo ; enddo ! End of the k- and j-loops.
 
   ! Do user controlled underflow of the tracer concentrations.
   if (flux_type == 0) then
@@ -973,7 +978,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
     do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
       k = ksb + kk - 1
       do m=1,ntr ; if (associated(Tr(m)%ad2d_x)) then
-        do concurrent (j=js:je, domore_u_initial(j,k))
+        do concurrent (j=js:je, domore_u_initial(j,kk))
           do concurrent (I=is-1:ie)
             Tr(m)%ad2d_x(I,j) = Tr(m)%ad2d_x(I,j) + flux_x(I,j,m,kk) * Idt
           enddo
@@ -983,7 +988,7 @@ subroutine advect_x(Tr, hprev, uhr, uh_neglect, OBC, domore_u, domore_k, ntr, Id
   endif
 
   !$omp target exit data &
-  !$omp   map(release: slope_x, T_tmp, uhh, CFL, hlst, Ihnew, do_i, flux_x)
+  !$omp   map(release: slope_x, T_tmp, uhh, CFL, hlst, Ihnew, do_i, flux_x, domore_u_initial)
 end subroutine advect_x
 
 !> This subroutine does 1-d flux-form advection using a monotonic piecewise
