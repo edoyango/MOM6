@@ -1119,34 +1119,32 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
 
   ! Calculate the j-direction profiles (slopes) of each tracer that
   ! is being advected.
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
-    k = ksb + kk - 1
-    if (usePLMslope) then
-      do concurrent (j=js-stencil:je+stencil, do_j_tr(j,kk))
-        do concurrent (m=1:ntr, i=is:ie, advect_this_tracer(m))
-          !if (ABS(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k)) < &
-          !    ABS(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k))) then
-          !  maxslope = 4.0*(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k))
-          !else
-          !  maxslope = 4.0*(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k))
-          !endif
-          !if ((Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k))*(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k)) < 0.0) then
-          !  slope_y(i,m,j) = 0.0
-          !elseif (ABS(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j-1,k))<ABS(maxslope)) then
-          !  slope_y(i,m,j) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) * &
-          !                 0.5*(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j-1,k))
-          !else
-          !  slope_y(i,m,j) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) * 0.5*maxslope
-          !endif
-          Tp = Tr(m)%t(i,j+1,k) ; Tc = Tr(m)%t(i,j,k) ; Tm = Tr(m)%t(i,j-1,k)
-          dMx = max(Tp, Tc, Tm) - Tc
-          dMn = Tc - min(Tp, Tc, Tm)
-          slope_y(i,m,j,kk) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) &
-              * sign( min(0.5*abs(Tp-Tm), 2.0*dMx, 2.0*dMn), Tp-Tm )
-        enddo
-      enddo ! End of i-, m-, & j- loops.
-    endif ! usePLMslope
-  endif ; enddo
+  if (usePLMslope) then
+    do concurrent (kk=1:kke, j=js-stencil:je+stencil, do_j_tr(j,kk))
+      do concurrent (m=1:ntr, i=is:ie, advect_this_tracer(m)) DO_LOCALITY(local(k))
+        k = ksb + kk - 1
+        !if (ABS(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k)) < &
+        !    ABS(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k))) then
+        !  maxslope = 4.0*(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k))
+        !else
+        !  maxslope = 4.0*(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k))
+        !endif
+        !if ((Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j,k))*(Tr(m)%t(i,j,k)-Tr(m)%t(i,j-1,k)) < 0.0) then
+        !  slope_y(i,m,j) = 0.0
+        !elseif (ABS(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j-1,k))<ABS(maxslope)) then
+        !  slope_y(i,m,j) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) * &
+        !                 0.5*(Tr(m)%t(i,j+1,k)-Tr(m)%t(i,j-1,k))
+        !else
+        !  slope_y(i,m,j) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) * 0.5*maxslope
+        !endif
+        Tp = Tr(m)%t(i,j+1,k) ; Tc = Tr(m)%t(i,j,k) ; Tm = Tr(m)%t(i,j-1,k)
+        dMx = max(Tp, Tc, Tm) - Tc
+        dMn = Tc - min(Tp, Tc, Tm)
+        slope_y(i,m,j,kk) = G%mask2dCv(i,J) * G%mask2dCv(i,J-1) &
+            * sign( min(0.5*abs(Tp-Tm), 2.0*dMx, 2.0*dMn), Tp-Tm )
+      enddo
+    enddo ! End of i-, m-, j-, & k- loops.
+  endif ! usePLMslope
 
   ! make a copy of the tracers in case values need to be overridden for OBCs
 
