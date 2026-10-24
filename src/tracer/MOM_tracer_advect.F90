@@ -1431,42 +1431,44 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
     enddo
   endif
 
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
-    k = ksb + kk - 1
-    if (flux_type == 0) then
-      do m=1,ntr ; if (associated(Tr(m)%ad_y)) then
-        do concurrent (J=js-1:je, domore_v_initial(J,kk))
-          do concurrent (i=is:ie)
-            Tr(m)%ad_y(i,J,k) = Tr(m)%ad_y(i,J,k) + flux_y(i,m,J,kk)*Idt
-          enddo
+  if (flux_type == 0) then
+    do m=1,ntr ; if (associated(Tr(m)%ad_y)) then
+      do concurrent (kk=1:kke, J=js-1:je, domore_v_initial(J,kk)) DO_LOCALITY(local(k))
+        k = ksb + kk - 1
+        do concurrent (i=is:ie)
+          Tr(m)%ad_y(i,J,k) = Tr(m)%ad_y(i,J,k) + flux_y(i,m,J,kk)*Idt
         enddo
-      endif ; enddo
+      enddo
+    endif ; enddo
 
-      do m=1,ntr ; if (associated(Tr(m)%ad2d_y)) then
-        do concurrent (J=js-1:je, domore_v_initial(J,kk))
-          do concurrent (i=is:ie)
+    do m=1,ntr ; if (associated(Tr(m)%ad2d_y)) then
+      ! The layers of the block are added in order, as if they were handled one at a time.
+      do concurrent (J=js-1:je, i=is:ie) DO_LOCALITY(local(kk))
+        do kk=1,kke
+          if (domore_v_initial(J,kk)) &
             Tr(m)%ad2d_y(i,J) = Tr(m)%ad2d_y(i,J) + flux_y(i,m,J,kk)*Idt
-          enddo
         enddo
-      endif ; enddo
-    elseif (flux_type == 1) then
-      do m=1,ntr ; if (associated(Tr(m)%ad_y_resolved)) then
-        do concurrent (J=js-1:je, domore_v_initial(J,kk))
-          do concurrent (i=is:ie)
-            Tr(m)%ad_y_resolved(i,J,k) = Tr(m)%ad_y_resolved(i,J,k) + flux_y(i,m,J,kk)*Idt
-          enddo
+      enddo
+    endif ; enddo
+  elseif (flux_type == 1) then
+    do m=1,ntr ; if (associated(Tr(m)%ad_y_resolved)) then
+      do concurrent (kk=1:kke, J=js-1:je, domore_v_initial(J,kk)) DO_LOCALITY(local(k))
+        k = ksb + kk - 1
+        do concurrent (i=is:ie)
+          Tr(m)%ad_y_resolved(i,J,k) = Tr(m)%ad_y_resolved(i,J,k) + flux_y(i,m,J,kk)*Idt
         enddo
-      endif ; enddo
-    elseif (flux_type == 2) then
-      do m=1,ntr ; if (associated(Tr(m)%ad_y_param)) then
-        do concurrent (J=js-1:je, domore_v_initial(J,kk))
-          do concurrent (i=is:ie)
-            Tr(m)%ad_y_param(i,J,k) = Tr(m)%ad_y_param(i,J,k) + flux_y(i,m,J,kk)*Idt
-          enddo
+      enddo
+    endif ; enddo
+  elseif (flux_type == 2) then
+    do m=1,ntr ; if (associated(Tr(m)%ad_y_param)) then
+      do concurrent (kk=1:kke, J=js-1:je, domore_v_initial(J,kk)) DO_LOCALITY(local(k))
+        k = ksb + kk - 1
+        do concurrent (i=is:ie)
+          Tr(m)%ad_y_param(i,J,k) = Tr(m)%ad_y_param(i,J,k) + flux_y(i,m,J,kk)*Idt
         enddo
-      endif ; enddo
-    endif
-  endif ; enddo ! End of k-loop over the diagnostics.
+      enddo
+    endif ; enddo
+  endif
 
   !$omp target exit data map(release: vhh, T_tmp, slope_y, flux_y, domore_v_initial, do_j_tr, do_i)
 end subroutine advect_y
