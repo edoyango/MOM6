@@ -433,9 +433,9 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
                         isv, iev, jsv, jev, ksb, keb, nkk, G, GV, US, flux_type_ctrl, &
                         advect_this_tracer, local_advect_scheme)
 
-          do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+          ! Update domore_k for the next iteration
+          do concurrent (kk=1:kke, domore_k(ksb + kk - 1) > 0) DO_LOCALITY(local(domore_k_tmp, k))
             k = ksb + kk - 1
-            ! Update domore_k(k) for the next iteration
             domore_k_tmp = 0
             do concurrent (j=jsv-stencil:jev+stencil, domore_u(j,k)) DO_LOCALITY(reduce(max:domore_k_tmp))
               domore_k_tmp = 1
@@ -444,7 +444,7 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
               domore_k_tmp = 1
             enddo
             domore_k(k) = domore_k_tmp
-          endif ; enddo
+          enddo
         endif
       enddo
     else
@@ -467,9 +467,9 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
                         isv, iev, jsv, jev, ksb, keb, nkk, G, GV, US, flux_type_ctrl, &
                         advect_this_tracer, local_advect_scheme)
 
-          do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+          ! Update domore_k for the next iteration
+          do concurrent (kk=1:kke, domore_k(ksb + kk - 1) > 0) DO_LOCALITY(local(domore_k_tmp, k))
             k = ksb + kk - 1
-            ! Update domore_k(k) for the next iteration
             domore_k_tmp = 0
             do concurrent (j=jsv:jev, domore_u(j,k)) DO_LOCALITY(reduce(max:domore_k_tmp))
               domore_k_tmp = 1
@@ -478,7 +478,7 @@ subroutine advect_tracer(h_end, uhtr, vhtr, OBC, dt, G, GV, US, CS, Reg, x_first
               domore_k_tmp = 1
             enddo
             domore_k(k) = domore_k_tmp
-          endif ; enddo
+          enddo
         endif
       enddo
 
