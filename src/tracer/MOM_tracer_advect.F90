@@ -1363,13 +1363,11 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
     endif
   enddo ; enddo ! End of the k- and j-loops.
 
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  do concurrent (kk=1:kke, J=js-1:je, i=is:ie, domore_k(ksb + kk - 1) > 0) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    do concurrent (J=js-1:je, i=is:ie)
-      vhr(i,J,k) = vhr(i,J,k) - vhh(i,J,kk)
-      if (abs(vhr(i,J,k)) < vh_neglect(i,J)) vhr(i,J,k) = 0.0
-    enddo
-  endif ; enddo
+    vhr(i,J,k) = vhr(i,J,k) - vhh(i,J,kk)
+    if (abs(vhr(i,J,k)) < vh_neglect(i,J)) vhr(i,J,k) = 0.0
+  enddo
 
   ! Calculate new tracer concentration in each cell after accounting
   ! for the j-direction fluxes.
