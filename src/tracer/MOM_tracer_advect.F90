@@ -1101,20 +1101,21 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
   ! Note: this does lead to unnecessary work in updating tracer concentrations,
   ! since that doesn't need a wider stencil with the PPM advection scheme, but
   ! this would require an additional loop, etc.
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  do concurrent (kk=1:kke, j=SZJ_(G)) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    do concurrent (j=SZJ_(G))
-      do_j_tr(j,kk) = .false.
+    do_j_tr(j,kk) = .false.
+  enddo
+  do concurrent (kk=1:kke, J=js-1:je, (domore_k(ksb + kk - 1) > 0) .and. domore_v(J,ksb + kk - 1)) DO_LOCALITY(local(k))
+    k = ksb + kk - 1
+    do concurrent (j2=1-stencil:stencil)
+      do_j_tr(j+j2,kk) = .true.
     enddo
-    do concurrent (J=js-1:je, domore_v(J,k))
-      do concurrent (j2=1-stencil:stencil)
-        do_j_tr(j+j2,kk) = .true.
-      enddo
-    enddo
-    do concurrent (j=SZJB_(G))
-      domore_v_initial(j,kk) = domore_v(j,k)
-    enddo
-  endif ; enddo
+  enddo
+  ! This excludes the layers that need no more work, so it selects the rows that are worked on.
+  do concurrent (kk=1:kke, j=SZJB_(G)) DO_LOCALITY(local(k))
+    k = ksb + kk - 1
+    domore_v_initial(j,kk) = (domore_k(k) > 0) .and. domore_v(j,k)
+  enddo
 
   ! Calculate the j-direction profiles (slopes) of each tracer that
   ! is being advected.
