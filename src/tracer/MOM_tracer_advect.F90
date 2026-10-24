@@ -1197,12 +1197,12 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
   ! the minimum of the remaining mass flux (vhr) and the half the mass
   ! in the cell plus whatever part of its half of the mass flux that
   ! the flux through the other side does not require.
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  !$omp target teams loop collapse(2) &
+  !$omp   private(CFL, Ihnew, hup, hlos, j_up, Tp, Tc, Tm, i, m, aL, aR, dA, mA, a6, n, ntr_id, &
+  !$omp     domore_v_jk, k)
+  do kk=1,kke ; do J=js-1,je
     k = ksb + kk - 1
-    !$omp target teams loop &
-    !$omp   private(CFL, Ihnew, hup, hlos, j_up, Tp, Tc, Tm, i, m, aL, aR, dA, mA, a6, n, ntr_id, &
-    !$omp     domore_v_jk)
-    do J=js-1,je ; if (domore_v(J,k)) then
+    if (domore_v_initial(J,kk)) then
       domore_v_jk = .false.
 
       do concurrent (i=is:ie) DO_LOCALITY(reduce(.or.:domore_v_jk))
@@ -1360,8 +1360,8 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
       do concurrent (m=1:ntr, i=is:ie, advect_this_tracer(m))
         flux_y(i,m,J,kk) = 0.0
       enddo
-    endif ; enddo ! End of j-loop
-  endif ; enddo ! End of k-loop over the meridional fluxes.
+    endif
+  enddo ; enddo ! End of the k- and j-loops.
 
   do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
     k = ksb + kk - 1
