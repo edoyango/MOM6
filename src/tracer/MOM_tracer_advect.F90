@@ -1148,12 +1148,11 @@ subroutine advect_y(Tr, hprev, vhr, vh_neglect, OBC, domore_v, domore_k, ntr, Id
 
   ! make a copy of the tracers in case values need to be overridden for OBCs
 
-  do kk=1,kke ; if (domore_k(ksb + kk - 1) > 0) then
+  do concurrent (kk=1:kke, j=G%jsd:G%jed, m=1:ntr, i=G%isd:G%ied, &
+                 (domore_k(ksb + kk - 1) > 0) .and. advect_this_tracer(m)) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    do concurrent (j=G%jsd:G%jed, m=1:ntr, i=G%isd:G%ied, advect_this_tracer(m))
-      T_tmp(i,m,j,kk) = Tr(m)%t(i,j,k)
-    enddo
-  endif ; enddo
+    T_tmp(i,m,j,kk) = Tr(m)%t(i,j,k)
+  enddo
 
   ! loop through open boundaries and recalculate flux terms
   if (associated(OBC)) then ; if (OBC%OBC_pe) then
