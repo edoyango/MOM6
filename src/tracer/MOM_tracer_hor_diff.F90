@@ -180,8 +180,10 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
   integer :: i, j, k, m, is, ie, js, je, nz, ntr, itt, num_itts
   integer :: nkk        ! The number of layers in each k block [nondim].
   real :: I_numitts  ! The inverse of the number of iterations, num_itts [nondim]
-  real :: scale      ! The fraction of khdt_x or khdt_y that is applied in this
-                     ! layer for this iteration [nondim].
+  real :: scale_ml   ! The fraction of khdt_x or khdt_y that is applied in the mixed layers for each
+                     ! iteration [nondim].
+  integer :: k_ml    ! The number of mixed layers at the top that are diffused along layers [nondim].
+  integer :: k_int   ! The first layer below the buffer layers that is diffused along layers [nondim].
   real :: Idt        ! The inverse of the time step [T-1 ~> s-1].
   real :: h_neglect  ! A thickness that is so small it is usually lost
                      ! in roundoff and can be neglected [H ~> m or kg m-2].
@@ -596,22 +598,25 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
     if (CS%show_call_tree) call callTree_waypoint("Calculating horizontal diffusion (tracer_hordiff)")
     !$omp target enter data map(to: Coef_x, Coef_y) if(CS%use_hor_bnd_diffusion) ! copy from non-ported loops above
     !$omp target enter data map(alloc: Coef_x, Coef_y) if(.not.CS%use_hor_bnd_diffusion)
+    ! When DIFFUSE_ML_TO_INTERIOR is true, the buffer layers are not diffused along layers, and neither are the
+    ! mixed layers unless ML_KHTR_SCALE is positive, in which case they use a reduced diffusivity.
+    k_ml = 0 ; k_int = 1
+    if (CS%Diffuse_ML_interior) then
+      if (CS%ML_KhTr_scale > 0.0) k_ml = GV%nkml
+      k_int = max(GV%nkml, GV%nk_rho_varies) + 1
+    endif
+    scale_ml = I_numitts * CS%ML_KhTr_scale
     do itt=1,num_itts
       call do_group_pass(CS%pass_t, G%Domain, clock=id_clock_pass, omp_offload=.true.)
       ! loop should probably be reordered
-      do k=1,nz
-        scale = I_numitts
-        if (CS%Diffuse_ML_interior) then
-          if (k<=GV%nkml) then
-            if (CS%ML_KhTr_scale <= 0.0) cycle
-            scale = I_numitts * CS%ML_KhTr_scale
-          endif
-          if ((k>GV%nkml) .and. (k<=GV%nk_rho_varies)) cycle
-        endif
-
-        call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_neglect, Idt, Reg%Tr, ntr, &
+      do k=1,k_ml
+        call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale_ml, h_neglect, Idt, Reg%Tr, ntr, &
                                      k, G, GV)
-      enddo ! End of k loop.
+      enddo ! End of the loop over the mixed layers.
+      do k=k_int,nz
+        call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, I_numitts, h_neglect, Idt, Reg%Tr, ntr, &
+                                     k, G, GV)
+      enddo ! End of the loop over the layers below the buffer layers.
 
       ! Do user controlled underflow of the tracer concentrations.
       do m=1,ntr ; if (Reg%Tr(m)%conc_underflow > 0.0) then
