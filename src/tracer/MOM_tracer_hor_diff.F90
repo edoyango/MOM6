@@ -810,18 +810,15 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
                                              (h(i,j,k)+h(i,j+1,k)+h_neglect)
   enddo
 
-  do kk=1,kke
+  do concurrent (kk=1:kke, j=js:je, I=is-1:ie) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    do concurrent (j=js:je)
-      do concurrent (I=is-1:ie)
-        Coef_x(I,j,kk) = ((scale * khdt_x(I,j))*2.0*(h(i,j,k)*h(i+1,j,k))) / &
-                                                 (h(i,j,k)+h(i+1,j,k)+h_neglect)
-      enddo
+    Coef_x(I,j,kk) = ((scale * khdt_x(I,j))*2.0*(h(i,j,k)*h(i+1,j,k))) / &
+                                             (h(i,j,k)+h(i+1,j,k)+h_neglect)
+  enddo
 
-      do concurrent (i=is:ie)
-        Ihdxdy(i,j,kk) = G%IareaT(i,j) / (h(i,j,k)+h_neglect)
-      enddo
-    enddo
+  do concurrent (kk=1:kke, j=js:je, i=is:ie) DO_LOCALITY(local(k))
+    k = ksb + kk - 1
+    Ihdxdy(i,j,kk) = G%IareaT(i,j) / (h(i,j,k)+h_neglect)
   enddo
 
   do m=1,ntr
