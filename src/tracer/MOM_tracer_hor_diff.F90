@@ -831,21 +831,17 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
            (Coef_y(i,J,kk) * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)))) )
     enddo
     if (associated(Tr(m)%df_x)) then
-      do kk=1,kke
+      do concurrent (kk=1:kke, j=js:je, I=Isq:Ieq) DO_LOCALITY(local(k))
         k = ksb + kk - 1
-        do concurrent (j=js:je, I=Isq:Ieq)
-          Tr(m)%df_x(I,j,k) = Tr(m)%df_x(I,j,k) + Coef_x(I,j,kk) &
-              * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)) * Idt
-        enddo
+        Tr(m)%df_x(I,j,k) = Tr(m)%df_x(I,j,k) + Coef_x(I,j,kk) &
+            * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)) * Idt
       enddo
     endif
     if (associated(Tr(m)%df_y)) then
-      do kk=1,kke
+      do concurrent (kk=1:kke, J=Jsq:Jeq, i=is:ie) DO_LOCALITY(local(k))
         k = ksb + kk - 1
-        do concurrent (J=Jsq:Jeq, i=is:ie)
-          Tr(m)%df_y(i,J,k) = Tr(m)%df_y(i,J,k) + Coef_y(i,J,kk) &
-              * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)) * Idt
-        enddo
+        Tr(m)%df_y(i,J,k) = Tr(m)%df_y(i,J,k) + Coef_y(i,J,kk) &
+            * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)) * Idt
       enddo
     endif
     if (associated(Tr(m)%df2d_x)) then
