@@ -79,6 +79,8 @@ type, public :: tracer_hor_diff_CS ; private
                                    !! from the original form of this code, while higher values use
                                    !! mathematically equivalent expressions that recover rotational symmetry
                                    !! when DIFFUSE_ML_TO_INTERIOR is true.
+  integer :: nkblock               !< The k-direction block size used in the along-layer tracer diffusion,
+                                   !! or 0 to use the full vertical column [nondim].
   type(neutral_diffusion_CS), pointer :: neutral_diffusion_CSp => NULL() !< Control structure for neutral diffusion.
   type(hbd_CS), pointer    :: hor_bnd_diffusion_CSp => NULL() !< Control structure for
                                                               !! horizontal boundary diffusion.
@@ -179,6 +181,7 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
   real :: max_CFL  ! The global maximum of the diffusive CFL number [nondim]
   logical :: use_VarMix, Resoln_scaled, do_online, use_Eady
   integer :: i, j, k, m, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz, ntr, itt, num_itts
+  integer :: nkk        ! The number of layers in each k block [nondim].
   real :: I_numitts  ! The inverse of the number of iterations, num_itts [nondim]
   real :: scale      ! The fraction of khdt_x or khdt_y that is applied in this
                      ! layer for this iteration [nondim].
@@ -219,6 +222,8 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
   ntr = Reg%ntr
   Idt = 1.0 / dt
   h_neglect = GV%H_subroundoff
+  nkk = CS%nkblock
+  if (nkk == 0) nkk = nz
 
   if (CS%Diffuse_ML_interior .and. CS%first_call) then ; if (is_root_pe()) then
     do m=1,ntr ; if (associated(Reg%Tr(m)%df_x) .or. associated(Reg%Tr(m)%df_y)) &
@@ -1758,6 +1763,7 @@ subroutine tracer_hor_diff_init(Time, G, GV, US, param_file, diag, EOS, diabatic
 # include "version_variable.h"
   character(len=40)  :: mdl = "MOM_tracer_hor_diff" ! This module's name.
   integer :: default_answer_date
+  integer, parameter :: default_nkblock = 1 ! The default k block size [nondim].
 
   if (associated(CS)) then
     call MOM_error(WARNING, "tracer_hor_diff_init called with associated control structure.")
@@ -1856,6 +1862,12 @@ subroutine tracer_hor_diff_init(Time, G, GV, US, param_file, diag, EOS, diabatic
        "USE_HORIZONTAL_BOUNDARY_DIFFUSION and DIFFUSE_ML_TO_INTERIOR are mutually exclusive!")
 
   call get_param(param_file, mdl, "DEBUG", CS%debug, default=.false.)
+  call get_param(param_file, mdl, "TRACER_HOR_DIFF_NKBLOCK", CS%nkblock, &
+                 "The k-direction block size used in the along-layer tracer diffusion calculations. "//&
+                 "A value of 0 uses the full vertical column.", &
+                 default=default_nkblock, layoutParam=.true.)
+  if (CS%nkblock < 0) call MOM_error(FATAL, "MOM_tracer_hor_diff, tracer_hor_diff_init: "//&
+                 "TRACER_HOR_DIFF_NKBLOCK must be nonnegative; use 0 to select the full vertical column.")
 
   id_clock_diffuse = cpu_clock_id('(Ocean diffuse tracer)',          grain=CLOCK_MODULE)
   id_clock_epimix  = cpu_clock_id('(Ocean epipycnal diffuse tracer)',grain=CLOCK_MODULE)
