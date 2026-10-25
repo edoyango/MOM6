@@ -597,8 +597,6 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
   else    ! following if not using neutral diffusion, but instead along-surface diffusion
 
     if (CS%show_call_tree) call callTree_waypoint("Calculating horizontal diffusion (tracer_hordiff)")
-    !$omp target enter data map(to: Coef_x, Coef_y) if(CS%use_hor_bnd_diffusion) ! copy from non-ported loops above
-    !$omp target enter data map(alloc: Coef_x, Coef_y) if(.not.CS%use_hor_bnd_diffusion)
     ! When DIFFUSE_ML_TO_INTERIOR is true, the buffer layers are not diffused along layers, and neither are the
     ! mixed layers unless ML_KHTR_SCALE is positive, in which case they use a reduced diffusivity.
     k_ml = 0 ; k_int = 1
@@ -611,12 +609,12 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
       call do_group_pass(CS%pass_t, G%Domain, clock=id_clock_pass, omp_offload=.true.)
       do ksb=1,k_ml,nkk
         keb = min(ksb + nkk - 1, k_ml)
-        call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale_ml, h_neglect, Idt, Reg%Tr, ntr, &
+        call tracer_along_coord_diff(h, khdt_x, khdt_y, scale_ml, h_neglect, Idt, Reg%Tr, ntr, &
                                      ksb, keb, nkk, G, GV)
       enddo ! End of the loop over blocks of the mixed layers.
       do ksb=k_int,nz,nkk
         keb = min(ksb + nkk - 1, nz)
-        call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, I_numitts, h_neglect, Idt, Reg%Tr, ntr, &
+        call tracer_along_coord_diff(h, khdt_x, khdt_y, I_numitts, h_neglect, Idt, Reg%Tr, ntr, &
                                      ksb, keb, nkk, G, GV)
       enddo ! End of the loop over blocks of the layers below the buffer layers.
 
@@ -628,7 +626,6 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
       endif ; enddo
 
     enddo ! End of "while" loop.
-    !$omp target exit data map(release: Coef_x, Coef_y)
   endif   ! endif for CS%use_neutral_diffusion
   call cpu_clock_end(id_clock_diffuse)
 
@@ -758,8 +755,8 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
 end subroutine tracer_hordiff
 
 !> This subroutine diffuses all of the tracers along layers ksb to keb for one iteration of the
-!! along-layer tracer diffusion.  The arrays Coef_x and Coef_y are only used as work space.
-subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_neglect, Idt, Tr, ntr, &
+!! along-layer tracer diffusion.
+subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, scale, h_neglect, Idt, Tr, ntr, &
                                    ksb, keb, nkk, G, GV)
   type(ocean_grid_type),   intent(in)    :: G       !< Grid type
   type(verticalGrid_type), intent(in)    :: GV      !< ocean vertical grid structure
@@ -771,14 +768,6 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
   real, dimension(SZI_(G),SZJB_(G)), &
                            intent(in)    :: khdt_y  !< The value of Khtr*dt times the open face width divided by
                                                     !! the distance between adjacent tracer points [L2 ~> m2]
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), &
-                           intent(inout) :: Coef_x  !< Work space for the coefficients relating zonal tracer
-                                                    !! differences to time-integrated fluxes, of which the first
-                                                    !! nkk levels are used [H L2 ~> m3 or kg]
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), &
-                           intent(inout) :: Coef_y  !< Work space for the coefficients relating meridional tracer
-                                                    !! differences to time-integrated fluxes, of which the first
-                                                    !! nkk levels are used [H L2 ~> m3 or kg]
   real,                    intent(in)    :: scale   !< The fraction of khdt_x and khdt_y that is applied in these
                                                     !! layers for this iteration [nondim]
   real,                    intent(in)    :: h_neglect !< A thickness that is so small it is usually lost
@@ -792,6 +781,12 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
   integer,                 intent(in)    :: nkk     !< The maximum number of layers in a k block, which sets the
                                                     !! size of the work arrays [nondim]
 
+  real, dimension(SZIB_(G),SZJ_(G),nkk) :: &
+    Coef_x        ! The coefficients relating zonal tracer differences to time-integrated
+                  ! fluxes [H L2 ~> m3 or kg].
+  real, dimension(SZI_(G),SZJB_(G),nkk) :: &
+    Coef_y        ! The coefficients relating meridional tracer differences to time-integrated
+                  ! fluxes [H L2 ~> m3 or kg].
   real, dimension(SZI_(G),SZJ_(G),nkk) :: &
     Ihdxdy, &     ! The inverse of the volume or mass of fluid in a layer in a
                   ! grid cell [H-1 L-2 ~> m-3 or kg-1].
@@ -802,7 +797,7 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   kke = keb - ksb + 1
 
-  !$omp target enter data map(alloc: dTr, Ihdxdy)
+  !$omp target enter data map(alloc: dTr, Ihdxdy, Coef_x, Coef_y)
 
   do concurrent (kk=1:kke, J=js-1:je, i=is:ie) DO_LOCALITY(local(k))
     k = ksb + kk - 1
@@ -870,7 +865,7 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
     enddo
   enddo
 
-  !$omp target exit data map(release: dTr, Ihdxdy)
+  !$omp target exit data map(release: dTr, Ihdxdy, Coef_x, Coef_y)
 end subroutine tracer_along_coord_diff
 
 !> This subroutine does epipycnal diffusion of all tracers between the mixed
