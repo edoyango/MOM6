@@ -804,12 +804,10 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
 
   !$omp target enter data map(alloc: dTr, Ihdxdy)
 
-  do kk=1,kke
+  do concurrent (kk=1:kke, J=js-1:je, i=is:ie) DO_LOCALITY(local(k))
     k = ksb + kk - 1
-    do concurrent (J=js-1:je, i=is:ie)
-      Coef_y(i,J,kk) = ((scale * khdt_y(i,J))*2.0*(h(i,j,k)*h(i,j+1,k))) / &
-                                               (h(i,j,k)+h(i,j+1,k)+h_neglect)
-    enddo
+    Coef_y(i,J,kk) = ((scale * khdt_y(i,J))*2.0*(h(i,j,k)*h(i,j+1,k))) / &
+                                             (h(i,j,k)+h(i,j+1,k)+h_neglect)
   enddo
 
   do kk=1,kke
