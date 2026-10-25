@@ -822,15 +822,13 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
   enddo
 
   do m=1,ntr
-    do kk=1,kke
+    do concurrent (kk=1:kke, j=js:je, i=is:ie) DO_LOCALITY(local(k))
       k = ksb + kk - 1
-      do concurrent (j=js:je, i=is:ie)
-        dTr(i,j,kk) = Ihdxdy(i,j,kk) * &
-          ( ((Coef_x(I-1,j,kk) * (Tr(m)%t(i-1,j,k) - Tr(m)%t(i,j,k))) - &
-             (Coef_x(I,j,kk) * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)))) + &
-            ((Coef_y(i,J-1,kk) * (Tr(m)%t(i,j-1,k) - Tr(m)%t(i,j,k))) - &
-             (Coef_y(i,J,kk) * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)))) )
-      enddo
+      dTr(i,j,kk) = Ihdxdy(i,j,kk) * &
+        ( ((Coef_x(I-1,j,kk) * (Tr(m)%t(i-1,j,k) - Tr(m)%t(i,j,k))) - &
+           (Coef_x(I,j,kk) * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)))) + &
+          ((Coef_y(i,J-1,kk) * (Tr(m)%t(i,j-1,k) - Tr(m)%t(i,j,k))) - &
+           (Coef_y(i,J,kk) * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)))) )
     enddo
     if (associated(Tr(m)%df_x)) then
       do kk=1,kke
