@@ -845,18 +845,20 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
       enddo
     endif
     if (associated(Tr(m)%df2d_x)) then
-      do kk=1,kke
-        k = ksb + kk - 1
-        do concurrent (j=js:je, I=Isq:Ieq)
+      ! Each point adds the layers of the block in ascending order, so the sums over layers are the same
+      ! whatever the block size is.
+      do concurrent (j=js:je, I=Isq:Ieq) DO_LOCALITY(local(k, kk))
+        do kk=1,kke
+          k = ksb + kk - 1
           Tr(m)%df2d_x(I,j) = Tr(m)%df2d_x(I,j) + Coef_x(I,j,kk) &
               * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)) * Idt
         enddo
       enddo
     endif
     if (associated(Tr(m)%df2d_y)) then
-      do kk=1,kke
-        k = ksb + kk - 1
-        do concurrent (J=Jsq:Jeq, i=is:ie)
+      do concurrent (J=Jsq:Jeq, i=is:ie) DO_LOCALITY(local(k, kk))
+        do kk=1,kke
+          k = ksb + kk - 1
           Tr(m)%df2d_y(i,J) = Tr(m)%df2d_y(i,J) + Coef_y(i,J,kk) &
               * (Tr(m)%t(i,j,k) - Tr(m)%t(i,j+1,k)) * Idt
         enddo
