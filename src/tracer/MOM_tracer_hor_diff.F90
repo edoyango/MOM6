@@ -611,11 +611,11 @@ subroutine tracer_hordiff(h, dt, MEKE, VarMix, visc, G, GV, US, CS, Reg, tv, do_
       ! loop should probably be reordered
       do k=1,k_ml
         call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale_ml, h_neglect, Idt, Reg%Tr, ntr, &
-                                     k, G, GV)
+                                     k, nkk, G, GV)
       enddo ! End of the loop over the mixed layers.
       do k=k_int,nz
         call tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, I_numitts, h_neglect, Idt, Reg%Tr, ntr, &
-                                     k, G, GV)
+                                     k, nkk, G, GV)
       enddo ! End of the loop over the layers below the buffer layers.
 
       ! Do user controlled underflow of the tracer concentrations.
@@ -757,7 +757,8 @@ end subroutine tracer_hordiff
 
 !> This subroutine diffuses all of the tracers along layer k for one iteration of the along-layer tracer diffusion.
 !! The arrays Coef_x and Coef_y are only used as work space.
-subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_neglect, Idt, Tr, ntr, k, G, GV)
+subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_neglect, Idt, Tr, ntr, k, nkk, &
+                                   G, GV)
   type(ocean_grid_type),   intent(in)    :: G       !< Grid type
   type(verticalGrid_type), intent(in)    :: GV      !< ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
@@ -783,8 +784,10 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
   type(tracer_type), dimension(ntr), &
                            intent(inout) :: Tr      !< The tracers to diffuse
   integer,                 intent(in)    :: k       !< The layer to diffuse along
+  integer,                 intent(in)    :: nkk     !< The number of layers in a k block, which sets the
+                                                    !! size of the work arrays [nondim]
 
-  real, dimension(SZI_(G),SZJ_(G)) :: &
+  real, dimension(SZI_(G),SZJ_(G),nkk) :: &
     Ihdxdy, &     ! The inverse of the volume or mass of fluid in a layer in a
                   ! grid cell [H-1 L-2 ~> m-3 or kg-1].
     dTr           ! The change in a tracer's concentration, in units of concentration [Conc].
@@ -807,13 +810,13 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
     enddo
 
     do concurrent (i=is:ie)
-      Ihdxdy(i,j) = G%IareaT(i,j) / (h(i,j,k)+h_neglect)
+      Ihdxdy(i,j,1) = G%IareaT(i,j) / (h(i,j,k)+h_neglect)
     enddo
   enddo
 
   do m=1,ntr
     do concurrent (j=js:je, i=is:ie)
-      dTr(i,j) = Ihdxdy(i,j) * &
+      dTr(i,j,1) = Ihdxdy(i,j,1) * &
         ( ((Coef_x(I-1,j,1) * (Tr(m)%t(i-1,j,k) - Tr(m)%t(i,j,k))) - &
            (Coef_x(I,j,1) * (Tr(m)%t(i,j,k) - Tr(m)%t(i+1,j,k)))) + &
           ((Coef_y(i,J-1,1) * (Tr(m)%t(i,j-1,k) - Tr(m)%t(i,j,k))) - &
@@ -844,7 +847,7 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
       enddo
     endif
     do concurrent (j=js:je, i=is:ie)
-      Tr(m)%t(i,j,k) = Tr(m)%t(i,j,k) + dTr(i,j)
+      Tr(m)%t(i,j,k) = Tr(m)%t(i,j,k) + dTr(i,j,1)
     enddo
   enddo
 
