@@ -864,11 +864,9 @@ subroutine tracer_along_coord_diff(h, khdt_x, khdt_y, Coef_x, Coef_y, scale, h_n
         enddo
       enddo
     endif
-    do kk=1,kke
+    do concurrent (kk=1:kke, j=js:je, i=is:ie) DO_LOCALITY(local(k))
       k = ksb + kk - 1
-      do concurrent (j=js:je, i=is:ie)
-        Tr(m)%t(i,j,k) = Tr(m)%t(i,j,k) + dTr(i,j,kk)
-      enddo
+      Tr(m)%t(i,j,k) = Tr(m)%t(i,j,k) + dTr(i,j,kk)
     enddo
   enddo
 
