@@ -1375,9 +1375,7 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
 
   tol_vel = CS%tol_vel
 
-  !$omp target
-
-  !$omp loop collapse(2) private(ii,jj)
+  !$omp target teams loop collapse(2) private(ii,jj)
   do j=j_start,j_end ; do I=i_start,i_end
     ii=I-i_start+1 ; jj=j-j_start+1
     du(ii,jj) = 0.0 ; do_I(ii,jj) = do_I_in(ii,jj)
@@ -1394,17 +1392,17 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
       case default ; tol_eta = CS%tol_eta
     end select
 
-    !$omp loop collapse(2) private(ii,jj)
+    !$omp target teams loop collapse(2) private(ii,jj)
     do j=j_start,j_end ; do I=i_start,i_end
       ii=I-i_start+1 ; jj=j-j_start+1
       if (uh_err(ii,jj) > 0.0) then ; du_max(ii,jj) = du(ii,jj)
       elseif (uh_err(ii,jj) < 0.0) then ; du_min(ii,jj) = du(ii,jj)
       else ; do_I(ii,jj) = .false. ; endif
     enddo ; enddo
-#ifndef __NVCOMPILER_OPENMP_GPU
+!#ifndef __NVCOMPILER_OPENMP_GPU
     domore = .false.
-#endif
-    !$omp loop collapse(2) private(ii,jj,ddu,du_prev)
+!#endif
+    !$omp target teams loop collapse(2) private(ii,jj,ddu,du_prev) reduction(.or.:domore)
     do j=j_start,j_end ; do I=i_start,i_end
       ii=I-i_start+1 ; jj=j-j_start+1
       if (do_I(ii,jj)) then
@@ -1429,18 +1427,19 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
               if (du_prev - du_min(ii,jj) < 1.0e-15*abs(du(ii,jj))) do_I(ii,jj) = .false.
             endif
           endif
-#ifndef __NVCOMPILER_OPENMP_GPU
+!#ifndef __NVCOMPILER_OPENMP_GPU
           if (do_I(ii,jj)) domore = .true.
-#endif
+!#endif
         else
           do_I(ii,jj) = .false.
         endif
       endif
     enddo ; enddo
-#ifndef __NVCOMPILER_OPENMP_GPU
+!#ifndef __NVCOMPILER_OPENMP_GPU
     if (.not.domore) exit
-#endif
+!#endif
 
+    !$omp target 
     !$omp loop collapse(2) private(ii,jj)
     do j=j_start,j_end ; do I=i_start,i_end
       ii=I-i_start+1 ; jj=j-j_start+1
@@ -1470,11 +1469,12 @@ subroutine zonal_flux_adjust(u, h_in, h_W, h_E, uhbt, uh_tot_0, duhdu_tot_0, &
       ii=I-i_start+1 ; jj=j-j_start+1
       uh_err_best(ii,jj) = min(uh_err_best(ii,jj), abs(uh_err(ii,jj)))
     enddo ; enddo
+    !$omp end target
   enddo ! itt-loop
   ! If there are any faces which have not converged to within the tolerance,
   ! so-be-it, or else use a final upwind correction?
   ! This never seems to happen with 20 iterations as max_itt.
-  !$omp end target
+  !!$omp end target
 
   !$omp target exit data &
   !$omp   map(release: uh_err,uh_err_best,duhdu_tot,du_min,du_max,do_I)
