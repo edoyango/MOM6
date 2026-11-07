@@ -1150,8 +1150,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   if (showCallTree) call callTree_wayPoint("done with continuity (step_MOM_dyn_split_RK2)")
 
   if (G%nonblocking_updates) then
-    !$omp target update from(u_av, v_av, uh, vh)
-    call start_group_pass(CS%pass_av_uvh, G%Domain, clock=id_clock_pass)
+    call start_group_pass(CS%pass_av_uvh, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   else
     call do_group_pass(CS%pass_av_uvh, G%domain, clock=id_clock_pass, omp_offload=.true.)
   endif
@@ -1169,8 +1168,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   enddo
 
   if (G%nonblocking_updates) then
-    call complete_group_pass(CS%pass_av_uvh, G%Domain, clock=id_clock_pass)
-    !$omp target update to(u_av, v_av, uh, vh)
+    call complete_group_pass(CS%pass_av_uvh, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   endif
 
   do concurrent (k=1:nz, j=js-cor_stencil:je+cor_stencil, I=Isq-cor_stencil:Ieq+cor_stencil)
