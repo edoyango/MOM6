@@ -820,8 +820,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   if (showCallTree) call callTree_wayPoint("done with vertvisc (step_MOM_dyn_split_RK2)")
   if (G%nonblocking_updates) then
     call cpu_clock_end(id_clock_vertvisc)
-    !$omp target update from(up, vp)
-    call start_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass)
+    call start_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass, omp_offload=.true.)
     call cpu_clock_begin(id_clock_vertvisc)
   endif
 
@@ -836,8 +835,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call do_group_pass(CS%pass_visc_rem, G%Domain, clock=id_clock_pass, omp_offload=.true.)
 
   if (G%nonblocking_updates) then
-    call complete_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass)
-    !$omp target update to(up, vp)
+    call complete_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   else
     call do_group_pass(CS%pass_uvp, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   endif
