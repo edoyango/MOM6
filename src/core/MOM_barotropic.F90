@@ -2045,7 +2045,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (G%nonblocking_updates) then
     call complete_group_pass(CS%pass_e_anom, G%Domain, omp_offload=.true.)
     if (find_etaav) call start_group_pass(CS%pass_etaav, G%Domain)
-    call start_group_pass(CS%pass_ubta_uhbta, G%DoMain)
+    call start_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
   else
     call do_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
   endif
@@ -2336,7 +2336,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
   if (G%nonblocking_updates) then
     if (find_etaav) call complete_group_pass(CS%pass_etaav, G%Domain)
-    call complete_group_pass(CS%pass_ubta_uhbta, G%Domain)
+    call complete_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
   endif
 
   !$omp target exit data &
