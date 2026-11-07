@@ -758,7 +758,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
     if (associated(forces%p_surf)) &
       call create_group_pass(pass_tau_ustar_psurf, forces%p_surf, G%Domain)
     if (nonblocking_p_surf_update) then
-      call start_group_pass(pass_tau_ustar_psurf, G%Domain)
+      call start_group_pass(pass_tau_ustar_psurf, G%Domain, omp_offload=.true.)
     else
       call do_group_pass(pass_tau_ustar_psurf, G%Domain, omp_offload=.true.)
     endif
@@ -838,7 +838,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
 
   if (do_dyn) then
     if (nonblocking_p_surf_update) &
-      call complete_group_pass(pass_tau_ustar_psurf, G%Domain, clock=id_clock_pass)
+      call complete_group_pass(pass_tau_ustar_psurf, G%Domain, clock=id_clock_pass, omp_offload=.true.)
 
     if (CS%interp_p_surf) then
       if (.not.associated(CS%p_surf_end))   allocate(CS%p_surf_end(isd:ied,jsd:jed))
