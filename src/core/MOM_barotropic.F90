@@ -1522,10 +1522,8 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (nonblock_setup) then
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
-    ! ensure correct data on host to be exchanged
-    !$omp target update from(ubt_Cor, vbt_Cor)
     call start_group_pass(CS%pass_gtot, CS%BT_Domain, omp_offload=.true.)
-    call start_group_pass(CS%pass_ubt_Cor, G%Domain)
+    call start_group_pass(CS%pass_ubt_Cor, G%Domain, omp_offload=.true.)
     if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
   endif
@@ -1544,8 +1542,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       !$omp target update to(BT_force_u, BT_force_v)
     endif
     call complete_group_pass(CS%pass_gtot, CS%BT_Domain, omp_offload=.true.)
-    call complete_group_pass(CS%pass_ubt_Cor, G%Domain)
-    !$omp target update to(Ubt_Cor, vbt_Cor)
+    call complete_group_pass(CS%pass_ubt_Cor, G%Domain, omp_offload=.true.)
   else
     call do_group_pass(CS%pass_gtot, CS%BT_Domain, omp_offload=.true.)
     call do_group_pass(CS%pass_ubt_Cor, G%Domain, omp_offload=.true.)
