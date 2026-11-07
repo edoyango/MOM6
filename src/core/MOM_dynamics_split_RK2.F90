@@ -1106,9 +1106,8 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   endif
 
   if (G%nonblocking_updates) then
-    !$omp target update from(u_inst, v_inst)
     call cpu_clock_end(id_clock_vertvisc)
-    call start_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass)
+    call start_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass, omp_offload=.true.)
     call cpu_clock_begin(id_clock_vertvisc)
   endif
   call vertvisc_remnant(visc, CS%visc_rem_u, CS%visc_rem_v, dt, G, GV, US, CS%vertvisc_CSp)
@@ -1124,8 +1123,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   call do_group_pass(CS%pass_visc_rem, G%Domain, clock=id_clock_pass, omp_offload=.true.)
 
   if (G%nonblocking_updates) then
-    call complete_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass)
-    !$omp target update to(u_inst, v_inst)
+    call complete_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   else
     call do_group_pass(CS%pass_uv, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   endif
