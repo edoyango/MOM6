@@ -1162,7 +1162,7 @@ subroutine do_group_pass(group, MOM_dom, clock, omp_offload)
 end subroutine do_group_pass
 
 !> start_group_pass starts out a group halo update.
-subroutine start_group_pass(group, MOM_dom, clock)
+subroutine start_group_pass(group, MOM_dom, clock, omp_offload)
   type(group_pass_type), intent(inout) :: group    !< The data type that store information for
                                                    !! group update. This data will be used in
                                                    !! do_group_pass.
@@ -1171,19 +1171,22 @@ subroutine start_group_pass(group, MOM_dom, clock)
                                                    !! sent.
   integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                    !! started then stopped to time this routine.
+  logical,     optional, intent(in)    :: omp_offload !< Whether the data to be transferred is
+                                                   !! offloaded to the GPU with OpenMP. The same value
+                                                   !! must be passed to complete_group_pass.
 
   real                                 :: d_type
 
   if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
-  call mpp_start_group_update(group, MOM_dom%mpp_domain, d_type)
+  call mpp_start_group_update(group, MOM_dom%mpp_domain, d_type, omp_offload=omp_offload)
 
   if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine start_group_pass
 
 !> complete_group_pass completes a group halo update.
-subroutine complete_group_pass(group, MOM_dom, clock)
+subroutine complete_group_pass(group, MOM_dom, clock, omp_offload)
   type(group_pass_type), intent(inout) :: group    !< The data type that store information for
                                                    !! group update. This data will be used in
                                                    !! do_group_pass.
@@ -1192,11 +1195,14 @@ subroutine complete_group_pass(group, MOM_dom, clock)
                                                    !! sent.
   integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
                                                    !! started then stopped to time this routine.
+  logical,     optional, intent(in)    :: omp_offload !< Whether the data to be transferred is
+                                                   !! offloaded to the GPU with OpenMP. This must match
+                                                   !! the value passed to start_group_pass.
   real                                 :: d_type
 
   if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
-  call mpp_complete_group_update(group, MOM_dom%mpp_domain, d_type)
+  call mpp_complete_group_update(group, MOM_dom%mpp_domain, d_type, omp_offload)
 
   if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
