@@ -1574,9 +1574,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     endif
 
     ! The following halo update is not needed without wide halos.  RWH
-    !$omp target update from(BT_force_u, BT_force_v, Cor_ref_u, Cor_ref_v)
-    !$omp target update if(add_uh0) from(uhbt0, vhbt0)
-    call start_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain)
+    call start_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain, omp_offload=.true.)
   endif
   if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
   if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
@@ -1782,14 +1780,13 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       call complete_group_pass(CS%pass_Dat_uv, CS%BT_Domain)
       !$omp target update to(Datu, Datv)
     endif
-    call complete_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain)
+    call complete_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain, omp_offload=.true.)
     call complete_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain)
-    !$omp target update to(bt_rem_u, bt_rem_v, BT_force_u, BT_force_v, Cor_ref_u, Cor_ref_v, eta_src)
+    !$omp target update to(bt_rem_u, bt_rem_v, eta_src)
     !$omp target update if(integral_BT_cont) to(eta_IC)
     !$omp target update if(.not.interp_eta_PF) to(eta_PF)
     !$omp target update if(interp_eta_PF) to(eta_PF_1, d_eta_PF)
     !$omp target update if(CS%dynamic_psurf) to(dyn_coef_eta)
-    !$omp target update if(add_uh0) to(uhbt0, vhbt0)
 
     if (id_clock_pass_pre > 0) call cpu_clock_end(id_clock_pass_pre)
     if (id_clock_calc_pre > 0) call cpu_clock_begin(id_clock_calc_pre)
