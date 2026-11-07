@@ -1997,8 +1997,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
   if (G%nonblocking_updates) then
-    !$omp target update from(e_anom)
-    call start_group_pass(CS%pass_e_anom, G%Domain)
+    call start_group_pass(CS%pass_e_anom, G%Domain, omp_offload=.true.)
   else
     if (find_etaav) call do_group_pass(CS%pass_etaav, G%Domain)
     call do_group_pass(CS%pass_e_anom, G%Domain, omp_offload=.true.)
@@ -2044,10 +2043,9 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   if (id_clock_calc_post > 0) call cpu_clock_end(id_clock_calc_post)
   if (id_clock_pass_post > 0) call cpu_clock_begin(id_clock_pass_post)
   if (G%nonblocking_updates) then
-    call complete_group_pass(CS%pass_e_anom, G%Domain)
+    call complete_group_pass(CS%pass_e_anom, G%Domain, omp_offload=.true.)
     if (find_etaav) call start_group_pass(CS%pass_etaav, G%Domain)
     call start_group_pass(CS%pass_ubta_uhbta, G%DoMain)
-    !$omp target update to(e_anom)
   else
     call do_group_pass(CS%pass_ubta_uhbta, G%Domain, omp_offload=.true.)
   endif
