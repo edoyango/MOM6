@@ -1569,8 +1569,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   ! Now start new halo updates.
   if (nonblock_setup) then
     if (.not.use_BT_cont) then
-      !$omp target update from(Datu, Datv)
-      call start_group_pass(CS%pass_Dat_uv, CS%BT_Domain)
+      call start_group_pass(CS%pass_Dat_uv, CS%BT_Domain, omp_offload=.true.)
     endif
 
     ! The following halo update is not needed without wide halos.  RWH
@@ -1772,8 +1771,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     if (id_clock_pass_pre > 0) call cpu_clock_begin(id_clock_pass_pre)
 
     if (.not.use_BT_cont) then
-      call complete_group_pass(CS%pass_Dat_uv, CS%BT_Domain)
-      !$omp target update to(Datu, Datv)
+      call complete_group_pass(CS%pass_Dat_uv, CS%BT_Domain, omp_offload=.true.)
     endif
     call complete_group_pass(CS%pass_force_hbt0_Cor_ref, CS%BT_Domain, omp_offload=.true.)
     call complete_group_pass(CS%pass_eta_bt_rem, CS%BT_Domain, omp_offload=.true.)
