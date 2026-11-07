@@ -1001,6 +1001,8 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     ! These calculations can be done almost immediately, but the halo updates
     ! must be done before the [abcd]mer and [abcd]zon are calculated.
     if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
+    ! q, DCor_u and DCor_v were just calculated on the host.
+    !$omp target update to(q, DCor_u, DCor_v)
     if (nonblock_setup) then
       !$omp target update from(q, DCor_u, DCor_v)
       call start_group_pass(CS%pass_q_DCor, CS%BT_Domain, clock=id_clock_pass_pre)
