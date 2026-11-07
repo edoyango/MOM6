@@ -576,8 +576,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
   endif
 
   if (G%nonblocking_updates) then
-    !$omp target update from(eta)
-    call start_group_pass(CS%pass_eta, G%Domain, clock=id_clock_pass)
+    call start_group_pass(CS%pass_eta, G%Domain, clock=id_clock_pass, omp_offload=.true.)
   endif
 
 ! CAu = -(f+zeta_av)/h_av vh + d/dx KE_av
@@ -655,8 +654,7 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   call cpu_clock_begin(id_clock_pass)
   if (G%nonblocking_updates) then
-    call complete_group_pass(CS%pass_eta, G%Domain)
-    !$omp target update to(eta)
+    call complete_group_pass(CS%pass_eta, G%Domain, omp_offload=.true.)
     !$omp target update from(CS%visc_rem_u, CS%visc_rem_v)
     call start_group_pass(CS%pass_visc_rem, G%Domain)
   else
