@@ -908,7 +908,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
       ! rotation (h_f) and stratification (h_N):
       !    ( h / h_f )^2 + ( h / h_N ) = 1
       ! When stratification dominates h_N<<h_f, and vice versa.
-      !$omp target teams loop collapse(2) thread_limit(128) private( &
+      !$omp target teams loop LOOP_BIND_TEAMS_PARALLEL collapse(2) private( &
       !$omp   i, j, k, ustarsq, htot, dztot, Thtot, Shtot, oldfn, Dfn, Dh, Ddz, &
       !$omp   frac_used, Rhtot, C2f, ustH, bbl_thick, Vol_bbl_chan, vol_below, &
       !$omp   D_vel, D_vel_p, D_vel_m, Dp, tmp, Dm, crv, slope, &
