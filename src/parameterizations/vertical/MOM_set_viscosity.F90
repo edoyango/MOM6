@@ -570,88 +570,98 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
       jeb = min(Jeq, jsb+nJJB-1) ; ieb = min(ie, isb+nIIB-1)
       jje = jeb - jsb + 1 ; iie = ieb - isb + 1
 
+      if (m==1) then
+        do concurrent (jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
+          I = isb + II - 1
+          j = jsb + jj - 1
+          do_ij(II,jj) = (G%mask2dCu(I,j) > 0.0)
+        enddo
+      else
+        do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          do_ij(ii,jj) = (G%mask2dCv(i,J) > 0.0)
+        enddo
+      endif
+
+      ! Calculate thickness at velocity points (u or v depending on value of m).
+      ! Also interpolate the ML density or T/S properties.
+      if (m==1) then ! u-points
+        do concurrent (k=1:nz, jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
+          I = isb + II - 1
+          j = jsb + jj - 1
+          if (do_ij(II,jj)) then
+            if (u(I,j,k) * (h(i+1,j,k) - h(i,j,k)) >= 0) then
+              ! If the flow is from thin to thick then bias towards the thinner thickness
+              h_at_vel(II,jj,k) = 2.0*h(i,j,k)*h(i+1,j,k) / &
+                              (h(i,j,k) + h(i+1,j,k) + h_neglect)
+              dz_at_vel(II,jj,k) = 2.0*dz(i,j,k)*dz(i+1,j,k) / &
+                              (dz(i,j,k) + dz(i+1,j,k) + dz_neglect)
+            else
+              ! If the flow is from thick to thin then use the simple average thickness
+              h_at_vel(II,jj,k) = 0.5 * (h(i,j,k) + h(i+1,j,k))
+              dz_at_vel(II,jj,k) = 0.5 * (dz(i,j,k) + dz(i+1,j,k))
+            endif
+          endif
+          h_vel(II,jj,k) = 0.5 * (h(i,j,k) + h(i+1,j,k))
+          dz_vel(II,jj,k) = 0.5 * (dz(i,j,k) + dz(i+1,j,k))
+        enddo
+        if (use_BBL_EOS) then ; do concurrent (k=1:nz, jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
+          I = isb + II - 1
+          j = jsb + jj - 1
+          ! Perhaps these should be thickness weighted.
+          T_vel(II,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i+1,j,k))
+          S_vel(II,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i+1,j,k))
+        enddo ; else ; do concurrent (k=1:nkmb, jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
+          I = isb + II - 1
+          j = jsb + jj - 1
+          Rml_vel(II,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i+1,j,k))
+        enddo ; endif
+        if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
+          I = isb + II - 1
+          j = jsb + jj - 1
+          SpV_vel(II,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i+1,j,k))
+        enddo ; endif
+      else ! v-points
+        do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          if (do_ij(ii,jj)) then
+            if (v(i,J,k) * (h(i,j+1,k) - h(i,j,k)) >= 0) then
+              ! If the flow is from thin to thick then bias towards the thinner thickness
+              h_at_vel(ii,jj,k) = 2.0*h(i,j,k)*h(i,j+1,k) / &
+                              (h(i,j,k) + h(i,j+1,k) + h_neglect)
+              dz_at_vel(ii,jj,k) = 2.0*dz(i,j,k)*dz(i,j+1,k) / &
+                              (dz(i,j,k) + dz(i,j+1,k) + dz_neglect)
+            else
+              ! If the flow is from thick to thin then use the simple average thickness
+              h_at_vel(ii,jj,k) = 0.5 * (h(i,j,k) + h(i,j+1,k))
+              dz_at_vel(ii,jj,k) = 0.5 * (dz(i,j,k) + dz(i,j+1,k))
+            endif
+          endif
+          h_vel(ii,jj,k) = 0.5 * (h(i,j,k) + h(i,j+1,k))
+          dz_vel(ii,jj,k) = 0.5 * (dz(i,j,k) + dz(i,j+1,k))
+        enddo
+        if (use_BBL_EOS) then ; do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          ! Perhaps these should be thickness weighted.
+          T_vel(ii,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i,j+1,k))
+          S_vel(ii,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i,j+1,k))
+        enddo ; else ; do concurrent (k=1:nkmb, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          Rml_vel(ii,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i,j+1,k))
+        enddo ; endif
+        if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          SpV_vel(ii,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i,j+1,k))
+        enddo ; endif
+      endif
+
       do concurrent (jj=1:jje) DO_LOCALITY(local(j))
         j = jsb + jj - 1
-        if (m==1) then
-          do concurrent (II=1:iie) DO_LOCALITY(local(I))
-            I = isb + II - 1
-            do_ij(II,jj) = (G%mask2dCu(I,j) > 0.0)
-          enddo
-        else
-          do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            do_ij(ii,jj) = (G%mask2dCv(i,J) > 0.0)
-          enddo
-        endif
-
-        ! Calculate thickness at velocity points (u or v depending on value of m).
-        ! Also interpolate the ML density or T/S properties.
-        if (m==1) then ! u-points
-          do concurrent (k=1:nz, II=1:iie) DO_LOCALITY(local(I))
-            I = isb + II - 1
-            if (do_ij(II,jj)) then
-              if (u(I,j,k) * (h(i+1,j,k) - h(i,j,k)) >= 0) then
-                ! If the flow is from thin to thick then bias towards the thinner thickness
-                h_at_vel(II,jj,k) = 2.0*h(i,j,k)*h(i+1,j,k) / &
-                                (h(i,j,k) + h(i+1,j,k) + h_neglect)
-                dz_at_vel(II,jj,k) = 2.0*dz(i,j,k)*dz(i+1,j,k) / &
-                                (dz(i,j,k) + dz(i+1,j,k) + dz_neglect)
-              else
-                ! If the flow is from thick to thin then use the simple average thickness
-                h_at_vel(II,jj,k) = 0.5 * (h(i,j,k) + h(i+1,j,k))
-                dz_at_vel(II,jj,k) = 0.5 * (dz(i,j,k) + dz(i+1,j,k))
-              endif
-            endif
-            h_vel(II,jj,k) = 0.5 * (h(i,j,k) + h(i+1,j,k))
-            dz_vel(II,jj,k) = 0.5 * (dz(i,j,k) + dz(i+1,j,k))
-          enddo
-          if (use_BBL_EOS) then ; do concurrent (k=1:nz, II=1:iie) DO_LOCALITY(local(I))
-            I = isb + II - 1
-            ! Perhaps these should be thickness weighted.
-            T_vel(II,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i+1,j,k))
-            S_vel(II,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i+1,j,k))
-          enddo ; else ; do concurrent (k=1:nkmb, II=1:iie) DO_LOCALITY(local(I))
-            I = isb + II - 1
-            Rml_vel(II,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i+1,j,k))
-          enddo ; endif
-          if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, II=1:iie) DO_LOCALITY(local(I))
-            I = isb + II - 1
-            SpV_vel(II,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i+1,j,k))
-          enddo ; endif
-        else ! v-points
-          do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            if (do_ij(ii,jj)) then
-              if (v(i,J,k) * (h(i,j+1,k) - h(i,j,k)) >= 0) then
-                ! If the flow is from thin to thick then bias towards the thinner thickness
-                h_at_vel(ii,jj,k) = 2.0*h(i,j,k)*h(i,j+1,k) / &
-                                (h(i,j,k) + h(i,j+1,k) + h_neglect)
-                dz_at_vel(ii,jj,k) = 2.0*dz(i,j,k)*dz(i,j+1,k) / &
-                                (dz(i,j,k) + dz(i,j+1,k) + dz_neglect)
-              else
-                ! If the flow is from thick to thin then use the simple average thickness
-                h_at_vel(ii,jj,k) = 0.5 * (h(i,j,k) + h(i,j+1,k))
-                dz_at_vel(ii,jj,k) = 0.5 * (dz(i,j,k) + dz(i,j+1,k))
-              endif
-            endif
-            h_vel(ii,jj,k) = 0.5 * (h(i,j,k) + h(i,j+1,k))
-            dz_vel(ii,jj,k) = 0.5 * (dz(i,j,k) + dz(i,j+1,k))
-          enddo
-          if (use_BBL_EOS) then ; do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            ! Perhaps these should be thickness weighted.
-            T_vel(ii,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i,j+1,k))
-            S_vel(ii,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i,j+1,k))
-          enddo ; else ; do concurrent (k=1:nkmb, ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            Rml_vel(ii,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i,j+1,k))
-          enddo ; endif
-          if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            SpV_vel(ii,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i,j+1,k))
-          enddo ; endif
-        endif
-
         if (associated(OBC)) then ; if (OBC%number_of_segments > 0) then
           ! Apply a zero gradient projection of thickness across OBC points.
           if (m==1) then
