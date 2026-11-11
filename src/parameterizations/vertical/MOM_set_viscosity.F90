@@ -265,7 +265,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 ! direction [Z ~> m].
     dz_vel      ! Arithmetic mean of the difference in across the layers adjacent
                 ! to a velocity point [Z ~> m].
-  real, dimension(SZIB_(G),SZJB_(G),SZK_(GV)) :: &
+  real, dimension(nIIB,nJJB,SZK_(GV)) :: &
     T_vel, &    ! Arithmetic mean of the layer temperatures adjacent to a
                 ! velocity point [C ~> degC].
     S_vel, &    ! Arithmetic mean of the layer salinities adjacent to a
@@ -534,8 +534,8 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
   endif
 
   if (.not.use_BBL_EOS) then
-    do concurrent (k=1:nz, j=G%jsdB:G%Jedb, i=G%isdB:G%iedB)
-      Rml_vel(i,j,k) = 0.0
+    do concurrent (k=1:nz, jj=1:nJJB, ii=1:nIIB)
+      Rml_vel(ii,jj,k) = 0.0
     enddo
   endif
 
@@ -607,15 +607,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           if (use_BBL_EOS) then ; do concurrent (k=1:nz, II=1:iie) DO_LOCALITY(local(I))
             I = isb + II - 1
             ! Perhaps these should be thickness weighted.
-            T_vel(I,j,k) = 0.5 * (tv%T(i,j,k) + tv%T(i+1,j,k))
-            S_vel(I,j,k) = 0.5 * (tv%S(i,j,k) + tv%S(i+1,j,k))
+            T_vel(II,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i+1,j,k))
+            S_vel(II,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i+1,j,k))
           enddo ; else ; do concurrent (k=1:nkmb, II=1:iie) DO_LOCALITY(local(I))
             I = isb + II - 1
-            Rml_vel(I,j,k) = 0.5 * (Rml(i,j,k) + Rml(i+1,j,k))
+            Rml_vel(II,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i+1,j,k))
           enddo ; endif
           if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, II=1:iie) DO_LOCALITY(local(I))
             I = isb + II - 1
-            SpV_vel(I,j,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i+1,j,k))
+            SpV_vel(II,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i+1,j,k))
           enddo ; endif
         else ! v-points
           do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
@@ -639,15 +639,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           if (use_BBL_EOS) then ; do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
             i = isb + ii - 1
             ! Perhaps these should be thickness weighted.
-            T_vel(i,j,k) = 0.5 * (tv%T(i,j,k) + tv%T(i,j+1,k))
-            S_vel(i,j,k) = 0.5 * (tv%S(i,j,k) + tv%S(i,j+1,k))
+            T_vel(ii,jj,k) = 0.5 * (tv%T(i,j,k) + tv%T(i,j+1,k))
+            S_vel(ii,jj,k) = 0.5 * (tv%S(i,j,k) + tv%S(i,j+1,k))
           enddo ; else ; do concurrent (k=1:nkmb, ii=1:iie) DO_LOCALITY(local(i))
             i = isb + ii - 1
-            Rml_vel(i,j,k) = 0.5 * (Rml(i,j,k) + Rml(i,j+1,k))
+            Rml_vel(ii,jj,k) = 0.5 * (Rml(i,j,k) + Rml(i,j+1,k))
           enddo ; endif
           if (allocated(tv%SpV_avg)) then ; do concurrent (k=1:nz, ii=1:iie) DO_LOCALITY(local(i))
             i = isb + ii - 1
-            SpV_vel(i,j,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i,j+1,k))
+            SpV_vel(ii,jj,k) = 0.5 * (tv%SpV_avg(i,j,k) + tv%SpV_avg(i,j+1,k))
           enddo ; endif
         endif
 
@@ -664,15 +664,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 enddo
                 if (use_BBL_EOS) then
                   do k=1,nz
-                    T_vel(I,j,k) = tv%T(i,j,k) ; S_vel(I,j,k) = tv%S(i,j,k)
+                    T_vel(II,jj,k) = tv%T(i,j,k) ; S_vel(II,jj,k) = tv%S(i,j,k)
                   enddo
                 else
                   do k=1,nkmb
-                    Rml_vel(I,j,k) = Rml(i,j,k)
+                    Rml_vel(II,jj,k) = Rml(i,j,k)
                   enddo
                 endif
                 if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(I,j,k) = tv%SpV_avg(i,j,k)
+                  SpV_vel(II,jj,k) = tv%SpV_avg(i,j,k)
                 enddo ; endif
               elseif (OBC%segnum_u(I,j) < 0) then  ! OBC_DIRECTION_W
                 do k=1,nz
@@ -681,15 +681,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 enddo
                 if (use_BBL_EOS) then
                   do k=1,nz
-                    T_vel(I,j,k) = tv%T(i+1,j,k) ; S_vel(I,j,k) = tv%S(i+1,j,k)
+                    T_vel(II,jj,k) = tv%T(i+1,j,k) ; S_vel(II,jj,k) = tv%S(i+1,j,k)
                   enddo
                 else
                   do k=1,nkmb
-                    Rml_vel(I,j,k) = Rml(i+1,j,k)
+                    Rml_vel(II,jj,k) = Rml(i+1,j,k)
                   enddo
                 endif
                 if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(I,j,k) = tv%SpV_avg(i+1,j,k)
+                  SpV_vel(II,jj,k) = tv%SpV_avg(i+1,j,k)
                 enddo ; endif
               endif
             enddo
@@ -704,15 +704,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 enddo
                 if (use_BBL_EOS) then
                   do k=1,nz
-                    T_vel(i,j,k) = tv%T(i,j,k) ; S_vel(i,j,k) = tv%S(i,j,k)
+                    T_vel(ii,jj,k) = tv%T(i,j,k) ; S_vel(ii,jj,k) = tv%S(i,j,k)
                   enddo
                 else
                   do k=1,nkmb
-                    Rml_vel(i,j,k) = Rml(i,j,k)
+                    Rml_vel(ii,jj,k) = Rml(i,j,k)
                   enddo
                 endif
                 if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(i,j,k) = tv%SpV_avg(i,j,k)
+                  SpV_vel(ii,jj,k) = tv%SpV_avg(i,j,k)
                 enddo ;  endif
               elseif (OBC%segnum_v(i,J) < 0) then  ! OBC_DIRECTION_S
                 do k=1,nz
@@ -721,15 +721,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 enddo
                 if (use_BBL_EOS) then
                   do k=1,nz
-                    T_vel(i,j,k) = tv%T(i,j+1,k) ; S_vel(i,j,k) = tv%S(i,j+1,k)
+                    T_vel(ii,jj,k) = tv%T(i,j+1,k) ; S_vel(ii,jj,k) = tv%S(i,j+1,k)
                   enddo
                 else
                   do k=1,nkmb
-                    Rml_vel(i,j,k) = Rml(i,j+1,k)
+                    Rml_vel(ii,jj,k) = Rml(i,j+1,k)
                   enddo
                 endif
                 if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(i,j,k) = tv%SpV_avg(i,j+1,k)
+                  SpV_vel(ii,jj,k) = tv%SpV_avg(i,j+1,k)
                 enddo ; endif
               endif
             enddo
@@ -795,11 +795,11 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
               endif ; endif
 
               if (use_BBL_EOS .and. (hweight >= 0.0)) then
-                Thtot = Thtot + hweight * T_vel(i,j,k)
-                Shtot = Shtot + hweight * S_vel(i,j,k)
+                Thtot = Thtot + hweight * T_vel(ii,jj,k)
+                Shtot = Shtot + hweight * S_vel(ii,jj,k)
               endif
               if (allocated(tv%SpV_avg) .and. (hweight >= 0.0)) then
-                SpV_htot = SpV_htot + hweight * SpV_vel(i,j,k)
+                SpV_htot = SpV_htot + hweight * SpV_vel(ii,jj,k)
               endif
             enddo ! end of k loop
 
@@ -936,13 +936,13 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
             if (h_at_vel(ii,jj,k) <= 0.0) cycle
 
             ! Delta rho * h_bbl assuming everything below is homogenized
-            oldfn = dR_dT(i,j)*(Thtot - T_vel(i,j,k)*htot) + &
-                    dR_dS(i,j)*(Shtot - S_vel(i,j,k)*htot)
+            oldfn = dR_dT(i,j)*(Thtot - T_vel(ii,jj,k)*htot) + &
+                    dR_dS(i,j)*(Shtot - S_vel(ii,jj,k)*htot)
             if (oldfn >= ustarsq) exit
 
             ! Local Delta rho * h_bbl  at interface
-            Dfn = (dR_dT(i,j)*(T_vel(i,j,k) - T_vel(i,j,k-1)) + &
-                   dR_dS(i,j)*(S_vel(i,j,k) - S_vel(i,j,k-1))) * &
+            Dfn = (dR_dT(i,j)*(T_vel(ii,jj,k) - T_vel(ii,jj,k-1)) + &
+                   dR_dS(i,j)*(S_vel(ii,jj,k) - S_vel(ii,jj,k-1))) * &
                   (h_at_vel(ii,jj,k) + htot)
 
             if ((oldfn + Dfn) <= ustarsq) then
@@ -959,12 +959,12 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
             ! Increment total BBL thickness and cumulative T and S
             htot = htot + Dh
             dztot = dztot + Ddz
-            Thtot = Thtot + T_vel(i,j,k)*Dh ; Shtot = Shtot + S_vel(i,j,k)*Dh
+            Thtot = Thtot + T_vel(ii,jj,k)*Dh ; Shtot = Shtot + S_vel(ii,jj,k)*Dh
           enddo
           if ((oldfn < ustarsq) .and. h_at_vel(ii,jj,1) > 0.0) then
             ! Layer 1 might be part of the BBL.
-            if (dR_dT(i,j) * (Thtot - T_vel(i,j,1)*htot) + &
-                dR_dS(i,j) * (Shtot - S_vel(i,j,1)*htot) < ustarsq) then
+            if (dR_dT(i,j) * (Thtot - T_vel(ii,jj,1)*htot) + &
+                dR_dS(i,j) * (Shtot - S_vel(ii,jj,1)*htot) < ustarsq) then
               htot = htot + h_at_vel(ii,jj,1)
               dztot = dztot + dz_at_vel(ii,jj,1)
             endif
@@ -992,8 +992,8 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           enddo
           if (nkml>0) then
             do k=nkmb,2,-1
-              oldfn = Rhtot - Rml_vel(i,j,k)*htot
-              Dfn = (Rml_vel(i,j,k) - Rml_vel(i,j,k-1)) * (h_at_vel(ii,jj,k)+htot)
+              oldfn = Rhtot - Rml_vel(ii,jj,k)*htot
+              Dfn = (Rml_vel(ii,jj,k) - Rml_vel(ii,jj,k-1)) * (h_at_vel(ii,jj,k)+htot)
 
               if (oldfn >= ustarsq) then
                 cycle
@@ -1008,9 +1008,9 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
 
               htot = htot + Dh
               dztot = dztot + Ddz
-              Rhtot = Rhtot + Rml_vel(i,j,k)*Dh
+              Rhtot = Rhtot + Rml_vel(ii,jj,k)*Dh
             enddo
-            if (Rhtot - Rml_vel(i,j,1)*htot < ustarsq) then
+            if (Rhtot - Rml_vel(ii,jj,1)*htot < ustarsq) then
               htot = htot + h_at_vel(ii,jj,1)
               dztot = dztot + dz_at_vel(ii,jj,1)
             endif
@@ -1176,7 +1176,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
               endif
 
               if (allocated(tv%SpV_avg)) then
-                cdrag_conv = cdrag_RL_to_H / SpV_vel(i,j,k)
+                cdrag_conv = cdrag_RL_to_H / SpV_vel(ii,jj,k)
               else
                 cdrag_conv = cdrag_L_to_H
               endif
@@ -1263,7 +1263,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           do k=nz,1,-1
             h_bbl_fr = min(h_bbl_drag(i,j) - h_sum, h_at_vel(ii,jj,k)) * I_hwtot
             if (allocated(tv%SpV_avg)) then
-              cdrag_conv = cdrag_RL_to_H / SpV_vel(i,j,k)
+              cdrag_conv = cdrag_RL_to_H / SpV_vel(ii,jj,k)
             else
               cdrag_conv = cdrag_L_to_H
             endif
