@@ -230,7 +230,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
     umag_avg, & ! The average magnitude of velocities in the bottom boundary layer [L T-1 ~> m s-1].
     h_bbl_drag, & ! The thickness over which to apply drag as a body force [H ~> m or kg m-2].
     dz_bbl_drag   ! The vertical height over which to apply drag as a body force [Z ~> m].
-  real, dimension(SZIB_(G),SZJB_(G)) :: &
+  real, dimension(nIIB,nJJB) :: &
     T_EOS, &    !   The temperature used to calculate the partial derivatives
                 ! of density with T and S [C ~> degC].
     S_EOS, &    !   The salinity used to calculate the partial derivatives
@@ -822,9 +822,9 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
             dz_bbl_drag(ii,jj) = dzwtot
 
             if (use_BBL_EOS) then ; if (hwtot > 0.0) then
-              T_EOS(i,j) = Thtot/hwtot ; S_EOS(i,j) = Shtot/hwtot
+              T_EOS(ii,jj) = Thtot/hwtot ; S_EOS(ii,jj) = Shtot/hwtot
             else
-              T_EOS(i,j) = 0.0 ; S_EOS(i,j) = 0.0
+              T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0
             endif ; endif
 
             ! Diagnostic BBL flow speed at u- and v-points.
@@ -854,36 +854,29 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           if (associated(tv%p_surf)) then
             if (m==1) then ; do concurrent (II=1:iie) DO_LOCALITY(local(I))
               I = isb + II - 1
-              press(I,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i+1,j))
+              press(II,jj) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i+1,j))
             enddo
             else ; do concurrent (ii=1:iie) DO_LOCALITY(local(i))
               i = isb + ii - 1
-              press(i,j) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1))
+              press(ii,jj) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1))
             enddo ; endif
           else
-            do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-              i = isb + ii - 1
-              press(i,j) = 0.0
-            enddo
+            do concurrent (ii=1:iie) ; press(ii,jj) = 0.0 ; enddo
           endif
 
-          do concurrent (ii=1:iie, .not.do_ij(ii,jj)) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            T_EOS(i,j) = 0.0 ; S_EOS(i,j) = 0.0
-          enddo
+          do concurrent (ii=1:iie, .not.do_ij(ii,jj)) ; T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0 ; enddo
 
-          do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-            i = isb + ii - 1
+          do concurrent (ii=1:iie)
             do k=1,nz
-              press(i,j) = press(i,j) + (GV%H_to_RZ*GV%g_Earth) * h_vel(ii,jj,k)
+              press(ii,jj) = press(ii,jj) + (GV%H_to_RZ*GV%g_Earth) * h_vel(ii,jj,k)
             enddo
           enddo
         endif
       enddo ! end of jj loop
 
       if (use_BBL_EOS) then
-        EOSdom(1,1) = isb-G%IsdB+1 ; EOSdom(1,2) = ieb-G%IsdB+1
-        EOSdom(2,1) = jsb-G%JsdB+1 ; EOSdom(2,2) = jeb-G%JsdB+1
+        EOSdom(1,1) = 1 ; EOSdom(1,2) = iie
+        EOSdom(2,1) = 1 ; EOSdom(2,2) = jje
         call calculate_density_derivs(T_EOS, S_EOS, press, dR_dT, dR_dS, tv%eqn_of_state, EOSdom)
       endif
 
@@ -936,13 +929,13 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
             if (h_at_vel(ii,jj,k) <= 0.0) cycle
 
             ! Delta rho * h_bbl assuming everything below is homogenized
-            oldfn = dR_dT(i,j)*(Thtot - T_vel(ii,jj,k)*htot) + &
-                    dR_dS(i,j)*(Shtot - S_vel(ii,jj,k)*htot)
+            oldfn = dR_dT(ii,jj)*(Thtot - T_vel(ii,jj,k)*htot) + &
+                    dR_dS(ii,jj)*(Shtot - S_vel(ii,jj,k)*htot)
             if (oldfn >= ustarsq) exit
 
             ! Local Delta rho * h_bbl  at interface
-            Dfn = (dR_dT(i,j)*(T_vel(ii,jj,k) - T_vel(ii,jj,k-1)) + &
-                   dR_dS(i,j)*(S_vel(ii,jj,k) - S_vel(ii,jj,k-1))) * &
+            Dfn = (dR_dT(ii,jj)*(T_vel(ii,jj,k) - T_vel(ii,jj,k-1)) + &
+                   dR_dS(ii,jj)*(S_vel(ii,jj,k) - S_vel(ii,jj,k-1))) * &
                   (h_at_vel(ii,jj,k) + htot)
 
             if ((oldfn + Dfn) <= ustarsq) then
@@ -963,8 +956,8 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           enddo
           if ((oldfn < ustarsq) .and. h_at_vel(ii,jj,1) > 0.0) then
             ! Layer 1 might be part of the BBL.
-            if (dR_dT(i,j) * (Thtot - T_vel(ii,jj,1)*htot) + &
-                dR_dS(i,j) * (Shtot - S_vel(ii,jj,1)*htot) < ustarsq) then
+            if (dR_dT(ii,jj) * (Thtot - T_vel(ii,jj,1)*htot) + &
+                dR_dS(ii,jj) * (Shtot - S_vel(ii,jj,1)*htot) < ustarsq) then
               htot = htot + h_at_vel(ii,jj,1)
               dztot = dztot + dz_at_vel(ii,jj,1)
             endif
