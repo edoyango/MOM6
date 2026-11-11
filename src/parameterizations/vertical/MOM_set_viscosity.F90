@@ -865,31 +865,35 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         enddo
       endif ! Not linear_drag
 
-      do concurrent (jj=1:jje) DO_LOCALITY(local(j))
-        j = jsb + jj - 1
-        if (use_BBL_EOS) then
-          if (associated(tv%p_surf)) then
-            if (m==1) then ; do concurrent (II=1:iie) DO_LOCALITY(local(I))
+      if (use_BBL_EOS) then
+        if (associated(tv%p_surf)) then
+          if (m==1) then
+            do concurrent (jj=1:jje, II=1:iie) DO_LOCALITY(local(I, j))
               I = isb + II - 1
+              j = jsb + jj - 1
               press(II,jj) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i+1,j))
             enddo
-            else ; do concurrent (ii=1:iie) DO_LOCALITY(local(i))
-              i = isb + ii - 1
-              press(ii,jj) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1))
-            enddo ; endif
           else
-            do concurrent (ii=1:iie) ; press(ii,jj) = 0.0 ; enddo
+            do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+              i = isb + ii - 1
+              j = jsb + jj - 1
+              press(ii,jj) = 0.5*(tv%p_surf(i,j) + tv%p_surf(i,j+1))
+            enddo
           endif
+        else
+          do concurrent (jj=1:jje, ii=1:iie) ; press(ii,jj) = 0.0 ; enddo
+        endif
 
-          do concurrent (ii=1:iie, .not.do_ij(ii,jj)) ; T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0 ; enddo
+        do concurrent (jj=1:jje, ii=1:iie, .not.do_ij(ii,jj)) ; T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0 ; enddo
 
+        do concurrent (jj=1:jje) DO_LOCALITY(local(k))
           do k=1,nz
             do concurrent (ii=1:iie)
               press(ii,jj) = press(ii,jj) + (GV%H_to_RZ*GV%g_Earth) * h_vel(ii,jj,k)
             enddo
           enddo
-        endif
-      enddo ! end of jj loop
+        enddo
+      endif
 
       if (use_BBL_EOS) then
         EOSdom(1,1) = 1 ; EOSdom(1,2) = iie
