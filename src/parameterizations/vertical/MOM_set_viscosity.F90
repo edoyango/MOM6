@@ -160,6 +160,10 @@ type, public :: set_visc_CS ; private
   integer :: id_clock_ML = -1 !< CPU time clock id for set_viscous_ML
   integer, public :: niblock = default_niblock !< The i block size used in array calculations [nondim].
   integer, public :: njblock = default_njblock !< The j block size used in array calculations [nondim].
+  integer :: BBL_niblock = default_niblock !< The i block size used in the bottom boundary layer
+                            !! calculations [nondim]. Runtime parameter `VISCOUS_BBL_NIBLOCK`.
+  integer :: BBL_njblock = default_njblock !< The j block size used in the bottom boundary layer
+                            !! calculations [nondim]. Runtime parameter `VISCOUS_BBL_NJBLOCK`.
 end type set_visc_CS
 
 contains
@@ -183,6 +187,42 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   type(set_visc_CS),        intent(inout) :: CS   !< The control structure returned by a previous
                                                   !! call to set_visc_init.
   type(porous_barrier_type),intent(in)    :: pbv  !< porous barrier fractional cell metrics
+
+  ! Local variables
+  integer :: nIIB ! The i-direction block size, in face points, with 0 resolved to the full domain [nondim].
+  integer :: nJJB ! The j-direction block size, in face points, with 0 resolved to the full domain [nondim].
+
+  nIIB = CS%BBL_niblock
+  if (nIIB == 0) nIIB = G%iec - G%isc + 2
+  nJJB = CS%BBL_njblock
+  if (nJJB == 0) nJJB = G%jec - G%jsc + 2
+
+  call set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJJB)
+
+end subroutine set_viscous_BBL
+
+!> Calculates the thickness of the bottom boundary layer and the viscosity within that layer,
+!! working on blocks of nIIB by nJJB velocity points at a time.
+subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJJB)
+  type(ocean_grid_type),    intent(inout) :: G    !< The ocean's grid structure.
+  type(verticalGrid_type),  intent(in)    :: GV   !< The ocean's vertical grid structure.
+  type(unit_scale_type),    intent(in)    :: US   !< A dimensional unit scaling type
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), &
+                            intent(in)    :: u    !< The zonal velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
+                            intent(in)    :: v    !< The meridional velocity [L T-1 ~> m s-1].
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                            intent(in)    :: h    !< Layer thicknesses [H ~> m or kg m-2].
+  type(thermo_var_ptrs),    intent(in)    :: tv   !< A structure containing pointers to any
+                                                  !! available thermodynamic fields. Absent fields
+                                                  !! have NULL pointers.
+  type(vertvisc_type),      intent(inout) :: visc !< A structure containing vertical viscosities and
+                                                  !! related fields.
+  type(set_visc_CS),        intent(inout) :: CS   !< The control structure returned by a previous
+                                                  !! call to set_visc_init.
+  type(porous_barrier_type),intent(in)    :: pbv  !< porous barrier fractional cell metrics
+  integer,                  intent(in)    :: nIIB !< The i-direction block size, in face points [nondim].
+  integer,                  intent(in)    :: nJJB !< The j-direction block size, in face points [nondim].
 
   ! Local variables
   real, dimension(SZIB_(G),SZJB_(G)) :: &
@@ -1249,7 +1289,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
                     G%HI, haloshift=0, unscale=US%Z_to_m, scalar_pair=.true.)
     endif
   endif
-end subroutine set_viscous_BBL
+end subroutine set_viscous_BBL_block
 
 !> Determine the normalized open length of each interface, given the edge depths and normalized
 !! volumes below each interface.
@@ -3703,6 +3743,20 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
   call get_param(param_file, mdl, "VISCOUS_ML_NJBLOCK", CS%njblock, &
                  "The j-direction block size used in the viscous mixed layer solver. "//&
                  "If 0, the full computational domain height is used.", default=default_njblock)
+  call get_param(param_file, mdl, "VISCOUS_BBL_NIBLOCK", CS%BBL_niblock, &
+                 "The i-direction block size used in the bottom boundary layer calculations. "//&
+                 "The default 0 setting is dynamic and fits the "//&
+                 "full computational i-domain length.", default=default_niblock, layoutParam=.true.)
+  call get_param(param_file, mdl, "VISCOUS_BBL_NJBLOCK", CS%BBL_njblock, &
+                 "The j-direction block size used in the bottom boundary layer calculations. "//&
+                 "The default 0 setting is dynamic and fits the "//&
+                 "full computational j-domain length.", default=default_njblock, layoutParam=.true.)
+  if (CS%BBL_niblock < 0) &
+    call MOM_error(FATAL, "VISCOUS_BBL_NIBLOCK must be nonnegative; "//&
+                          "use 0 to select the default block size.")
+  if (CS%BBL_njblock < 0) &
+    call MOM_error(FATAL, "VISCOUS_BBL_NJBLOCK must be nonnegative; "//&
+                          "use 0 to select the default block size.")
 
   call register_restart_field_as_obsolete('Kd_turb','Kd_shear', restart_CS)
   call register_restart_field_as_obsolete('Kv_turb','Kv_shear', restart_CS)
