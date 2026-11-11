@@ -866,8 +866,8 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
 
           do concurrent (ii=1:iie, .not.do_ij(ii,jj)) ; T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0 ; enddo
 
-          do concurrent (ii=1:iie)
-            do k=1,nz
+          do k=1,nz
+            do concurrent (ii=1:iie)
               press(ii,jj) = press(ii,jj) + (GV%H_to_RZ*GV%g_Earth) * h_vel(ii,jj,k)
             enddo
           enddo
