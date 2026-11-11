@@ -660,93 +660,95 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         enddo ; endif
       endif
 
+      if (associated(OBC)) then ; if (OBC%number_of_segments > 0) then
+        ! Apply a zero gradient projection of thickness across OBC points.
+        if (m==1) then
+          do concurrent (jj=1:jje, II=1:iie, do_ij(II,jj) .and. (OBC%segnum_u(isb+II-1,jsb+jj-1) /= 0)) &
+              DO_LOCALITY(local(I, j, k))
+            I = isb + II - 1
+            j = jsb + jj - 1
+            if (OBC%segnum_u(I,j) > 0) then  ! OBC_DIRECTION_E
+              do k=1,nz
+                h_at_vel(II,jj,k) = h(i,j,k) ; h_vel(II,jj,k) = h(i,j,k)
+                dz_at_vel(II,jj,k) = dz(i,j,k) ; dz_vel(II,jj,k) = dz(i,j,k)
+              enddo
+              if (use_BBL_EOS) then
+                do k=1,nz
+                  T_vel(II,jj,k) = tv%T(i,j,k) ; S_vel(II,jj,k) = tv%S(i,j,k)
+                enddo
+              else
+                do k=1,nkmb
+                  Rml_vel(II,jj,k) = Rml(i,j,k)
+                enddo
+              endif
+              if (allocated(tv%SpV_avg)) then ; do k=1,nz
+                SpV_vel(II,jj,k) = tv%SpV_avg(i,j,k)
+              enddo ; endif
+            elseif (OBC%segnum_u(I,j) < 0) then  ! OBC_DIRECTION_W
+              do k=1,nz
+                h_at_vel(II,jj,k) = h(i+1,j,k) ; h_vel(II,jj,k) = h(i+1,j,k)
+                dz_at_vel(II,jj,k) = dz(i+1,j,k) ; dz_vel(II,jj,k) = dz(i+1,j,k)
+              enddo
+              if (use_BBL_EOS) then
+                do k=1,nz
+                  T_vel(II,jj,k) = tv%T(i+1,j,k) ; S_vel(II,jj,k) = tv%S(i+1,j,k)
+                enddo
+              else
+                do k=1,nkmb
+                  Rml_vel(II,jj,k) = Rml(i+1,j,k)
+                enddo
+              endif
+              if (allocated(tv%SpV_avg)) then ; do k=1,nz
+                SpV_vel(II,jj,k) = tv%SpV_avg(i+1,j,k)
+              enddo ; endif
+            endif
+          enddo
+        else
+          do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj) .and. (OBC%segnum_v(isb+ii-1,jsb+jj-1) /= 0)) &
+              DO_LOCALITY(local(i, j, k))
+            i = isb + ii - 1
+            j = jsb + jj - 1
+            if (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
+              do k=1,nz
+                h_at_vel(ii,jj,k) = h(i,j,k) ; h_vel(ii,jj,k) = h(i,j,k)
+                dz_at_vel(ii,jj,k) = dz(i,j,k) ; dz_vel(ii,jj,k) = dz(i,j,k)
+              enddo
+              if (use_BBL_EOS) then
+                do k=1,nz
+                  T_vel(ii,jj,k) = tv%T(i,j,k) ; S_vel(ii,jj,k) = tv%S(i,j,k)
+                enddo
+              else
+                do k=1,nkmb
+                  Rml_vel(ii,jj,k) = Rml(i,j,k)
+                enddo
+              endif
+              if (allocated(tv%SpV_avg)) then ; do k=1,nz
+                SpV_vel(ii,jj,k) = tv%SpV_avg(i,j,k)
+              enddo ;  endif
+            elseif (OBC%segnum_v(i,J) < 0) then  ! OBC_DIRECTION_S
+              do k=1,nz
+                h_at_vel(ii,jj,k) = h(i,j+1,k) ; h_vel(ii,jj,k) = h(i,j+1,k)
+                dz_at_vel(ii,jj,k) = dz(i,j+1,k) ; dz_vel(ii,jj,k) = dz(i,j+1,k)
+              enddo
+              if (use_BBL_EOS) then
+                do k=1,nz
+                  T_vel(ii,jj,k) = tv%T(i,j+1,k) ; S_vel(ii,jj,k) = tv%S(i,j+1,k)
+                enddo
+              else
+                do k=1,nkmb
+                  Rml_vel(ii,jj,k) = Rml(i,j+1,k)
+                enddo
+              endif
+              if (allocated(tv%SpV_avg)) then ; do k=1,nz
+                SpV_vel(ii,jj,k) = tv%SpV_avg(i,j+1,k)
+              enddo ; endif
+            endif
+          enddo
+        endif
+      endif ; endif
+
       do concurrent (jj=1:jje) DO_LOCALITY(local(j))
         j = jsb + jj - 1
-        if (associated(OBC)) then ; if (OBC%number_of_segments > 0) then
-          ! Apply a zero gradient projection of thickness across OBC points.
-          if (m==1) then
-            do concurrent (II=1:iie, do_ij(II,jj) .and. (OBC%segnum_u(isb+II-1,j) /= 0)) &
-                DO_LOCALITY(local(I, k))
-              I = isb + II - 1
-              if (OBC%segnum_u(I,j) > 0) then  ! OBC_DIRECTION_E
-                do k=1,nz
-                  h_at_vel(II,jj,k) = h(i,j,k) ; h_vel(II,jj,k) = h(i,j,k)
-                  dz_at_vel(II,jj,k) = dz(i,j,k) ; dz_vel(II,jj,k) = dz(i,j,k)
-                enddo
-                if (use_BBL_EOS) then
-                  do k=1,nz
-                    T_vel(II,jj,k) = tv%T(i,j,k) ; S_vel(II,jj,k) = tv%S(i,j,k)
-                  enddo
-                else
-                  do k=1,nkmb
-                    Rml_vel(II,jj,k) = Rml(i,j,k)
-                  enddo
-                endif
-                if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(II,jj,k) = tv%SpV_avg(i,j,k)
-                enddo ; endif
-              elseif (OBC%segnum_u(I,j) < 0) then  ! OBC_DIRECTION_W
-                do k=1,nz
-                  h_at_vel(II,jj,k) = h(i+1,j,k) ; h_vel(II,jj,k) = h(i+1,j,k)
-                  dz_at_vel(II,jj,k) = dz(i+1,j,k) ; dz_vel(II,jj,k) = dz(i+1,j,k)
-                enddo
-                if (use_BBL_EOS) then
-                  do k=1,nz
-                    T_vel(II,jj,k) = tv%T(i+1,j,k) ; S_vel(II,jj,k) = tv%S(i+1,j,k)
-                  enddo
-                else
-                  do k=1,nkmb
-                    Rml_vel(II,jj,k) = Rml(i+1,j,k)
-                  enddo
-                endif
-                if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(II,jj,k) = tv%SpV_avg(i+1,j,k)
-                enddo ; endif
-              endif
-            enddo
-          else
-            do concurrent (ii=1:iie, do_ij(ii,jj) .and. (OBC%segnum_v(isb+ii-1,J) /= 0)) &
-                DO_LOCALITY(local(i, k))
-              i = isb + ii - 1
-              if (OBC%segnum_v(i,J) > 0) then  ! OBC_DIRECTION_N
-                do k=1,nz
-                  h_at_vel(ii,jj,k) = h(i,j,k) ; h_vel(ii,jj,k) = h(i,j,k)
-                  dz_at_vel(ii,jj,k) = dz(i,j,k) ; dz_vel(ii,jj,k) = dz(i,j,k)
-                enddo
-                if (use_BBL_EOS) then
-                  do k=1,nz
-                    T_vel(ii,jj,k) = tv%T(i,j,k) ; S_vel(ii,jj,k) = tv%S(i,j,k)
-                  enddo
-                else
-                  do k=1,nkmb
-                    Rml_vel(ii,jj,k) = Rml(i,j,k)
-                  enddo
-                endif
-                if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(ii,jj,k) = tv%SpV_avg(i,j,k)
-                enddo ;  endif
-              elseif (OBC%segnum_v(i,J) < 0) then  ! OBC_DIRECTION_S
-                do k=1,nz
-                  h_at_vel(ii,jj,k) = h(i,j+1,k) ; h_vel(ii,jj,k) = h(i,j+1,k)
-                  dz_at_vel(ii,jj,k) = dz(i,j+1,k) ; dz_vel(ii,jj,k) = dz(i,j+1,k)
-                enddo
-                if (use_BBL_EOS) then
-                  do k=1,nz
-                    T_vel(ii,jj,k) = tv%T(i,j+1,k) ; S_vel(ii,jj,k) = tv%S(i,j+1,k)
-                  enddo
-                else
-                  do k=1,nkmb
-                    Rml_vel(ii,jj,k) = Rml(i,j+1,k)
-                  enddo
-                endif
-                if (allocated(tv%SpV_avg)) then ; do k=1,nz
-                  SpV_vel(ii,jj,k) = tv%SpV_avg(i,j+1,k)
-                enddo ; endif
-              endif
-            enddo
-          endif
-        endif ; endif
-
         ! Set the "back ground" friction velocity scale to either the tidal amplitude or place-holder constant
         if (CS%BBL_use_tidal_bg) then
           do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i))
