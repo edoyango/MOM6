@@ -747,121 +747,126 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         endif
       endif ; endif
 
-      do concurrent (jj=1:jje) DO_LOCALITY(local(j))
-        j = jsb + jj - 1
-        ! Set the "back ground" friction velocity scale to either the tidal amplitude or place-holder constant
-        if (CS%BBL_use_tidal_bg) then
-          do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i))
-            i = isb + ii - 1 ; if (m==1) then
+      ! Set the "back ground" friction velocity scale to either the tidal amplitude or place-holder constant
+      if (CS%BBL_use_tidal_bg) then
+        do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          if (m==1) then
             u2_bg(II,jj) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                              G%mask2dT(i+1,j)*(CS%tideamp(i+1,j)*CS%tideamp(i+1,j)) )
           else
             u2_bg(ii,jj) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                              G%mask2dT(i,j+1)*(CS%tideamp(i,j+1)*CS%tideamp(i,j+1)) )
-          endif ; enddo
-        else
-          do concurrent (ii=1:iie, do_ij(ii,jj))
-            u2_bg(ii,jj) = CS%drag_bg_vel * CS%drag_bg_vel
-          enddo
-        endif
+          endif
+        enddo
+      else
+        do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
+          u2_bg(ii,jj) = CS%drag_bg_vel * CS%drag_bg_vel
+        enddo
+      endif
 
-        if (use_BBL_EOS .or. CS%body_force_drag .or. .not.CS%linear_drag) then
-          ! Calculate the mean velocity magnitude over the bottommost CS%Hbbl of
-          ! the water column for determining the quadratic bottom drag.
-          ! Used in ustar(i,j)
-          do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, k, cdrag_sqrt)) &
-              DO_LOCALITY(local_init(cdrag_sqrt_H, cdrag_sqrt_H_RL))
-            i = isb + ii - 1
-            htot_vel = 0.0 ; hwtot = 0.0 ; hutot = 0.0
-            dztot_vel = 0.0 ; dzwtot = 0.0
-            Thtot = 0.0 ; Shtot = 0.0 ; SpV_htot = 0.0
+      if (use_BBL_EOS .or. CS%body_force_drag .or. .not.CS%linear_drag) then
+        ! Calculate the mean velocity magnitude over the bottommost CS%Hbbl of
+        ! the water column for determining the quadratic bottom drag.
+        ! Used in ustar(i,j)
+        do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j, k, cdrag_sqrt)) &
+            DO_LOCALITY(local_init(cdrag_sqrt_H, cdrag_sqrt_H_RL))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          htot_vel = 0.0 ; hwtot = 0.0 ; hutot = 0.0
+          dztot_vel = 0.0 ; dzwtot = 0.0
+          Thtot = 0.0 ; Shtot = 0.0 ; SpV_htot = 0.0
 
-            if (CS%bottomdragmap) then
-              if (m==1) then
-                cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
-              else
-                cdrag_sqrt = sqrt(CS%cdrag_v(i,j))
-              endif
-              cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
-              cdrag_sqrt_H_RL = cdrag_sqrt * US%L_to_Z * GV%RZ_to_H
-            endif
-
-            do k=nz,1,-1
-              if (htot_vel>=CS%Hbbl) exit ! terminate the k loop
-
-              hweight = MIN(CS%Hbbl - htot_vel, h_at_vel(ii,jj,k))
-              if (hweight < 1.5*GV%Angstrom_H + h_neglect) cycle
-              dzweight = MIN(CS%dz_bbl - dztot_vel, dz_at_vel(ii,jj,k))
-
-              htot_vel = htot_vel + h_at_vel(ii,jj,k)
-              hwtot = hwtot + hweight
-              dztot_vel = dztot_vel + dz_at_vel(ii,jj,k)
-              dzwtot = dzwtot + dzweight
-
-              if ((.not.CS%linear_drag) .and. (hweight >= 0.0)) then ; if (m==1) then
-                v_at_u = set_v_at_u(v, h, G, GV, i, j, k, mask_v, OBC)
-                hutot = hutot + hweight * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(II,jj))
-              else
-                u_at_v = set_u_at_v(u, h, G, GV, i, j, k, mask_u, OBC)
-                hutot = hutot + hweight * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(ii,jj))
-              endif ; endif
-
-              if (use_BBL_EOS .and. (hweight >= 0.0)) then
-                Thtot = Thtot + hweight * T_vel(ii,jj,k)
-                Shtot = Shtot + hweight * S_vel(ii,jj,k)
-              endif
-              if (allocated(tv%SpV_avg) .and. (hweight >= 0.0)) then
-                SpV_htot = SpV_htot + hweight * SpV_vel(ii,jj,k)
-              endif
-            enddo ! end of k loop
-
-            ! Find the Adcroft reciprocal of the total thickness weights
-            I_hwtot = 0.0 ; if (hwtot > 0.0) I_hwtot = 1.0 / hwtot
-
-            ! Set u* based on u*^2 = Cdrag u_bbl^2
-            if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
-              ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
-            elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
-              ustar(ii,jj) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot)
-            elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
-              ustar(ii,jj) = cdrag_sqrt_H_RL * hutot / SpV_htot
-            else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
-              ustar(ii,jj) = cdrag_sqrt_H * hutot / hwtot
-            endif
-
-            umag_avg(ii,jj) = hutot * I_hwtot
-            h_bbl_drag(ii,jj) = hwtot
-            dz_bbl_drag(ii,jj) = dzwtot
-
-            if (use_BBL_EOS) then ; if (hwtot > 0.0) then
-              T_EOS(ii,jj) = Thtot/hwtot ; S_EOS(ii,jj) = Shtot/hwtot
+          if (CS%bottomdragmap) then
+            if (m==1) then
+              cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
             else
-              T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0
+              cdrag_sqrt = sqrt(CS%cdrag_v(i,j))
+            endif
+            cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
+            cdrag_sqrt_H_RL = cdrag_sqrt * US%L_to_Z * GV%RZ_to_H
+          endif
+
+          do k=nz,1,-1
+            if (htot_vel>=CS%Hbbl) exit ! terminate the k loop
+
+            hweight = MIN(CS%Hbbl - htot_vel, h_at_vel(ii,jj,k))
+            if (hweight < 1.5*GV%Angstrom_H + h_neglect) cycle
+            dzweight = MIN(CS%dz_bbl - dztot_vel, dz_at_vel(ii,jj,k))
+
+            htot_vel = htot_vel + h_at_vel(ii,jj,k)
+            hwtot = hwtot + hweight
+            dztot_vel = dztot_vel + dz_at_vel(ii,jj,k)
+            dzwtot = dzwtot + dzweight
+
+            if ((.not.CS%linear_drag) .and. (hweight >= 0.0)) then ; if (m==1) then
+              v_at_u = set_v_at_u(v, h, G, GV, i, j, k, mask_v, OBC)
+              hutot = hutot + hweight * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(II,jj))
+            else
+              u_at_v = set_u_at_v(u, h, G, GV, i, j, k, mask_u, OBC)
+              hutot = hutot + hweight * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(ii,jj))
             endif ; endif
 
-            ! Diagnostic BBL flow speed at u- and v-points.
-            if (CS%id_bbl_u>0 .and. m==1) then
-              if (hwtot > 0.0) CS%bbl_u(I,j) = hutot/hwtot
-            elseif (CS%id_bbl_v>0 .and. m==2) then
-              if (hwtot > 0.0) CS%bbl_v(i,J) = hutot/hwtot
+            if (use_BBL_EOS .and. (hweight >= 0.0)) then
+              Thtot = Thtot + hweight * T_vel(ii,jj,k)
+              Shtot = Shtot + hweight * S_vel(ii,jj,k)
             endif
-          enddo
-        else
-          do concurrent (ii=1:iie) DO_LOCALITY(local(i, cdrag_sqrt)) &
-              DO_LOCALITY(local_init(cdrag_sqrt_H))
-            i = isb + ii - 1
-            if (CS%bottomdragmap) then
-              if (m==1) then
-                cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
-              else
-                cdrag_sqrt = sqrt(CS%cdrag_v(i,j))
-              endif
-              cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
+            if (allocated(tv%SpV_avg) .and. (hweight >= 0.0)) then
+              SpV_htot = SpV_htot + hweight * SpV_vel(ii,jj,k)
             endif
-            ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
-          enddo
-        endif ! Not linear_drag
+          enddo ! end of k loop
 
+          ! Find the Adcroft reciprocal of the total thickness weights
+          I_hwtot = 0.0 ; if (hwtot > 0.0) I_hwtot = 1.0 / hwtot
+
+          ! Set u* based on u*^2 = Cdrag u_bbl^2
+          if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
+            ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
+          elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
+            ustar(ii,jj) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot)
+          elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
+            ustar(ii,jj) = cdrag_sqrt_H_RL * hutot / SpV_htot
+          else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
+            ustar(ii,jj) = cdrag_sqrt_H * hutot / hwtot
+          endif
+
+          umag_avg(ii,jj) = hutot * I_hwtot
+          h_bbl_drag(ii,jj) = hwtot
+          dz_bbl_drag(ii,jj) = dzwtot
+
+          if (use_BBL_EOS) then ; if (hwtot > 0.0) then
+            T_EOS(ii,jj) = Thtot/hwtot ; S_EOS(ii,jj) = Shtot/hwtot
+          else
+            T_EOS(ii,jj) = 0.0 ; S_EOS(ii,jj) = 0.0
+          endif ; endif
+
+          ! Diagnostic BBL flow speed at u- and v-points.
+          if (CS%id_bbl_u>0 .and. m==1) then
+            if (hwtot > 0.0) CS%bbl_u(I,j) = hutot/hwtot
+          elseif (CS%id_bbl_v>0 .and. m==2) then
+            if (hwtot > 0.0) CS%bbl_v(i,J) = hutot/hwtot
+          endif
+        enddo
+      else
+        do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j, cdrag_sqrt)) &
+            DO_LOCALITY(local_init(cdrag_sqrt_H))
+          i = isb + ii - 1
+          j = jsb + jj - 1
+          if (CS%bottomdragmap) then
+            if (m==1) then
+              cdrag_sqrt = sqrt(CS%cdrag_u(i,j))
+            else
+              cdrag_sqrt = sqrt(CS%cdrag_v(i,j))
+            endif
+            cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
+          endif
+          ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
+        enddo
+      endif ! Not linear_drag
+
+      do concurrent (jj=1:jje) DO_LOCALITY(local(j))
+        j = jsb + jj - 1
         if (use_BBL_EOS) then
           if (associated(tv%p_surf)) then
             if (m==1) then ; do concurrent (II=1:iie) DO_LOCALITY(local(I))
