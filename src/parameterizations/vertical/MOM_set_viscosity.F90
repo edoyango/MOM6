@@ -225,8 +225,12 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
   integer,                  intent(in)    :: nJJB !< The j-direction block size, in face points [nondim].
 
   ! Local variables
-  real, dimension(SZIB_(G),SZJB_(G)) :: &
+  real, dimension(nIIB,nJJB) :: &
     ustar, &    !   The bottom friction velocity [H T-1 ~> m s-1 or kg m-2 s-1].
+    umag_avg, & ! The average magnitude of velocities in the bottom boundary layer [L T-1 ~> m s-1].
+    h_bbl_drag, & ! The thickness over which to apply drag as a body force [H ~> m or kg m-2].
+    dz_bbl_drag   ! The vertical height over which to apply drag as a body force [Z ~> m].
+  real, dimension(SZIB_(G),SZJB_(G)) :: &
     T_EOS, &    !   The temperature used to calculate the partial derivatives
                 ! of density with T and S [C ~> degC].
     S_EOS, &    !   The salinity used to calculate the partial derivatives
@@ -235,10 +239,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
                 ! layer with temperature [R C-1 ~> kg m-3 degC-1].
     dR_dS, &    !   Partial derivative of the density in the bottom boundary
                 ! layer with salinity [R S-1 ~> kg m-3 ppt-1].
-    press, &    !   The pressure at which dR_dT and dR_dS are evaluated [R L2 T-2 ~> Pa].
-    umag_avg, & ! The average magnitude of velocities in the bottom boundary layer [L T-1 ~> m s-1].
-    h_bbl_drag, & ! The thickness over which to apply drag as a body force [H ~> m or kg m-2].
-    dz_bbl_drag   ! The vertical height over which to apply drag as a body force [Z ~> m].
+    press       !   The pressure at which dR_dT and dR_dS are evaluated [R L2 T-2 ~> Pa].
   real :: htot      ! Sum of the layer thicknesses up to some point [H ~> m or kg m-2].
   real :: dztot     ! Distance from the bottom up to some point [Z ~> m].
   real :: htot_vel  ! Sum of the layer thicknesses up to some point [H ~> m or kg m-2].
@@ -306,7 +307,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
   real :: BBL_thick_max    ! A huge upper bound on the boundary layer thickness [Z ~> m].
   real :: kv_bbl           ! The bottom boundary layer viscosity [H Z T-1 ~> m2 s-1 or Pa s]
   real :: C2f              ! C2f = 2*f at velocity points [T-1 ~> s-1].
-  real :: u2_bg(SZIB_(G),SZJB_(G))  ! The square of an assumed background velocity, for calculating the mean
+  real :: u2_bg(nIIB,nJJB)  ! The square of an assumed background velocity, for calculating the mean
                            ! magnitude near the bottom for use in the quadratic bottom drag [L2 T-2 ~> m2 s-2].
   real :: hwtot            ! Sum of the thicknesses used to calculate
                            ! the near-bottom velocity magnitude [H ~> m or kg m-2].
@@ -740,16 +741,15 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         if (CS%BBL_use_tidal_bg) then
           do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i))
             i = isb + ii - 1 ; if (m==1) then
-            u2_bg(I,j) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
+            u2_bg(II,jj) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                              G%mask2dT(i+1,j)*(CS%tideamp(i+1,j)*CS%tideamp(i+1,j)) )
           else
-            u2_bg(i,j) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
+            u2_bg(ii,jj) = tideampfac2_x_0p5 * ( G%mask2dT(i,j)*(CS%tideamp(i,j)*CS%tideamp(i,j))+ &
                              G%mask2dT(i,j+1)*(CS%tideamp(i,j+1)*CS%tideamp(i,j+1)) )
           endif ; enddo
         else
-          do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i))
-            i = isb + ii - 1
-            u2_bg(i,j) = CS%drag_bg_vel * CS%drag_bg_vel
+          do concurrent (ii=1:iie, do_ij(ii,jj))
+            u2_bg(ii,jj) = CS%drag_bg_vel * CS%drag_bg_vel
           enddo
         endif
 
@@ -788,10 +788,10 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
 
               if ((.not.CS%linear_drag) .and. (hweight >= 0.0)) then ; if (m==1) then
                 v_at_u = set_v_at_u(v, h, G, GV, i, j, k, mask_v, OBC)
-                hutot = hutot + hweight * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(I,j))
+                hutot = hutot + hweight * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(II,jj))
               else
                 u_at_v = set_u_at_v(u, h, G, GV, i, j, k, mask_u, OBC)
-                hutot = hutot + hweight * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(i,j))
+                hutot = hutot + hweight * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(ii,jj))
               endif ; endif
 
               if (use_BBL_EOS .and. (hweight >= 0.0)) then
@@ -808,18 +808,18 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
 
             ! Set u* based on u*^2 = Cdrag u_bbl^2
             if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
-              ustar(i,j) = cdrag_sqrt_H * CS%drag_bg_vel
+              ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
             elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
-              ustar(i,j) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot)
+              ustar(ii,jj) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot)
             elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
-              ustar(i,j) = cdrag_sqrt_H_RL * hutot / SpV_htot
+              ustar(ii,jj) = cdrag_sqrt_H_RL * hutot / SpV_htot
             else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
-              ustar(i,j) = cdrag_sqrt_H * hutot / hwtot
+              ustar(ii,jj) = cdrag_sqrt_H * hutot / hwtot
             endif
 
-            umag_avg(i,j) = hutot * I_hwtot
-            h_bbl_drag(i,j) = hwtot
-            dz_bbl_drag(i,j) = dzwtot
+            umag_avg(ii,jj) = hutot * I_hwtot
+            h_bbl_drag(ii,jj) = hwtot
+            dz_bbl_drag(ii,jj) = dzwtot
 
             if (use_BBL_EOS) then ; if (hwtot > 0.0) then
               T_EOS(i,j) = Thtot/hwtot ; S_EOS(i,j) = Shtot/hwtot
@@ -846,7 +846,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
               endif
               cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
             endif
-            ustar(i,j) = cdrag_sqrt_H * CS%drag_bg_vel
+            ustar(ii,jj) = cdrag_sqrt_H * CS%drag_bg_vel
           enddo
         endif ! Not linear_drag
 
@@ -907,7 +907,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
       do jj=1,jje ; do ii=1,iie ; if (do_ij(ii,jj)) then
         i = isb + ii - 1 ; j = jsb + jj - 1
         ! The 400.0 in this expression is the square of a Ci introduced in KW99, eq. 2.22.
-        ustarsq = Rho0x400_G * ustar(i,j)**2 ! Note not in units of u*^2 but [H R ~> kg m-2 or kg2 m-5]
+        ustarsq = Rho0x400_G * ustar(ii,jj)**2 ! Note not in units of u*^2 but [H R ~> kg m-2 or kg2 m-5]
         htot = 0.0
         dztot = 0.0
 
@@ -1037,10 +1037,10 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         !   xp = 1/2 + sqrt( 1/4 + (2 f h_N/u*)^2 )
         ! To avoid dividing by zero if u*=0 then
         !   xp u* = 1/2 u* + sqrt( 1/4 u*^2 + (2 f h_N)^2 )
-        if (CS%cdrag * u2_bg(i,j) <= 0.0) then
+        if (CS%cdrag * u2_bg(ii,jj) <= 0.0) then
           ! This avoids NaNs and overflows, and could be used in all cases,
           ! but is not bitwise identical to the current code.
-          ustH = ustar(i,j) ; root = sqrt(0.25*ustH**2 + (htot*C2f)**2)
+          ustH = ustar(ii,jj) ; root = sqrt(0.25*ustH**2 + (htot*C2f)**2)
           if (dztot*ustH <= (CS%BBL_thick_min+dz_neglect) * (0.5*ustH + root)) then
             bbl_thick = CS%BBL_thick_min
           else
@@ -1053,7 +1053,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           ! The following expression reads
           !   h_bbl = h_N / ( 1/2 + sqrt( 1/4 + ( 2 f h_N / u* )^2 ) )
           ! which is h_bbl = h_N/xp as described above.
-          bbl_thick = dztot / (0.5 + sqrt(0.25 + htot*htot*C2f*C2f / (ustar(i,j)*ustar(i,j)) ) )
+          bbl_thick = dztot / (0.5 + sqrt(0.25 + htot*htot*C2f*C2f / (ustar(ii,jj)*ustar(ii,jj)) ) )
 
           if (bbl_thick < CS%BBL_thick_min) bbl_thick = CS%BBL_thick_min
         endif
@@ -1071,7 +1071,7 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
         if ((bbl_thick > 0.5*CS%dz_bbl) .and. (CS%RiNo_mix)) bbl_thick = 0.5*CS%dz_bbl
 
         ! If drag is a body force, bbl_thick is HBBL
-        if (CS%body_force_drag) bbl_thick = dz_bbl_drag(i,j)
+        if (CS%body_force_drag) bbl_thick = dz_bbl_drag(ii,jj)
 
         if (CS%Channel_drag) then
 
@@ -1195,12 +1195,12 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
             if (m==1) then
               if (Rayleigh > 0.0) then
                 v_at_u = set_v_at_u(v, h, G, GV, i, j, k, mask_v, OBC)
-                visc%Ray_u(I,j,k) = Rayleigh * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(I,j))
+                visc%Ray_u(I,j,k) = Rayleigh * sqrt(u(I,j,k)*u(I,j,k) + v_at_u*v_at_u + u2_bg(II,jj))
               else ; visc%Ray_u(I,j,k) = 0.0 ; endif
             else
               if (Rayleigh > 0.0) then
                 u_at_v = set_u_at_v(u, h, G, GV, i, j, k, mask_u, OBC)
-                visc%Ray_v(i,J,k) = Rayleigh * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(i,j))
+                visc%Ray_v(i,J,k) = Rayleigh * sqrt(v(i,J,k)*v(i,J,k) + u_at_v*u_at_v + u2_bg(ii,jj))
               else ; visc%Ray_v(i,J,k) = 0.0 ; endif
             endif
 
@@ -1210,18 +1210,18 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           ! the correct stress when the shear occurs over bbl_thick.
           ! See next block for explanation.
           if (CS%correct_BBL_bounds .and. &
-              cdrag_sqrt*ustar(i,j)*bbl_thick*BBL_visc_frac <= CS%Kv_BBL_min) then
+              cdrag_sqrt*ustar(ii,jj)*bbl_thick*BBL_visc_frac <= CS%Kv_BBL_min) then
             ! If the bottom stress implies less viscosity than Kv_BBL_min then
             ! set kv_bbl to the bound and recompute bbl_thick to be consistent
             ! but with a ridiculously large upper bound on thickness (for Cd u*=0)
             kv_bbl = CS%Kv_BBL_min
-            if ((cdrag_sqrt*ustar(i,j))*BBL_visc_frac*BBL_thick_max > kv_bbl) then
-              bbl_thick = kv_bbl / ( (cdrag_sqrt*ustar(i,j)) * BBL_visc_frac )
+            if ((cdrag_sqrt*ustar(ii,jj))*BBL_visc_frac*BBL_thick_max > kv_bbl) then
+              bbl_thick = kv_bbl / ( (cdrag_sqrt*ustar(ii,jj)) * BBL_visc_frac )
             else
               bbl_thick = BBL_thick_max
             endif
           else
-            kv_bbl = (cdrag_sqrt*ustar(i,j)) * bbl_thick*BBL_visc_frac
+            kv_bbl = (cdrag_sqrt*ustar(ii,jj)) * bbl_thick*BBL_visc_frac
           endif
 
         else ! Not Channel_drag.
@@ -1241,39 +1241,39 @@ subroutine set_viscous_BBL_block(u, v, h, tv, visc, G, GV, US, CS, pbv, nIIB, nJ
           !      kv_bbl = 0.5 h_bbl Cdrag u_bbl
           !             = 0.5 h_bbl sqrt(Cdrag) u*
           if (CS%correct_BBL_bounds .and. &
-              cdrag_sqrt*ustar(i,j)*bbl_thick <= CS%Kv_BBL_min) then
+              cdrag_sqrt*ustar(ii,jj)*bbl_thick <= CS%Kv_BBL_min) then
             ! If the bottom stress implies less viscosity than Kv_BBL_min then
             ! set kv_bbl to the bound and recompute bbl_thick to be consistent
             ! but with a ridiculously large upper bound on thickness (for Cd u*=0)
             kv_bbl = CS%Kv_BBL_min
-            if ((cdrag_sqrt*ustar(i,j))*BBL_thick_max > kv_bbl) then
-              bbl_thick = kv_bbl / ( cdrag_sqrt*ustar(i,j) )
+            if ((cdrag_sqrt*ustar(ii,jj))*BBL_thick_max > kv_bbl) then
+              bbl_thick = kv_bbl / ( cdrag_sqrt*ustar(ii,jj) )
             else
               bbl_thick = BBL_thick_max
             endif
           else
-            kv_bbl = (cdrag_sqrt*ustar(i,j)) * bbl_thick
+            kv_bbl = (cdrag_sqrt*ustar(ii,jj)) * bbl_thick
           endif
         endif
 
-        if (CS%body_force_drag) then ; if (h_bbl_drag(i,j) > 0.0) then
+        if (CS%body_force_drag) then ; if (h_bbl_drag(ii,jj) > 0.0) then
           ! Increment the Rayleigh drag as a way introduce the bottom drag as a body force.
           h_sum = 0.0
-          I_hwtot = 1.0 / h_bbl_drag(i,j)
+          I_hwtot = 1.0 / h_bbl_drag(ii,jj)
           do k=nz,1,-1
-            h_bbl_fr = min(h_bbl_drag(i,j) - h_sum, h_at_vel(ii,jj,k)) * I_hwtot
+            h_bbl_fr = min(h_bbl_drag(ii,jj) - h_sum, h_at_vel(ii,jj,k)) * I_hwtot
             if (allocated(tv%SpV_avg)) then
               cdrag_conv = cdrag_RL_to_H / SpV_vel(ii,jj,k)
             else
               cdrag_conv = cdrag_L_to_H
             endif
             if (m==1) then
-              visc%Ray_u(I,j,k) = visc%Ray_u(I,j,k) + (cdrag_conv * umag_avg(I,j)) * h_bbl_fr
+              visc%Ray_u(I,j,k) = visc%Ray_u(I,j,k) + (cdrag_conv * umag_avg(II,jj)) * h_bbl_fr
             else
-              visc%Ray_v(i,J,k) = visc%Ray_v(i,J,k) + (cdrag_conv * umag_avg(i,j)) * h_bbl_fr
+              visc%Ray_v(i,J,k) = visc%Ray_v(i,J,k) + (cdrag_conv * umag_avg(ii,jj)) * h_bbl_fr
             endif
             h_sum = h_sum + h_at_vel(ii,jj,k)
-            if (h_sum >= h_bbl_drag(i,j)) exit ! The top of this layer is above the drag zone.
+            if (h_sum >= h_bbl_drag(ii,jj)) exit ! The top of this layer is above the drag zone.
           enddo
           ! Do not enhance the near-bottom viscosity in this case.
           Kv_bbl = CS%Kv_BBL_min
