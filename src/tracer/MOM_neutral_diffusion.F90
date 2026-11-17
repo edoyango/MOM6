@@ -50,6 +50,8 @@ integer :: id_clock_ndiff, id_clock_ndiff_coeffs
 type, public :: neutral_diffusion_CS ; private
   integer :: nkp1     !< Number of interfaces for a column = nk + 1
   integer :: nsurf    !< Number of neutral surfaces
+  integer :: niblock  !< The i block size used in array calculations
+  integer :: njblock  !< The j block size used in array calculations
   integer :: deg = 2  !< Degree of polynomial used for reconstructions
   logical :: continuous_reconstruction = .true. !< True if using continuous PPM reconstruction at interfaces
   logical :: debug = .false. !< If true, write verbose debugging messages
@@ -161,6 +163,17 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
                                   !! extrapolation should be used within boundary cells.
   logical :: om4_remap_via_sub_cells ! If true, use the OM4 remapping algorithm
   logical :: KhTh_use_ebt_struct, KhTh_use_sqg_struct
+#ifdef __NVCOMPILER_OPENMP_GPU
+  integer, parameter :: default_niblock = 0
+    ! Default i block size for array calculations
+  integer, parameter :: default_njblock = 0
+    ! Default j block size for array calculations
+#else
+  integer, parameter :: default_niblock = 0
+    ! Default i block size for array calculations
+  integer, parameter :: default_njblock = 1
+    ! Default j block size for array calculations
+#endif
 
   if (associated(CS)) then
     call MOM_error(FATAL, "neutral_diffusion_init called with associated control structure.")
@@ -227,6 +240,20 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
                  "neutral diffusion code, while higher values use mathematically equivalent "//&
                  "expressions that recover rotational symmetry.", &
                  default=default_answer_date)
+  call get_param(param_file, mdl, "NDIFF_NIBLOCK", CS%niblock, &
+                 "The i-direction block size used in the neutral diffusion "//&
+                 "calculations. A value of 0 uses the full computational "//&
+                 "i-domain extent.", &
+                 default=default_niblock, layoutParam=.true.)
+  call get_param(param_file, mdl, "NDIFF_NJBLOCK", CS%njblock, &
+                 "The j-direction block size used in the neutral diffusion "//&
+                 "calculations. A value of 0 uses the full computational "//&
+                 "j-domain extent.", &
+                 default=default_njblock, layoutParam=.true.)
+  if (CS%niblock < 0) &
+    call MOM_error(FATAL, "NDIFF_NIBLOCK must be nonnegative.")
+  if (CS%njblock < 0) &
+    call MOM_error(FATAL, "NDIFF_NJBLOCK must be nonnegative.")
 
   ! Initialize and configure remapping
   if ( .not.CS%continuous_reconstruction ) then
