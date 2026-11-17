@@ -42,6 +42,10 @@ public neutral_diffusion, neutral_diffusion_init, neutral_diffusion_end
 public neutral_diffusion_calc_coeffs
 public neutral_diffusion_unit_tests
 
+!>@{ CPU time clock IDs
+integer :: id_clock_ndiff, id_clock_ndiff_coeffs
+!>@}
+
 !> The control structure for the MOM_neutral_diffusion module
 type, public :: neutral_diffusion_CS ; private
   integer :: nkp1     !< Number of interfaces for a column = nk + 1
@@ -347,6 +351,9 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
   allocate(CS%vKoR(G%isd:G%ied,G%jsd:G%jed, CS%nsurf), source=0)
   allocate(CS%vHeff(G%isd:G%ied,G%jsd:G%jed,CS%nsurf-1), source=0.)
 
+  id_clock_ndiff = cpu_clock_id('(Ocean neutral diffusion)', grain=CLOCK_ROUTINE)
+  id_clock_ndiff_coeffs = cpu_clock_id('(Ocean neutral diffusion coeffs)', grain=CLOCK_ROUTINE)
+
 end function neutral_diffusion_init
 
 !> Calculate remapping factors for u/v columns used to map adjoining columns to
@@ -382,6 +389,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   real :: pa_to_H                      ! A conversion factor from rescaled pressure to thickness
                                        ! (H) units [H T2 R-1 Z-2 ~> m Pa-1 or s2 m-1]
   integer :: isb, ieb, jsb, jeb, iie, jje, nii, njj
+
+  call cpu_clock_begin(id_clock_ndiff_coeffs)
 
   ! block sizes
   njj = (G%jec+1) - (G%jsc-1) + 1
@@ -676,6 +685,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   !$omp target exit data map(release: CS%dRdS, CS%dRdT, CS%Pint, CS%Tint, CS%Sint)
   !$omp target exit data map(release: CS)
 
+  call cpu_clock_end(id_clock_ndiff_coeffs)
+
 end subroutine neutral_diffusion_calc_coeffs
 
 !> Update tracer concentration due to neutral diffusion; layer thickness unchanged by this update.
@@ -736,6 +747,9 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   integer :: i, j, k, m, ks, nk
   real :: Idt  ! The inverse of the time step [T-1 ~> s-1]
   real :: h_neglect, h_neglect_edge ! Negligible thicknesses [H ~> m or kg m-2]
+
+  call cpu_clock_begin(id_clock_ndiff)
+
   h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
 
   if (.not. CS%continuous_reconstruction) then
@@ -1101,6 +1115,8 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   enddo ! Loop over tracer registry
 
   !$omp target exit data map(release: uFlx, vFlx)
+
+  call cpu_clock_end(id_clock_ndiff)
 
 end subroutine neutral_diffusion
 
