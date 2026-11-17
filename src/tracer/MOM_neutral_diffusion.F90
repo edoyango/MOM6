@@ -596,45 +596,20 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   !$omp target enter data map(to: k_bot, zeta_bot)
 
   if (.not.CS%continuous_reconstruction) then
-    CS%uhEff(:,:,:) = 0.
     CS%vhEff(:,:,:) = 0.
-    CS%uPoL(:,:,:) = 0.
     CS%vPoL(:,:,:) = 0.
-    CS%uPoR(:,:,:) = 0.
     CS%vPoR(:,:,:) = 0.
-    CS%uKoL(:,:,:) = 1
     CS%vKoL(:,:,:) = 1
-    CS%uKoR(:,:,:) = 1
     CS%vKoR(:,:,:) = 1
   endif
 
   ! Neutral surface factors at U points
-  if (CS%continuous_reconstruction) then
-    do concurrent (k=1:CS%nsurf, j=G%jsd:G%jed, i=G%isd:G%ied)
-      CS%uPoL(i,j,k) = 0. ; CS%uPoR(i,j,k) = 0. ; CS%uKoL(i,j,k) = 1 ; CS%uKoR(i,j,k) = 1
-    enddo
-    do concurrent (k=1:CS%nsurf-1, j=G%jsd:G%jed, i=G%isd:G%ied)
-      CS%uhEff(i,j,k) = 0.
-    enddo
-    nIIB = CS%niblock
-    if (CS%niblock == 0) nIIB = G%iec - G%isc + 2
-    njj = CS%njblock
-    if (CS%njblock == 0) njj = G%jec - G%jsc + 1
-    call zonal_neutral_positions(G, GV%ke, CS%nsurf, CS%Pint, CS%Tint, CS%Sint, CS%dRdT, CS%dRdS, k_bot, zeta_bot, &
-                                 CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, nIIB, njj)
-  else
-    do j = G%jsc, G%jec ; do I = G%isc-1, G%iec
-      if (G%mask2dCu(I,j) > 0.0) then
-        call find_neutral_surface_positions_discontinuous(CS, GV%ke, &
-            CS%P_i(i,j,:,:), h(i,j,:), CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%ppoly_coeffs_T(i,j,:,:),           &
-            CS%ppoly_coeffs_S(i,j,:,:),CS%stable_cell(i,j,:),                                                  &
-            CS%P_i(i+1,j,:,:), h(i+1,j,:), CS%T_i(i+1,j,:,:), CS%S_i(i+1,j,:,:), CS%ppoly_coeffs_T(i+1,j,:,:), &
-            CS%ppoly_coeffs_S(i+1,j,:,:), CS%stable_cell(i+1,j,:),                                             &
-            CS%uPoL(I,j,:), CS%uPoR(I,j,:), CS%uKoL(I,j,:), CS%uKoR(I,j,:), CS%uhEff(I,j,:),                   &
-            hard_fail_heff = CS%hard_fail_heff)
-      endif
-    enddo ; enddo
-  endif
+  nIIB = CS%niblock
+  if (CS%niblock == 0) nIIB = G%iec - G%isc + 2
+  njj = CS%njblock
+  if (CS%njblock == 0) njj = G%jec - G%jsc + 1
+  call zonal_neutral_positions(G, GV%ke, CS%nsurf, CS%Pint, CS%Tint, CS%Sint, CS%dRdT, CS%dRdS, k_bot, zeta_bot, &
+                               CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, nIIB, njj, h, CS)
 
   ! Neutral surface factors at V points
   if (CS%continuous_reconstruction) then
@@ -703,8 +678,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     call post_data(CS%id_vhEff_2d, hEff_sum, CS%diag)
   endif
 
-  !$omp target update to(CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
-  !$omp                    CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff) if(.not.CS%continuous_reconstruction)
+  !$omp target update to(CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff) if(.not.CS%continuous_reconstruction)
 
   !$omp target exit data map(release: k_bot, zeta_bot)
 
@@ -2076,18 +2050,21 @@ subroutine neutral_positions_block(nIb, nJb, IIe, JJe, nk, ns, do_face, Pl, Tl, 
 end subroutine neutral_positions_block
 
 !> Finds the positions of the neutral surfaces between the columns on either side of each zonal face, a
-!! block of faces at a time in the form of zonal_mass_flux, with continuous reconstructions.  The positions
-!! are left unchanged at land faces.
+!! block of faces at a time in the form of zonal_mass_flux.  With continuous reconstructions this is done on
+!! the device, and with discontinuous reconstructions face by face on the host.  The positions are reset
+!! everywhere first.
 subroutine zonal_neutral_positions(G, nk, ns, Pint, Tint, Sint, dRdT, dRdS, k_bot, zeta_bot, &
-                                   PoL, PoR, KoL, KoR, hEff, nIIB, njj)
+                                   PoL, PoR, KoL, KoR, hEff, nIIB, njj, h, CS)
   type(ocean_grid_type), intent(in) :: G    !< Ocean grid structure
   integer,               intent(in) :: nk   !< Number of levels
   integer,               intent(in) :: ns   !< Number of neutral surfaces
   real, dimension(SZI_(G),SZJ_(G),nk+1), intent(in) :: Pint !< Interface pressure [R L2 T-2 ~> Pa]
   real, dimension(SZI_(G),SZJ_(G),nk+1), intent(in) :: Tint !< Interface potential temperature [C ~> degC]
   real, dimension(SZI_(G),SZJ_(G),nk+1), intent(in) :: Sint !< Interface salinity [S ~> ppt]
-  real, dimension(SZI_(G),SZJ_(G),nk+1), intent(in) :: dRdT !< dRho/dT at interfaces [R C-1 ~> kg m-3 degC-1]
-  real, dimension(SZI_(G),SZJ_(G),nk+1), intent(in) :: dRdS !< dRho/dS at interfaces [R S-1 ~> kg m-3 ppt-1]
+  real, dimension(SZI_(G),SZJ_(G),nk+1), optional, intent(in) :: dRdT !< dRho/dT at interfaces, used with
+                                                                !! continuous reconstructions [R C-1 ~> kg m-3 degC-1]
+  real, dimension(SZI_(G),SZJ_(G),nk+1), optional, intent(in) :: dRdS !< dRho/dS at interfaces, used with
+                                                                !! continuous reconstructions [R S-1 ~> kg m-3 ppt-1]
   integer, dimension(SZI_(G),SZJ_(G)),   intent(in) :: k_bot    !< Index of the last layer within the boundary
   real,    dimension(SZI_(G),SZJ_(G)),   intent(in) :: zeta_bot !< Fractional position of the bottom of the
                                                                 !! boundary layer within layer k_bot [nondim]
@@ -2100,9 +2077,12 @@ subroutine zonal_neutral_positions(G, nk, ns, Pint, Tint, Sint, dRdT, dRdS, k_bo
   integer, dimension(SZI_(G),SZJ_(G),ns),   intent(inout) :: KoR  !< Index of first eastern interface above
                                                                 !! neutral surface
   real,    dimension(SZI_(G),SZJ_(G),ns-1), intent(inout) :: hEff !< Effective thickness between two neutral
-                                                                !! surfaces [R L2 T-2 ~> Pa]
+                                                                !! surfaces [R L2 T-2 ~> Pa], or
+                                                                !! [H ~> m or kg m-2] with discontinuous reconstructions
   integer,               intent(in) :: nIIB !< I block size for array calculations
   integer,               intent(in) :: njj  !< j block size for array calculations
+  real, dimension(SZI_(G),SZJ_(G),nk),   intent(in) :: h    !< Layer thickness [H ~> m or kg m-2]
+  type(neutral_diffusion_CS), intent(inout) :: CS           !< Neutral diffusion control structure
 
   ! Local variables
   ! The block-sized work arrays below hold the western (l) and eastern (r) columns of the block's zonal faces.
@@ -2122,6 +2102,41 @@ subroutine zonal_neutral_positions(G, nk, ns, Pint, Tint, Sint, dRdT, dRdS, k_bo
   integer :: jsb, jeb   ! The j-index bounds of the current block.
   integer :: IsbB, IebB ! The I-index bounds of the current block.
   integer :: jje, IIe   ! The block-local j- and I-index end bounds.
+
+  if (.not.CS%continuous_reconstruction) then
+    PoL(:,:,:) = 0. ; PoR(:,:,:) = 0. ; KoL(:,:,:) = 1 ; KoR(:,:,:) = 1
+    hEff(:,:,:) = 0.
+    do jsb=G%jsc,G%jec,njj ; do IsbB=G%isc-1,G%iec,nIIB
+      IebB = min(IsbB + nIIB - 1, G%iec)
+      jeb = min(jsb + njj - 1, G%jec)
+      IIe = IebB - IsbB + 1
+      jje = jeb - jsb + 1
+
+      do jj=1,jje ; do II=1,IIe
+        I = IsbB + II - 1
+        j = jsb + jj - 1
+
+        if (G%mask2dCu(I,j) > 0.0) then
+          call find_neutral_surface_positions_discontinuous(CS, nk, &
+              CS%P_i(i,j,:,:), h(i,j,:), CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%ppoly_coeffs_T(i,j,:,:),           &
+              CS%ppoly_coeffs_S(i,j,:,:),CS%stable_cell(i,j,:),                                                  &
+              CS%P_i(i+1,j,:,:), h(i+1,j,:), CS%T_i(i+1,j,:,:), CS%S_i(i+1,j,:,:), CS%ppoly_coeffs_T(i+1,j,:,:), &
+              CS%ppoly_coeffs_S(i+1,j,:,:), CS%stable_cell(i+1,j,:),                                             &
+              PoL(I,j,:), PoR(I,j,:), KoL(I,j,:), KoR(I,j,:), hEff(I,j,:),                                       &
+              hard_fail_heff = CS%hard_fail_heff)
+        endif
+      enddo ; enddo
+    enddo ; enddo
+    !$omp target update to(PoL, PoR, KoL, KoR, hEff)
+    return
+  endif
+
+  do concurrent (k=1:ns, j=G%jsd:G%jed, I=G%isd:G%ied)
+    PoL(I,j,k) = 0. ; PoR(I,j,k) = 0. ; KoL(I,j,k) = 1 ; KoR(I,j,k) = 1
+  enddo
+  do concurrent (k=1:ns-1, j=G%jsd:G%jed, I=G%isd:G%ied)
+    hEff(I,j,k) = 0.
+  enddo
 
   !$omp target enter data map(alloc: Pl_b, Pr_b, Tl_b, Tr_b, Sl_b, Sr_b, dRdTl_b, dRdTr_b, dRdSl_b, dRdSr_b, &
   !$omp                              PoL_b, PoR_b, KoL_b, KoR_b, hEff_b, do_face, bl_kl, bl_kr, bl_zl, bl_zr)
