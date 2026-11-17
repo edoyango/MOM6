@@ -1320,6 +1320,33 @@ real function ppm_ave(xL, xR, aL, aR, aMean)
 
   ! Local variables
   real :: dx   ! Distance between the bounds [nondim]
+
+  dx = xR - xL
+
+  if (dx<0.) then
+    stop 'ppm_ave: dx<0 should not happened!'
+  elseif (dx>1.) then
+    stop 'ppm_ave: dx>1 should not happened!'
+  endif
+  ppm_ave = ppm_ave_unchecked(xL, xR, aL, aR, aMean)
+end function ppm_ave
+
+!> Returns the average of a PPM reconstruction between two fractional positions in the same
+!! arbitrary concentration units as aMean (e.g. usually [C ~> degC] for temperature), without
+!! checking that 0 <= xR - xL <= 1 as ppm_ave does
+pure real function ppm_ave_unchecked(xL, xR, aL, aR, aMean)
+  real, intent(in) :: xL    !< Fraction position of left bound (0,1) [nondim]
+  real, intent(in) :: xR    !< Fraction position of right bound (0,1) [nondim]
+  real, intent(in) :: aL    !< Left edge scalar value, at x=0, in arbitrary concentration
+                            !! units (e.g. usually [C ~> degC] for temperature)
+  real, intent(in) :: aR    !< Right edge scalar value, at x=1 in arbitrary concentration
+                            !! units (e.g. usually [C ~> degC] for temperature)
+  real, intent(in) :: aMean !< Average scalar value of cell in arbitrary concentration
+                            !! units (e.g. usually [C ~> degC] for temperature)
+  !$omp declare target
+
+  ! Local variables
+  real :: dx   ! Distance between the bounds [nondim]
   real :: xave ! Average fractional position [nondim]
   real :: a6, a6o3 ! Terms proportional to the normalized scalar curvature in the same arbitrary
                    ! concentration units as aMean (e.g. usually [C ~> degC] for temperature)
@@ -1329,16 +1356,12 @@ real function ppm_ave(xL, xR, aL, aR, aMean)
   a6o3 = 2. * aMean - ( aL + aR ) ! a6 / 3.
   a6 = 3. * a6o3
 
-  if (dx<0.) then
-    stop 'ppm_ave: dx<0 should not happened!'
-  elseif (dx>1.) then
-    stop 'ppm_ave: dx>1 should not happened!'
-  elseif (dx==0.) then
-    ppm_ave = aL + ( aR - aL ) * xR + a6 * xR * ( 1. - xR )
+  if (dx==0.) then
+    ppm_ave_unchecked = aL + ( aR - aL ) * xR + a6 * xR * ( 1. - xR )
   else
-    ppm_ave = ( aL + xave * ( ( aR - aL ) + a6 ) )  - a6o3 * ( xR**2 + xR * xL + xL**2 )
+    ppm_ave_unchecked = ( aL + xave * ( ( aR - aL ) + a6 ) )  - a6o3 * ( xR**2 + xR * xL + xL**2 )
   endif
-end function ppm_ave
+end function ppm_ave_unchecked
 
 !> A true signum function that returns either -abs(a), when x<0; or abs(a) when x>0; or 0 when x=0.
 !! The returned units are the same as those of a [arbitrary].
