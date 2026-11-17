@@ -533,8 +533,10 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     EOSdom(3,1) = 1               ; EOSdom(3,2) = merge(GV%ke+1, GV%ke, CS%continuous_reconstruction)
 
     if (CS%continuous_reconstruction) then
-      call interface_scalar_block(G, isb, ieb, jsb, jeb, GV%ke, h, T, CS%Tint, 2, h_neglect)
-      call interface_scalar_block(G, isb, ieb, jsb, jeb, GV%ke, h, S, CS%Sint, 2, h_neglect)
+      call interface_scalar_block(G, isb, ieb, jsb, jeb, GV%ke, h, T, G%isd, G%ied, G%jsd, G%jed, &
+                                  CS%Tint, 2, h_neglect)
+      call interface_scalar_block(G, isb, ieb, jsb, jeb, GV%ke, h, S, G%isd, G%ied, G%jsd, G%jed, &
+                                  CS%Sint, 2, h_neglect)
       if (CS%ref_pres<0) ref_pres(:,:,:) = CS%Pint(:,:,:)
       call calculate_density_derivs(CS%Tint, CS%Sint, ref_pres, CS%dRdT, CS%dRdS, CS%EOS, EOSdom)
       !$omp target update from(CS%dRdT, CS%dRdS, CS%Tint, CS%Sint)
@@ -1246,7 +1248,7 @@ subroutine interface_scalar(nk, h, S, Si, i_method, h_neglect)
 end subroutine interface_scalar
 
 !> Returns interface scalar, Si, for a column of layer values, S.
-subroutine interface_scalar_block(G, isb, ieb, jsb, jeb, nk, h, S, Si, i_method, h_neglect)
+subroutine interface_scalar_block(G, isb, ieb, jsb, jeb, nk, h, S, isdw, iedw, jsdw, jedw, Si, i_method, h_neglect)
   type(ocean_grid_type), intent(in)    :: G
   integer,               intent(in)    :: isb      !< This block's starting i index.
   integer,               intent(in)    :: ieb      !< This block's ending i index.
@@ -1256,14 +1258,18 @@ subroutine interface_scalar_block(G, isb, ieb, jsb, jeb, nk, h, S, Si, i_method,
   real, dimension(SZI_(G),SZJ_(G),nk),   intent(in)    :: h        !< Layer thickness [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G),nk),   intent(in)    :: S        !< Layer scalar (or concentrations) in arbitrary
                                                    !! concentration units (e.g. [C ~> degC] for temperature)
-  real, dimension(SZI_(G),SZJ_(G),nk+1), intent(inout) :: Si       !< Interface scalar (or concentrations) in arbitrary
+  integer,               intent(in)    :: isdw     !< The lower i bound of the memory of Si
+  integer,               intent(in)    :: iedw     !< The upper i bound of the memory of Si
+  integer,               intent(in)    :: jsdw     !< The lower j bound of the memory of Si
+  integer,               intent(in)    :: jedw     !< The upper j bound of the memory of Si
+  real, dimension(isdw:iedw,jsdw:jedw,nk+1), intent(inout) :: Si !< Interface scalar (or concentrations) in arbitrary
                                                    !! concentration units (e.g. [C ~> degC] for temperature)
   integer,               intent(in)    :: i_method !< =1 use average of PLM edges
                                                    !! =2 use continuous PPM edge interpolation
   real,                  intent(in)    :: h_neglect !< A negligibly small thickness [H ~> m or kg m-2]
   ! Local variables
   integer :: i, j, k, km2, kp1
-  real, dimension(SZI_(G),SZJ_(G),nk) :: diff ! Difference in scalar concentrations between layer centers in arbitrary
+  real, dimension(isb:ieb,jsb:jeb,nk) :: diff ! Difference in scalar concentrations between layer centers in arbitrary
                               ! concentration units (e.g. [C ~> degC] for temperature)
   real :: Sb, Sa ! Values of scalar concentrations at the upper and lower edges of a layer in arbitrary
                  ! concentration units (e.g. [C ~> degC] for temperature)
@@ -1500,7 +1506,7 @@ subroutine PLM_diff_block(G, isb, ieb, jsb, jeb, nk, h, S, c_method, b_method, d
                                                  !! concentration in arbitrary units [A ~> a]
   integer,             intent(in)    :: c_method !< Method to use for the centered difference
   integer,             intent(in)    :: b_method !< =1, use PCM in first/last cell, =2 uses linear extrapolation
-  real, dimension(SZI_(G),SZJ_(G),nk), intent(inout) :: diff     !< Scalar difference across layer (conc, e.g. ppt)
+  real, dimension(isb:ieb,jsb:jeb,nk), intent(inout) :: diff     !< Scalar difference across layer (conc, e.g. ppt)
                                                  !! in the same arbitrary units as S [A ~> a],
                                                  !! determined by the following values for c_method:
                                                  !!   1. Second order finite difference (not recommended)
@@ -2926,6 +2932,77 @@ subroutine ppm_left_right_edge_values(nk, Tl, Ti, aL, aR)
     endif
   enddo
 end subroutine ppm_left_right_edge_values
+
+!> Calculates the continuous reconstruction of a tracer used for neutral diffusion in a block of columns:
+!! the interface values and the PPM edge values within each layer.
+subroutine neutral_reconstruction_block(G, isb, ieb, jsb, jeb, nk, h, T, isdw, iedw, jsdw, jedw, &
+                                        Ti, aL, aR, h_neglect)
+  type(ocean_grid_type), intent(in) :: G    !< Ocean grid structure
+  integer,               intent(in) :: isb  !< This block's starting i index
+  integer,               intent(in) :: ieb  !< This block's ending i index
+  integer,               intent(in) :: jsb  !< This block's starting j index
+  integer,               intent(in) :: jeb  !< This block's ending j index
+  integer,               intent(in) :: nk   !< Number of levels
+  real, dimension(SZI_(G),SZJ_(G),nk), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),nk), intent(in) :: T !< Layer tracer in arbitrary concentration
+                                                       !! units (e.g. [C ~> degC] for temperature)
+  integer,               intent(in) :: isdw !< The lower i bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: iedw !< The upper i bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: jsdw !< The lower j bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: jedw !< The upper j bound of the memory of Ti, aL and aR
+  real, dimension(isdw:iedw,jsdw:jedw,nk+1), intent(inout) :: Ti !< Interface tracer in arbitrary
+                                                       !! concentration units (e.g. [C ~> degC] for temperature)
+  real, dimension(isdw:iedw,jsdw:jedw,nk),   intent(inout) :: aL !< Upper PPM edge value of the tracer in
+                                                       !! each layer, in the same arbitrary units as T [A ~> a]
+  real, dimension(isdw:iedw,jsdw:jedw,nk),   intent(inout) :: aR !< Lower PPM edge value of the tracer in
+                                                       !! each layer, in the same arbitrary units as T [A ~> a]
+  real,                  intent(in) :: h_neglect !< A negligibly small thickness [H ~> m or kg m-2]
+
+  call interface_scalar_block(G, isb, ieb, jsb, jeb, nk, h, T, isdw, iedw, jsdw, jedw, Ti, 2, h_neglect)
+  call ppm_left_right_edge_values_block(G, isb, ieb, jsb, jeb, nk, T, isdw, iedw, jsdw, jedw, Ti, aL, aR)
+
+end subroutine neutral_reconstruction_block
+
+!> Discontinuous PPM reconstructions of the left/right edge values within the cells of a block
+subroutine ppm_left_right_edge_values_block(G, isb, ieb, jsb, jeb, nk, Tl, isdw, iedw, jsdw, jedw, Ti, aL, aR)
+  type(ocean_grid_type), intent(in) :: G    !< Ocean grid structure
+  integer,               intent(in) :: isb  !< This block's starting i index
+  integer,               intent(in) :: ieb  !< This block's ending i index
+  integer,               intent(in) :: jsb  !< This block's starting j index
+  integer,               intent(in) :: jeb  !< This block's ending j index
+  integer,               intent(in) :: nk   !< Number of levels
+  real, dimension(SZI_(G),SZJ_(G),nk), intent(in) :: Tl !< Layer tracer (conc, e.g. degC) in arbitrary
+                                                        !! units [A ~> a]
+  integer,               intent(in) :: isdw !< The lower i bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: iedw !< The upper i bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: jsdw !< The lower j bound of the memory of Ti, aL and aR
+  integer,               intent(in) :: jedw !< The upper j bound of the memory of Ti, aL and aR
+  real, dimension(isdw:iedw,jsdw:jedw,nk+1), intent(in)    :: Ti !< Interface tracer (conc, e.g. degC) in
+                                                        !! arbitrary units [A ~> a]
+  real, dimension(isdw:iedw,jsdw:jedw,nk),   intent(inout) :: aL !< Left edge value of tracer (conc, e.g. degC)
+                                                        !! in the same arbitrary units as Tl and Ti [A ~> a]
+  real, dimension(isdw:iedw,jsdw:jedw,nk),   intent(inout) :: aR !< Right edge value of tracer (conc, e.g. degC)
+                                                        !! in the same arbitrary units as Tl and Ti [A ~> a]
+  ! Local variables
+  integer :: i, j, k
+
+  ! Setup reconstruction edge values
+  do concurrent (k=1:nk, j=jsb:jeb, i=isb:ieb)
+    aL(i,j,k) = Ti(i,j,k)
+    aR(i,j,k) = Ti(i,j,k+1)
+    if ( signum(1., aR(i,j,k) - Tl(i,j,k))*signum(1., Tl(i,j,k) - aL(i,j,k)) <= 0.0 ) then
+      aL(i,j,k) = Tl(i,j,k)
+      aR(i,j,k) = Tl(i,j,k)
+    elseif ( sign(3., aR(i,j,k) - aL(i,j,k)) * ( (Tl(i,j,k) - aL(i,j,k)) + (Tl(i,j,k) - aR(i,j,k))) > &
+             abs(aR(i,j,k) - aL(i,j,k)) ) then
+      aL(i,j,k) = Tl(i,j,k) + 2.0 * ( Tl(i,j,k) - aR(i,j,k) )
+    elseif ( sign(3., aR(i,j,k) - aL(i,j,k)) * ( (Tl(i,j,k) - aL(i,j,k)) + (Tl(i,j,k) - aR(i,j,k))) < &
+             -abs(aR(i,j,k) - aL(i,j,k)) ) then
+      aR(i,j,k) = Tl(i,j,k) + 2.0 * ( Tl(i,j,k) - aL(i,j,k) )
+    endif
+  enddo
+
+end subroutine ppm_left_right_edge_values_block
 
 !> Returns true if unit tests of neutral_diffusion functions fail. Otherwise returns false.
 logical function neutral_diffusion_unit_tests(verbose)
