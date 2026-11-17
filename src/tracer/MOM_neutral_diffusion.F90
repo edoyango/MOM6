@@ -418,6 +418,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
                                                    ! top extent of the boundary layer (0 at top, 1 at bottom) [nondim]
   integer, dimension(SZI_(G), SZJ_(G)) :: k_bot    ! Index of the last layer within the boundary
   real,    dimension(SZI_(G), SZJ_(G)) :: zeta_bot ! Distance of the lower layer to the boundary layer depth [nondim]
+  real :: H_to_pa                      ! A conversion factor from thickness to rescaled pressure
+                                       ! [R L2 T-2 H-1 ~> Pa m-1 or Pa m2 kg-1]
   real :: pa_to_H                      ! A conversion factor from rescaled pressure to thickness
                                        ! (H) units [H T2 R-1 Z-2 ~> m Pa-1 or s2 m-1]
   integer :: isb, ieb, jsb, jeb, iie, jje, nii, njj
@@ -433,6 +435,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   if (CS%njblock == 0) njj = (G%jec+1) - (G%jsc-1) + 1
 
   pa_to_H = 1. / (GV%H_to_RZ * GV%g_Earth)
+  H_to_pa = GV%H_to_pa
 
   !$omp target enter data map(alloc: k_top, k_bot, zeta_top, zeta_bot)
 
@@ -630,16 +633,18 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
 
   !$omp target enter data map(to: k_bot, zeta_bot)
 
-  CS%uhEff(:,:,:) = 0.
-  CS%vhEff(:,:,:) = 0.
-  CS%uPoL(:,:,:) = 0.
-  CS%vPoL(:,:,:) = 0.
-  CS%uPoR(:,:,:) = 0.
-  CS%vPoR(:,:,:) = 0.
-  CS%uKoL(:,:,:) = 1
-  CS%vKoL(:,:,:) = 1
-  CS%uKoR(:,:,:) = 1
-  CS%vKoR(:,:,:) = 1
+  if (.not.CS%continuous_reconstruction) then
+    CS%uhEff(:,:,:) = 0.
+    CS%vhEff(:,:,:) = 0.
+    CS%uPoL(:,:,:) = 0.
+    CS%vPoL(:,:,:) = 0.
+    CS%uPoR(:,:,:) = 0.
+    CS%vPoR(:,:,:) = 0.
+    CS%uKoL(:,:,:) = 1
+    CS%vKoL(:,:,:) = 1
+    CS%uKoR(:,:,:) = 1
+    CS%vKoR(:,:,:) = 1
+  endif
 
   ! Neutral surface factors at U points
   if (CS%continuous_reconstruction) then
@@ -655,7 +660,6 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     if (CS%njblock == 0) njj = G%jec - G%jsc + 1
     call zonal_neutral_positions(G, GV%ke, CS%nsurf, CS%Pint, CS%Tint, CS%Sint, CS%dRdT, CS%dRdS, k_bot, zeta_bot, &
                                  CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, nIIB, njj)
-    !$omp target update from(CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
   else
     do j = G%jsc, G%jec ; do I = G%isc-1, G%iec
       if (G%mask2dCu(I,j) > 0.0) then
@@ -684,7 +688,6 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     if (CS%njblock == 0) nJJB = G%jec - G%jsc + 2
     call meridional_neutral_positions(G, GV%ke, CS%nsurf, CS%Pint, CS%Tint, CS%Sint, CS%dRdT, CS%dRdS, &
                                       k_bot, zeta_bot, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff, nii, nJJB)
-    !$omp target update from(CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
   else
     do J = G%jsc-1, G%jec ; do i = G%isc, G%iec
       if (G%mask2dCv(i,J) > 0.0) then
@@ -707,19 +710,19 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     if (CS%use_unmasked_transport_bug) then
       ! This option is not recommended but needed to recover answers prior to Jan 2018.
       ! It is independent of the other 2018 answers flags.
-      do k = 1, CS%nsurf-1 ; do j = G%jsc, G%jec ; do I = G%isc-1, G%iec
-        CS%uhEff(I,j,k) = CS%uhEff(I,j,k) / GV%H_to_pa
-      enddo ; enddo ; enddo
-      do k = 1, CS%nsurf-1 ; do J = G%jsc-1, G%jec ; do i = G%isc, G%iec
-        CS%vhEff(I,j,k) = CS%vhEff(I,j,k) / GV%H_to_pa
-      enddo ; enddo ; enddo
+      do concurrent (k=1:CS%nsurf-1, j=G%jsc:G%jec, I=G%isc-1:G%iec)
+        CS%uhEff(I,j,k) = CS%uhEff(I,j,k) / H_to_pa
+      enddo
+      do concurrent (k=1:CS%nsurf-1, J=G%jsc-1:G%jec, i=G%isc:G%iec)
+        CS%vhEff(I,j,k) = CS%vhEff(I,j,k) / H_to_pa
+      enddo
     else
-      do k = 1, CS%nsurf-1 ; do j = G%jsc, G%jec ; do I = G%isc-1, G%iec
-        if (G%mask2dCu(I,j) > 0.0) CS%uhEff(I,j,k) = CS%uhEff(I,j,k) * pa_to_H
-      enddo ; enddo ; enddo
-      do k = 1, CS%nsurf-1 ; do J = G%jsc-1, G%jec ; do i = G%isc, G%iec
-        if (G%mask2dCv(i,J) > 0.0) CS%vhEff(i,J,k) = CS%vhEff(i,J,k) * pa_to_H
-      enddo ; enddo ; enddo
+      do concurrent (k=1:CS%nsurf-1, j=G%jsc:G%jec, I=G%isc-1:G%iec, G%mask2dCu(I,j) > 0.0)
+        CS%uhEff(I,j,k) = CS%uhEff(I,j,k) * pa_to_H
+      enddo
+      do concurrent (k=1:CS%nsurf-1, J=G%jsc-1:G%jec, i=G%isc:G%iec, G%mask2dCv(i,J) > 0.0)
+        CS%vhEff(i,J,k) = CS%vhEff(i,J,k) * pa_to_H
+      enddo
     endif
   endif
 
@@ -739,7 +742,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   endif
 
   !$omp target update to(CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
-  !$omp                    CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
+  !$omp                    CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff) if(.not.CS%continuous_reconstruction)
 
   !$omp target exit data map(release: k_bot, zeta_bot)
 
@@ -874,7 +877,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
     ! x-flux
     if (CS%KhTh_use_vert_struct) then
-      !$omp target update from(uFlx, Reg%Tr(m)%t)
+      !$omp target update from(uFlx, Reg%Tr(m)%t, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
       if (CS%tapering) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
@@ -908,7 +911,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       !$omp target update to(uFlx)
     else
       if (CS%tapering) then
-        !$omp target update from(uFlx, Reg%Tr(m)%t)
+        !$omp target update from(uFlx, Reg%Tr(m)%t, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
@@ -929,7 +932,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         call zonal_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, &
                                 CS%uhEff, uFlx, h_neglect, nIIB, njj)
       else
-        !$omp target update from(uFlx, Reg%Tr(m)%t)
+        !$omp target update from(uFlx, Reg%Tr(m)%t, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i+1,j,:),       &
@@ -947,7 +950,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
     ! y-flux
     if (CS%KhTh_use_vert_struct) then
-      !$omp target update from(vFlx, Reg%Tr(m)%t)
+      !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
       if (CS%tapering) then
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
@@ -982,7 +985,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       !$omp target update to(vFlx)
     else
       if (CS%tapering) then
-        !$omp target update from(vFlx, Reg%Tr(m)%t)
+        !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
             ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
@@ -1004,7 +1007,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         call meridional_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, &
                                      CS%vhEff, vFlx, h_neglect, nii, nJJB)
       else
-        !$omp target update from(vFlx, Reg%Tr(m)%t)
+        !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
             call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
