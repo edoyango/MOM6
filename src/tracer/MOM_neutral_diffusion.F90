@@ -564,13 +564,13 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
                                        CS%T_i(i,j,:,:), ppoly_r_S, iMethod, h_neglect, h_neglect_edge )
         call build_reconstructions_1d( CS%remap_CS, GV%ke, h(i,j,:), S(i,j,:), CS%ppoly_coeffs_S(i,j,:,:), &
                                        CS%S_i(i,j,:,:), ppoly_r_S, iMethod, h_neglect, h_neglect_edge )
-        do k=1,GV%ke
-          CS%T_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 0. )
-          CS%T_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 1. )
-          CS%S_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 0. )
-          CS%S_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 1. )
-        enddo
       enddo ; enddo
+      do j=jsb,jeb ; do k=1,GV%ke ; do i=isb,ieb
+        CS%T_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 0. )
+        CS%T_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 1. )
+        CS%S_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 0. )
+        CS%S_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 1. )
+      enddo ; enddo ; enddo
       ! Calculate derivatives for the top interface
       call calculate_density_derivs(CS%T_i(:,:,:,1), CS%S_i(:,:,:,1), ref_pres(:,:,1:GV%ke), CS%dRdT_i(:,:,:,1), &
                                     CS%dRdS_i(:,:,:,1), CS%EOS, EOSdom)
@@ -578,63 +578,20 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
       call calculate_density_derivs(CS%T_i(:,:,:,2), CS%S_i(:,:,:,2), ref_pres(:,:,2:GV%ke+1), CS%dRdT_i(:,:,:,2), &
                                     CS%dRdS_i(:,:,:,2), CS%EOS, EOSdom)
 
+      do j=jsb,jeb ; do i=isb,ieb
+        call mark_unstable_cells( CS, GV%ke, CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%P_i(i,j,:,:), CS%stable_cell(i,j,:) )
+      enddo ; enddo
+      if (CS%interior_only) then
+        do j=jsb,jeb ; do i=isb,ieb
+          if (.not. CS%stable_cell(i,j,k_bot(i,j))) zeta_bot(i,j) = -1.
+          ! set values in the surface and bottom boundary layer to false.
+          do k = 1, k_bot(i,j)
+            CS%stable_cell(i,j,k) = .false.
+          enddo
+        enddo ; enddo
+      endif
     endif
   enddo ; enddo
-  ! do j = G%jsc-1, G%jec+1
-  !   ! Interpolate state to interface
-  !   do i = G%isc-1, G%iec+1
-  !     if (CS%continuous_reconstruction) then
-  !       ! call interface_scalar(GV%ke, h(i,j,:), T(i,j,:), CS%Tint(i,j,:), 2, h_neglect)
-  !       ! call interface_scalar(GV%ke, h(i,j,:), S(i,j,:), CS%Sint(i,j,:), 2, h_neglect)
-  !     else
-  !       call build_reconstructions_1d( CS%remap_CS, GV%ke, h(i,j,:), T(i,j,:), CS%ppoly_coeffs_T(i,j,:,:), &
-  !                                      CS%T_i(i,j,:,:), ppoly_r_S, iMethod, h_neglect, h_neglect_edge )
-  !       call build_reconstructions_1d( CS%remap_CS, GV%ke, h(i,j,:), S(i,j,:), CS%ppoly_coeffs_S(i,j,:,:), &
-  !                                      CS%S_i(i,j,:,:), ppoly_r_S, iMethod, h_neglect, h_neglect_edge )
-  !       ! In the current ALE formulation, interface values are not exactly at the 0. or 1. of the
-  !       ! polynomial reconstructions
-  !       do k=1,GV%ke
-  !          CS%T_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 0. )
-  !          CS%T_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_T(i,j,k,:), CS%deg+1, 1. )
-  !          CS%S_i(i,j,k,1) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 0. )
-  !          CS%S_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 1. )
-  !       enddo
-  !     endif
-  !   enddo
-
-  !   ! Continuous reconstruction
-  !   if (CS%continuous_reconstruction) then
-  !     do k = 1, GV%ke+1
-  !       if (CS%ref_pres<0) ref_pres(:) = CS%Pint(:,j,k)
-  !       call calculate_density_derivs(CS%Tint(:,j,k), CS%Sint(:,j,k), ref_pres, CS%dRdT(:,j,k), &
-  !                                     CS%dRdS(:,j,k), CS%EOS, EOSdom)
-  !     enddo
-  !   else ! Discontinuous reconstruction
-  !     do k = 1, GV%ke
-  !       if (CS%ref_pres<0) ref_pres(:) = CS%Pint(:,j,k)
-  !       ! Calculate derivatives for the top interface
-  !       call calculate_density_derivs(CS%T_i(:,j,k,1), CS%S_i(:,j,k,1), ref_pres, CS%dRdT_i(:,j,k,1), &
-  !                                     CS%dRdS_i(:,j,k,1), CS%EOS, EOSdom)
-  !       if (CS%ref_pres<0) ref_pres(:) = CS%Pint(:,j,k+1)
-  !       ! Calculate derivatives at the bottom interface
-  !       call calculate_density_derivs(CS%T_i(:,j,k,2), CS%S_i(:,j,k,2), ref_pres, CS%dRdT_i(:,j,k,2), &
-  !                                     CS%dRdS_i(:,j,k,2), CS%EOS, EOSdom)
-  !     enddo
-  !   endif
-  ! enddo
-
-  if (.not. CS%continuous_reconstruction) then
-    do j = G%jsc-1, G%jec+1 ; do i = G%isc-1, G%iec+1
-      call mark_unstable_cells( CS, GV%ke, CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%P_i(i,j,:,:), CS%stable_cell(i,j,:) )
-      if (CS%interior_only) then
-        if (.not. CS%stable_cell(i,j,k_bot(i,j))) zeta_bot(i,j) = -1.
-        ! set values in the surface and bottom boundary layer to false.
-        do k = 1, k_bot(i,j)
-          CS%stable_cell(i,j,k) = .false.
-        enddo
-      endif
-    enddo ; enddo
-  endif
 
   !$omp target enter data map(to: k_bot, zeta_bot)
 
