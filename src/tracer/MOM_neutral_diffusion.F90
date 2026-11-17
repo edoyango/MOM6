@@ -472,6 +472,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     ref_pres(:,:,:) = CS%ref_pres
   endif
 
+  !$omp target update from(T, S) if(.not.CS%continuous_reconstruction)
+
   if (CS%continuous_reconstruction) then
     do concurrent (k=1:GV%ke+1, j=G%jsd:G%jed, i=G%isd:G%ied)
       CS%dRdT(i,j,k) = 0.
@@ -843,11 +845,10 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       vFlx(i,j,k) = 0.
     enddo
 
-    !$omp target update to(Reg%Tr(m)%t)
 
     ! x-flux
     if (CS%KhTh_use_vert_struct) then
-      !$omp target update from(uFlx)
+      !$omp target update from(uFlx, Reg%Tr(m)%t)
       if (CS%tapering) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
@@ -881,7 +882,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       !$omp target update to(uFlx)
     else
       if (CS%tapering) then
-        !$omp target update from(uFlx)
+        !$omp target update from(uFlx, Reg%Tr(m)%t)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
@@ -902,7 +903,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         call zonal_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, &
                                 CS%uhEff, uFlx, h_neglect, nIIB, njj)
       else
-        !$omp target update from(uFlx)
+        !$omp target update from(uFlx, Reg%Tr(m)%t)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i+1,j,:),       &
@@ -920,7 +921,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
     ! y-flux
     if (CS%KhTh_use_vert_struct) then
-      !$omp target update from(vFlx)
+      !$omp target update from(vFlx, Reg%Tr(m)%t)
       if (CS%tapering) then
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
@@ -955,7 +956,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       !$omp target update to(vFlx)
     else
       if (CS%tapering) then
-        !$omp target update from(vFlx)
+        !$omp target update from(vFlx, Reg%Tr(m)%t)
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
             ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
@@ -977,7 +978,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         call meridional_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, &
                                      CS%vhEff, vFlx, h_neglect, nii, nJJB)
       else
-        !$omp target update from(vFlx)
+        !$omp target update from(vFlx, Reg%Tr(m)%t)
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
             call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
@@ -1041,19 +1042,21 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
         endif
       enddo ; enddo
+      !$omp target update to(Reg%Tr(m)%t)
     else
       call neutral_flux_divergence(G, GV, h, Coef_x, Coef_y, CS%nsurf, CS%uKoL, CS%uKoR, CS%vKoL, CS%vKoR, &
                                    uFlx, vFlx, CS%ndiff_answer_date, tracer%conc_underflow, tracer%t, &
                                    do_tend, tendency, Idt, nii, njj)
-      !$omp target update from(Reg%Tr(m)%t)
       !$omp target update from(tendency) if(do_tend)
     endif
 
     ! Do user controlled underflow of the tracer concentrations.
     if (tracer%conc_underflow > 0.0) then
+      !$omp target update from(Reg%Tr(m)%t)
       do k=1,GV%ke ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
         if (abs(tracer%t(i,j,k)) < tracer%conc_underflow) tracer%t(i,j,k) = 0.0
       enddo ; enddo ; enddo
+      !$omp target update to(Reg%Tr(m)%t)
     endif
 
     ! Diagnose vertically summed zonal flux, giving zonal tracer transport from ndiff.
