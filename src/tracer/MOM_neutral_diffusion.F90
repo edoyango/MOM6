@@ -2775,6 +2775,69 @@ subroutine neutral_surface_flux(nk, nsurf, deg, hl, hr, Tl, Tr, PiL, PiR, KoL, K
 
 end subroutine neutral_surface_flux
 
+!> Returns one column's tracer values at the top and bottom of a neutral layer and the average of its
+!! continuous PPM reconstruction over the part of a model layer that the neutral layer spans.
+elemental subroutine neutral_column_values(Po_t, Po_b, dk, Ti_t, Ti_tp1, Ti_b, Ti_bp1, aL, aR, T, &
+                                           T_top, T_bot, T_layer, bad)
+  real,    intent(in)  :: Po_t    !< Fractional position of the top neutral surface within its layer [nondim]
+  real,    intent(in)  :: Po_b    !< Fractional position of the bottom neutral surface within its layer [nondim]
+  integer, intent(in)  :: dk      !< The bottom surface's layer index minus the top surface's layer index
+  real,    intent(in)  :: Ti_t    !< Tracer at the interface above the top neutral surface in arbitrary
+                                  !! concentration units (e.g. [C ~> degC] for temperature)
+  real,    intent(in)  :: Ti_tp1  !< Tracer at the interface below the top neutral surface [A ~> a]
+  real,    intent(in)  :: Ti_b    !< Tracer at the interface above the bottom neutral surface [A ~> a]
+  real,    intent(in)  :: Ti_bp1  !< Tracer at the interface below the bottom neutral surface [A ~> a]
+  real,    intent(in)  :: aL      !< Upper PPM edge value of the top neutral surface's layer [A ~> a]
+  real,    intent(in)  :: aR      !< Lower PPM edge value of the top neutral surface's layer [A ~> a]
+  real,    intent(in)  :: T       !< Layer-averaged tracer of the top neutral surface's layer [A ~> a]
+  real,    intent(out) :: T_top   !< Tracer at the top neutral surface [A ~> a]
+  real,    intent(out) :: T_bot   !< Tracer at the bottom neutral surface [A ~> a]
+  real,    intent(out) :: T_layer !< Average of the reconstruction between the two neutral surfaces [A ~> a]
+  logical, intent(out) :: bad     !< True if the bounds passed to ppm_ave_unchecked are out of order
+                                  !! or more than one layer apart, which ppm_ave would stop on
+  !DIR$ ATTRIBUTES FORCEINLINE :: neutral_column_values
+  ! Local variables
+  real :: xR   ! The position of the bottom neutral surface in the top surface's layer [nondim]
+
+  T_bot = ( 1. - Po_b ) * Ti_b + Po_b * Ti_bp1
+  T_top = ( 1. - Po_t ) * Ti_t + Po_t * Ti_tp1
+  xR = Po_b + real(dk)
+  T_layer = ppm_ave_unchecked(Po_t, xR, aL, aR, T)
+  bad = ((xR - Po_t) < 0.) .or. ((xR - Po_t) > 1.)
+
+end subroutine neutral_column_values
+
+!> Returns the limited neutral diffusive flux of a tracer through one neutral layer, from the tracer
+!! values in the columns on either side of a face.
+elemental real function neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, hEff, khtr)
+  real, intent(in) :: TL_top   !< Left-column tracer at the top neutral surface in arbitrary
+                               !! concentration units (e.g. [C ~> degC] for temperature)
+  real, intent(in) :: TL_bot   !< Left-column tracer at the bottom neutral surface [A ~> a]
+  real, intent(in) :: TL_layer !< Left-column tracer averaged over the neutral layer [A ~> a]
+  real, intent(in) :: TR_top   !< Right-column tracer at the top neutral surface [A ~> a]
+  real, intent(in) :: TR_bot   !< Right-column tracer at the bottom neutral surface [A ~> a]
+  real, intent(in) :: TR_layer !< Right-column tracer averaged over the neutral layer [A ~> a]
+  real, intent(in) :: hEff     !< Effective thickness of the neutral layer [H ~> m or kg m-2]
+  real, intent(in) :: khtr     !< An averaged diffusivity, 1 [nondim] without tapering or vertical structure
+  !DIR$ ATTRIBUTES FORCEINLINE :: neutral_flux_value
+  ! Local variables
+  real :: dT_top, dT_bottom ! Differences in tracer concentrations at the top and bottom of the neutral layer
+                            ! between the right and left columns [A ~> a]
+  real :: dT_ave, dT_layer  ! Differences in averaged tracer concentrations between the columns [A ~> a]
+
+  dT_top = TR_top - TL_top
+  dT_bottom = TR_bot - TL_bot
+  dT_ave = 0.5 * ( dT_top + dT_bottom )
+  dT_layer = TR_layer - TL_layer
+  if (signum(1.,dT_top) * signum(1.,dT_bottom) <= 0. .or. signum(1.,dT_ave) * signum(1.,dT_layer) <= 0.) then
+    dT_ave = 0.
+  else
+    dT_ave = dT_layer
+  endif
+  neutral_flux_value = dT_ave * hEff * khtr
+
+end function neutral_flux_value
+
 !> Evaluate various parts of the reconstructions to calculate gradient-based flux limiter
 subroutine neutral_surface_T_eval(nk, ns, k_sub, Ks, Ps, T_mean, T_int, deg, iMethod, T_poly, &
                                   T_top, T_bot, T_sub, T_top_int, T_bot_int, T_layer)
