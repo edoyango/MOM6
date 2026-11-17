@@ -781,6 +781,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   integer :: nii  ! The i block size for the meridional faces
   integer :: nJJB ! The J block size for the meridional faces
   logical :: do_tend ! If true, store the tracer content tendency for diagnostics
+  integer :: ns      ! The number of neutral surfaces
   real :: Idt  ! The inverse of the time step [T-1 ~> s-1]
   real :: h_neglect, h_neglect_edge ! Negligible thicknesses [H ~> m or kg m-2]
 
@@ -811,6 +812,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   endif
 
   nk = GV%ke
+  ns = CS%nsurf
   nIIB = CS%niblock
   if (CS%niblock == 0) nIIB = G%iec - G%isc + 2
   njj = CS%njblock
@@ -820,7 +822,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   nJJB = CS%njblock
   if (CS%njblock == 0) nJJB = G%jec - G%jsc + 2
 
-  !$omp target enter data map(alloc: uFlx, vFlx, tendency) map(to: Coef_x, Coef_y)
+  !$omp target enter data map(alloc: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d) map(to: Coef_x, Coef_y)
   !$omp target enter data map(to: CS)
   !$omp target enter data map(to: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
   !$omp                          CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
@@ -993,11 +995,11 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
         !$omp target update to(vFlx)
       endif
     endif
-    !$omp target update from(uFlx, vFlx)
 
     ! Update the tracer concentration from divergence of neutral diffusive flux components, noting
     ! that uFlx and vFlx use an unexpected sign convention.
     if (CS%KhTh_use_vert_struct) then
+      !$omp target update from(uFlx, vFlx)
       do j = G%jsc,G%jec ; do i = G%isc,G%iec
         if (G%mask2dT(i,j)>0.) then
           if (CS%ndiff_answer_date <= 20240330) then
@@ -1074,15 +1076,16 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
           endif
         enddo ; enddo
       else
-        do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
+        do concurrent (j=G%jsc:G%jec, I=G%isc-1:G%iec) DO_LOCALITY(local(ks))
           trans_x_2d(I,j) = 0.
           if (G%mask2dCu(I,j)>0.) then
-            do ks = 1,CS%nsurf-1
+            do ks = 1,ns-1
               trans_x_2d(I,j) = trans_x_2d(I,j) - Coef_x(I,j,1) * uFlx(I,j,ks)
             enddo
             trans_x_2d(I,j) = trans_x_2d(I,j) * Idt
           endif
-        enddo ; enddo
+        enddo
+        !$omp target update from(trans_x_2d)
       endif
 
       call post_data(tracer%id_dfx_2d, trans_x_2d(:,:), CS%diag)
@@ -1103,15 +1106,16 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
           endif
         enddo ; enddo
       else
-        do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
+        do concurrent (J=G%jsc-1:G%jec, i=G%isc:G%iec) DO_LOCALITY(local(ks))
           trans_y_2d(i,J) = 0.
           if (G%mask2dCv(i,J)>0.) then
-            do ks = 1,CS%nsurf-1
+            do ks = 1,ns-1
               trans_y_2d(i,J) = trans_y_2d(i,J) - Coef_y(i,J,1) * vFlx(i,J,ks)
             enddo
             trans_y_2d(i,J) = trans_y_2d(i,J) * Idt
           endif
-        enddo ; enddo
+        enddo
+        !$omp target update from(trans_y_2d)
       endif
 
       call post_data(tracer%id_dfy_2d, trans_y_2d(:,:), CS%diag)
@@ -1147,7 +1151,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   !$omp target exit data map(release: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
   !$omp                               CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
   !$omp target exit data map(release: CS)
-  !$omp target exit data map(release: uFlx, vFlx, tendency, Coef_x, Coef_y)
+  !$omp target exit data map(release: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d, Coef_x, Coef_y)
 
   call cpu_clock_end(id_clock_ndiff)
 
