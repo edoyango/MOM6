@@ -420,8 +420,10 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   call cpu_clock_begin(id_clock_ndiff_coeffs)
 
   ! block sizes
-  njj = (G%jec+1) - (G%jsc-1) + 1
-  nii = (G%iec+1) - (G%isc-1) + 1
+  nii = CS%niblock
+  if (CS%niblock == 0) nii = (G%iec+1) - (G%isc-1) + 1
+  njj = CS%njblock
+  if (CS%njblock == 0) njj = (G%jec+1) - (G%jsc-1) + 1
 
   pa_to_H = 1. / (GV%H_to_RZ * GV%g_Earth)
 
@@ -525,6 +527,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     enddo ; enddo ; enddo
   endif
 
+  if (CS%ref_pres<0) ref_pres(:,:,:) = CS%Pint(:,:,:)
+
   ! EOSdom(:) = EOS_domain(G%HI, halo=1)
   do jsb=G%jsc-1,G%jec+1,njj ; do isb=G%isc-1,G%iec+1,nii
     jeb = min(jsb+njj-1, G%jec+1)
@@ -539,7 +543,6 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
                                   CS%Tint, 2, h_neglect)
       call interface_scalar_block(G, isb, ieb, jsb, jeb, GV%ke, h, S, G%isd, G%ied, G%jsd, G%jed, &
                                   CS%Sint, 2, h_neglect)
-      if (CS%ref_pres<0) ref_pres(:,:,:) = CS%Pint(:,:,:)
       call calculate_density_derivs(CS%Tint, CS%Sint, ref_pres, CS%dRdT, CS%dRdS, CS%EOS, EOSdom)
       !$omp target update from(CS%dRdT, CS%dRdS, CS%Tint, CS%Sint)
     else
@@ -555,7 +558,6 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
           CS%S_i(i,j,k,2) = evaluation_polynomial( CS%ppoly_coeffs_S(i,j,k,:), CS%deg+1, 1. )
         enddo
       enddo ; enddo
-      if (CS%ref_pres<0) ref_pres(:,:,:) = CS%Pint(:,:,:)
       ! Calculate derivatives for the top interface
       call calculate_density_derivs(CS%T_i(:,:,:,1), CS%S_i(:,:,:,1), ref_pres(:,:,1:GV%ke), CS%dRdT_i(:,:,:,1), &
                                     CS%dRdS_i(:,:,:,1), CS%EOS, EOSdom)
