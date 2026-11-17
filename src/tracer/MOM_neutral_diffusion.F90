@@ -876,7 +876,11 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
 
     ! x-flux
-    if (CS%KhTh_use_vert_struct) then
+    if (CS%continuous_reconstruction) then
+      call zonal_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, &
+                              CS%uhEff, uFlx, h_neglect, nIIB, njj, CS%tapering, CS%KhTh_use_vert_struct, &
+                              CS%hbl, CS%Coef_h)
+    elseif (CS%KhTh_use_vert_struct) then
       !$omp target update from(uFlx, Reg%Tr(m)%t, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
       if (CS%tapering) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
@@ -928,9 +932,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
           endif
         enddo ; enddo
         !$omp target update to(uFlx)
-      elseif (CS%continuous_reconstruction) then
-        call zonal_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, &
-                                CS%uhEff, uFlx, h_neglect, nIIB, njj)
       else
         !$omp target update from(uFlx, Reg%Tr(m)%t, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
@@ -3414,8 +3415,10 @@ elemental real function neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_
 end function neutral_flux_value
 
 !> Calculates the neutral diffusion fluxes of a tracer through the zonal faces, a block of faces at a
-!! time, from continuous reconstructions without tapering or a vertical structure of the diffusivity.
-subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx, h_neglect, nIIB, njj)
+!! time, from continuous reconstructions.  With tapering or a vertical structure of the diffusivity this is
+!! done on the host.
+subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx, h_neglect, nIIB, njj, &
+                              tapering, vert_struct, hbl, Coef_h)
   type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
@@ -3438,6 +3441,12 @@ subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx
   real,                    intent(in) :: h_neglect !< A negligibly small thickness [H ~> m or kg m-2]
   integer,                 intent(in) :: nIIB  !< I block size for array calculations
   integer,                 intent(in) :: njj   !< j block size for array calculations
+  logical,                 intent(in) :: tapering    !< If true, taper the diffusivity within the boundary layers
+  logical,                 intent(in) :: vert_struct !< If true, the diffusivity has a vertical structure
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(in) :: hbl !< Boundary layer depth [H ~> m or kg m-2],
+                                                             !! used if tapering is true
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), optional, intent(in) :: Coef_h !< The diffusivity coefficients
+                                                             !! at tracer points [L2 ~> m2], used if vert_struct is true
 
   ! Local variables
   ! The block-sized work arrays below are dimensioned (nIIB+1,njj,nz[+1]).  Their first index covers the
@@ -3452,13 +3461,92 @@ subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx
                                     ! over it, in arbitrary concentration units [A ~> a]
   logical :: badL, badR ! True if the western or eastern bounds passed to ppm_ave_unchecked are out of range
   logical :: bad        ! True if any bounds passed to ppm_ave_unchecked are out of range
-  integer :: I, j, ks, klt, klb, krt, krb, nk, II, jj
+  ! Variables used with tapering or a vertical structure of the diffusivity
+  real, dimension(nIIB,njj,SZK_(GV)+1) :: cL_b, cR_b ! Diffusivity factors at the interfaces of the western
+                                                 ! and eastern column of each face, [nondim] or [L2 ~> m2]
+  real, dimension(SZK_(GV)+1) :: Ti_c       ! A column's interface tracer [A ~> a]
+  real, dimension(SZK_(GV)) :: aL_c, aR_c   ! A column's upper and lower PPM edge values of the tracer [A ~> a]
+  real, dimension(SZK_(GV)+1) :: cl, cr     ! Tapering coefficients of the western and eastern columns [nondim]
+  real :: khtr          ! The averaged diffusivity factor of a neutral layer, [nondim] or [L2 ~> m2]
+  integer :: I, j, k, ks, klt, klb, krt, krb, nk, II, jj
   integer :: jsb, jeb   ! The j-index bounds of the current block.
   integer :: IsbB, IebB ! The I-index bounds of the current block.
   integer :: jje, IIe   ! The block-local j- and I-index end bounds.
 
   nk = GV%ke
   bad = .false.
+
+  if (tapering .or. vert_struct) then
+    !$omp target update from(T, PoL, PoR, KoL, KoR, hEff, uFlx)
+    allocate(cL_b(nIIB,njj,nk+1), cR_b(nIIB,njj,nk+1))
+    do jsb=G%jsc,G%jec,njj ; do IsbB=G%isc-1,G%iec,nIIB
+      IebB = min(IsbB + nIIB - 1, G%iec)
+      jeb = min(jsb + njj - 1, G%jec)
+      IIe = IebB - IsbB + 1
+      jje = jeb - jsb + 1
+
+      ! Reconstructions of the columns on either side of the block's faces
+      do jj=1,jje ; do II=1,IIe+1
+        i = IsbB + II - 1
+        j = jsb + jj - 1
+
+        call interface_scalar(nk, h(i,j,:), T(i,j,:), Ti_c, 2, h_neglect)
+        call ppm_left_right_edge_values(nk, T(i,j,:), Ti_c, aL_c, aR_c)
+        do k=1,nk+1 ; Ti_b(II,jj,k) = Ti_c(k) ; enddo
+        do k=1,nk ; aL_b(II,jj,k) = aL_c(k) ; aR_b(II,jj,k) = aR_c(k) ; enddo
+      enddo ; enddo
+
+      ! Diffusivity factors at the interfaces of the columns on either side of each face
+      do jj=1,jje ; do II=1,IIe
+        I = IsbB + II - 1
+        j = jsb + jj - 1
+
+        if (G%mask2dCu(I,j) > 0.) then
+          if (tapering) call compute_tapering_coeffs(nk+1, hbl(I,j), hbl(I+1,j), cl, cr, h(I,j,:), h(I+1,j,:))
+          do k=1,nk+1
+            if (tapering .and. vert_struct) then
+              cL_b(II,jj,k) = cl(k)*Coef_h(i,j,k) ; cR_b(II,jj,k) = cr(k)*Coef_h(i+1,j,k)
+            elseif (tapering) then
+              cL_b(II,jj,k) = cl(k) ; cR_b(II,jj,k) = cr(k)
+            else
+              cL_b(II,jj,k) = Coef_h(i,j,k) ; cR_b(II,jj,k) = Coef_h(i+1,j,k)
+            endif
+          enddo
+        endif
+      enddo ; enddo
+
+      do jj=1,jje ; do ks=1,nsurf-1 ; do II=1,IIe
+        I = IsbB + II - 1
+        j = jsb + jj - 1
+
+        if (G%mask2dCu(I,j) > 0.) then
+          if (hEff(I,j,ks) == 0.) then
+            uFlx(I,j,ks) = 0.
+          else
+            klt = KoL(I,j,ks) ; klb = KoL(I,j,ks+1)
+            krt = KoR(I,j,ks) ; krb = KoR(I,j,ks+1)
+            ! these are added in this order to preserve vertically-uniform diffusivity answers
+            khtr = 0.25 * ((cL_b(II,jj,klb) + cL_b(II,jj,klt)) + (cR_b(II,jj,krb) + cR_b(II,jj,krt)))
+            call neutral_column_values(PoL(I,j,ks), PoL(I,j,ks+1), klb-klt, Ti_b(II,jj,klt), Ti_b(II,jj,klt+1), &
+                                       Ti_b(II,jj,klb), Ti_b(II,jj,klb+1), aL_b(II,jj,klt), aR_b(II,jj,klt), &
+                                       T(i,j,klt), TL_top, TL_bot, TL_layer, badL)
+            call neutral_column_values(PoR(I,j,ks), PoR(I,j,ks+1), krb-krt, Ti_b(II+1,jj,krt), &
+                                       Ti_b(II+1,jj,krt+1), Ti_b(II+1,jj,krb), Ti_b(II+1,jj,krb+1), &
+                                       aL_b(II+1,jj,krt), aR_b(II+1,jj,krt), T(i+1,j,krt), &
+                                       TR_top, TR_bot, TR_layer, badR)
+            uFlx(I,j,ks) = neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, hEff(I,j,ks), khtr)
+            bad = bad .or. (badL .or. badR)
+          endif
+        endif
+      enddo ; enddo ; enddo
+    enddo ; enddo
+    deallocate(cL_b, cR_b)
+    !$omp target update to(uFlx)
+
+    if (bad) call MOM_error(FATAL, "MOM_neutral_diffusion, zonal_neutral_flux: the bounds passed to "//&
+                                   "ppm_ave are out of order or more than one layer apart.")
+    return
+  endif
 
   !$omp target enter data map(alloc: Ti_b, aL_b, aR_b)
 
