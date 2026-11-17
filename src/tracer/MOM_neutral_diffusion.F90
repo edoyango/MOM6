@@ -1876,24 +1876,11 @@ real function interpolate_for_nondim_position(dRhoNeg, Pneg, dRhoPos, Ppos)
   real, intent(in) :: Ppos    !< Position of positive density difference [R L2 T-2 ~> Pa] or [nondim]
 
   character(len=120) :: mesg
+  logical :: bad  ! True if the positions or density differences are out of order
 
-  if ((Ppos > Pneg) .and. (dRhoPos - dRhoNeg >= 0. )) then
-    if ( dRhoPos - dRhoNeg > 0. ) then
-      interpolate_for_nondim_position = min( 1., max( 0., -dRhoNeg / ( dRhoPos - dRhoNeg ) ) )
-    elseif (dRhoPos - dRhoNeg == 0) then
-      if (dRhoNeg > 0.) then
-        interpolate_for_nondim_position = 0.
-      elseif (dRhoNeg < 0.) then
-        interpolate_for_nondim_position = 1.
-      else ! dRhoPos = dRhoNeg = 0
-        interpolate_for_nondim_position = 0.5
-      endif
-    else ! dRhoPos - dRhoNeg < 0
-      interpolate_for_nondim_position = 0.5
-    endif
-  elseif (Ppos == Pneg) then ! Handle vanished or inverted layers
-    interpolate_for_nondim_position = 0.5
-  else ! ((Ppos < Pneg) .or. (dRhoNeg > dRhoPos) )
+  call interpolate_for_nondim_position_unchecked(dRhoNeg, Pneg, dRhoPos, Ppos, &
+                                                 interpolate_for_nondim_position, bad)
+  if (bad) then ! ((Ppos < Pneg) .or. (dRhoNeg > dRhoPos) )
     ! Error handling for problematic cases.  It is expected that this should never occur.
     write(mesg,*) 'dRhoNeg, Pneg, dRhoPos, Ppos', dRhoNeg, Pneg, dRhoPos, Ppos
     call MOM_error(WARNING, 'interpolate_for_nondim_position: '//trim(mesg))
@@ -1911,6 +1898,42 @@ real function interpolate_for_nondim_position(dRhoNeg, Pneg, dRhoPos, Ppos)
   endif
 
 end function interpolate_for_nondim_position
+
+!> Calculates the non-dimensional position between Pneg and Ppos where the interpolated density difference
+!! equals zero, as interpolate_for_nondim_position does, but returns a flag instead of stopping on the
+!! problematic cases.
+pure subroutine interpolate_for_nondim_position_unchecked(dRhoNeg, Pneg, dRhoPos, Ppos, pos, bad)
+  real,    intent(in)  :: dRhoNeg !< Negative density difference [R ~> kg m-3]
+  real,    intent(in)  :: Pneg    !< Position of negative density difference [R L2 T-2 ~> Pa] or [nondim]
+  real,    intent(in)  :: dRhoPos !< Positive density difference [R ~> kg m-3]
+  real,    intent(in)  :: Ppos    !< Position of positive density difference [R L2 T-2 ~> Pa] or [nondim]
+  real,    intent(out) :: pos     !< The position between Pneg and Ppos where the interpolated density
+                                  !! difference is zero, bounded between 0 and 1 [nondim]
+  logical, intent(out) :: bad     !< True if Ppos < Pneg or dRhoNeg > dRhoPos, which is not expected
+
+  bad = .false.
+  if ((Ppos > Pneg) .and. (dRhoPos - dRhoNeg >= 0. )) then
+    if ( dRhoPos - dRhoNeg > 0. ) then
+      pos = min( 1., max( 0., -dRhoNeg / ( dRhoPos - dRhoNeg ) ) )
+    elseif (dRhoPos - dRhoNeg == 0) then
+      if (dRhoNeg > 0.) then
+        pos = 0.
+      elseif (dRhoNeg < 0.) then
+        pos = 1.
+      else ! dRhoPos = dRhoNeg = 0
+        pos = 0.5
+      endif
+    else ! dRhoPos - dRhoNeg < 0
+      pos = 0.5
+    endif
+  elseif (Ppos == Pneg) then ! Handle vanished or inverted layers
+    pos = 0.5
+  else ! ((Ppos < Pneg) .or. (dRhoNeg > dRhoPos) )
+    pos = 0.5
+    bad = .true.
+  endif
+
+end subroutine interpolate_for_nondim_position_unchecked
 
 !> Higher order version of find_neutral_surface_positions. Returns positions within left/right columns
 !! of combined interfaces using intracell reconstructions of T/S. Note that the polynomial reconstructions
