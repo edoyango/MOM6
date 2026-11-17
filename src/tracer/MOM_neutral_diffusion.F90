@@ -378,6 +378,11 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
   allocate(CS%vKoR(G%isd:G%ied,G%jsd:G%jed, CS%nsurf), source=0)
   allocate(CS%vHeff(G%isd:G%ied,G%jsd:G%jed,CS%nsurf-1), source=0.)
 
+  !$omp target enter data map(to: CS)
+  !$omp target enter data map(to: CS%dRdT, CS%dRdS, CS%Tint, CS%Sint, CS%Pint, &
+  !$omp                          CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
+  !$omp                          CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
+
   id_clock_ndiff = cpu_clock_id('(Ocean neutral diffusion)', grain=CLOCK_ROUTINE)
   id_clock_ndiff_coeffs = cpu_clock_id('(Ocean neutral diffusion coeffs)', grain=CLOCK_ROUTINE)
 
@@ -428,8 +433,6 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
   pa_to_H = 1. / (GV%H_to_RZ * GV%g_Earth)
 
   !$omp target enter data map(alloc: k_top, k_bot, zeta_top, zeta_bot)
-  !$omp target enter data map(to: CS)
-  !$omp target enter data map(alloc: CS%dRdS, CS%dRdT, CS%Pint) map(to: CS%Tint, CS%Sint)
 
   do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
     k_top(i,j) = 1     ; k_bot(i,j) = 1
@@ -715,8 +718,8 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, visc, CS, p_surf)
     call post_data(CS%id_vhEff_2d, hEff_sum, CS%diag)
   endif
 
-  !$omp target exit data map(release: CS%dRdS, CS%dRdT, CS%Pint, CS%Tint, CS%Sint)
-  !$omp target exit data map(release: CS)
+  !$omp target update to(CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
+  !$omp                    CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
 
   call cpu_clock_end(id_clock_ndiff_coeffs)
 
@@ -825,9 +828,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   if (CS%njblock == 0) nJJB = G%jec - G%jsc + 2
 
   !$omp target enter data map(alloc: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d) map(to: Coef_x, Coef_y)
-  !$omp target enter data map(to: CS)
-  !$omp target enter data map(to: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
-  !$omp                          CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
 
   do m = 1,Reg%ntr ! Loop over tracer registry
 
@@ -1150,9 +1150,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     endif
   enddo ! Loop over tracer registry
 
-  !$omp target exit data map(release: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
-  !$omp                               CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
-  !$omp target exit data map(release: CS)
   !$omp target exit data map(release: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d, Coef_x, Coef_y)
 
   call cpu_clock_end(id_clock_ndiff)
@@ -4204,7 +4201,13 @@ end function test_rnp
 subroutine neutral_diffusion_end(CS)
   type(neutral_diffusion_CS), pointer :: CS  !< Neutral diffusion control structure
 
-  if (associated(CS)) deallocate(CS)
+  if (associated(CS)) then
+    !$omp target exit data map(delete: CS%dRdT, CS%dRdS, CS%Tint, CS%Sint, CS%Pint, &
+    !$omp                              CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff, &
+    !$omp                              CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
+    !$omp target exit data map(delete: CS)
+    deallocate(CS)
+  endif
 
 end subroutine neutral_diffusion_end
 
