@@ -3346,6 +3346,9 @@ logical function ndiff_unit_tests_continuous(verbose)
                                PiLRo, PiRLo, KoL, KoR, hEff, Flx, .true., h_neglect)
   ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_data1d(v, 7, Flx, &
               (/0.,20.,0.,20.,0.,20.,0./), 'Identical columns, S flux')
+  ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_flux_cores(v, 3, 8, &
+                                   (/10.,10.,10./), (/10.,10.,10./), (/1.,3.,2./), (/2.,0.5,4./), &
+                                   PiLRo, PiRLo, KoL, KoR, hEff, '... test tracer flux from the shared cores')
 
   ! Right column slightly cooler than left
   call find_neutral_surface_positions_continuous(3, &
@@ -3367,6 +3370,9 @@ logical function ndiff_unit_tests_continuous(verbose)
   ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_data1d(v, 8, &
                                    absolute_positions(3, 8, (/0.,10.,20.,30./), KoR, PiRLo), &
                                    (/0.,0.,5.,10.,15.,20.,25.,30./), '... right positions')
+  ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_flux_cores(v, 3, 8, &
+                                   (/10.,10.,10./), (/10.,10.,10./), (/1.,3.,2./), (/2.,0.5,4./), &
+                                   PiLRo, PiRLo, KoL, KoR, hEff, '... test tracer flux from the shared cores')
 
   ! Right column slightly warmer than left
   call find_neutral_surface_positions_continuous(3, &
@@ -3382,6 +3388,9 @@ logical function ndiff_unit_tests_continuous(verbose)
                                    (/0.,0.5,0.,0.5,0.,0.5,1.,1./), & ! pR
                                    (/0.,5.,5.,5.,5.,5.,0./), & ! hEff
                                    'Right column slightly warmer')
+  ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_flux_cores(v, 3, 8, &
+                                   (/10.,10.,10./), (/10.,10.,10./), (/1.,3.,2./), (/2.,0.5,4./), &
+                                   PiLRo, PiRLo, KoL, KoR, hEff, '... test tracer flux from the shared cores')
 
   ! Right column somewhat cooler than left
   call find_neutral_surface_positions_continuous(3, &
@@ -3412,6 +3421,9 @@ logical function ndiff_unit_tests_continuous(verbose)
                                    (/0.,0.,0.,0.,0.,0.,0.,1./), & ! pR
                                    (/0.,0.,0.,0.,0.,0.,0./), & ! hEff
                                    'Right column much cooler')
+  ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_flux_cores(v, 3, 8, &
+                                   (/10.,10.,10./), (/10.,10.,10./), (/1.,3.,2./), (/2.,0.5,4./), &
+                                   PiLRo, PiRLo, KoL, KoR, hEff, '... test tracer flux from the shared cores')
 
   ! Right column with mixed layer
   call find_neutral_surface_positions_continuous(3, &
@@ -3427,6 +3439,9 @@ logical function ndiff_unit_tests_continuous(verbose)
                                    (/0.,0.,0.,0.,0.,0.,0.,1./), & ! pR
                                    (/0.,0.,0.,0.,10.,0.,0./), & ! hEff
                                    'Right column with mixed layer')
+  ndiff_unit_tests_continuous = ndiff_unit_tests_continuous .or. test_flux_cores(v, 3, 8, &
+                                   (/10.,10.,10./), (/10.,10.,10./), (/1.,3.,2./), (/2.,0.5,4./), &
+                                   PiLRo, PiRLo, KoL, KoR, hEff, '... test tracer flux from the shared cores')
 
   ! Identical columns with mixed layer
   call find_neutral_surface_positions_continuous(3, &
@@ -3963,6 +3978,69 @@ logical function test_nsp(verbose, ns, KoL, KoR, pL, pR, hEff, KoL0, KoR0, pL0, 
 
 10 format("ks=",i3," kL=",i3," pL=",f20.16," kR=",i3," pR=",f20.16,a)
 end function test_nsp
+
+!> Returns true if the fluxes of a tracer through the neutral layers between two columns differ in any
+!! bit between neutral_surface_flux and the shared cores of the blocked flux routines (neutral_column_values
+!! and neutral_flux_value), or if the cores flag the bounds passed to ppm_ave as out of range.
+logical function test_flux_cores(verbose, nk, nsurf, hl, hr, Tl, Tr, PiL, PiR, KoL, KoR, hEff, title)
+  logical,                   intent(in) :: verbose !< If true, write results to stdout
+  integer,                   intent(in) :: nk      !< Number of layers
+  integer,                   intent(in) :: nsurf   !< Number of neutral surfaces
+  real, dimension(nk),       intent(in) :: hl      !< Left-column layer thickness [H ~> m or kg m-2]
+  real, dimension(nk),       intent(in) :: hr      !< Right-column layer thickness [H ~> m or kg m-2]
+  real, dimension(nk),       intent(in) :: Tl      !< Left-column layer tracer in arbitrary units [A ~> a]
+  real, dimension(nk),       intent(in) :: Tr      !< Right-column layer tracer in arbitrary units [A ~> a]
+  real, dimension(nsurf),    intent(in) :: PiL     !< Fractional position of the neutral surfaces within
+                                                   !! layer KoL of the left column [nondim]
+  real, dimension(nsurf),    intent(in) :: PiR     !< Fractional position of the neutral surfaces within
+                                                   !! layer KoR of the right column [nondim]
+  integer, dimension(nsurf), intent(in) :: KoL     !< Left-column layer index of each neutral surface
+  integer, dimension(nsurf), intent(in) :: KoR     !< Right-column layer index of each neutral surface
+  real, dimension(nsurf-1),  intent(in) :: hEff    !< Effective thickness between two neutral
+                                                   !! surfaces [H ~> m or kg m-2]
+  character(len=*),          intent(in) :: title   !< Title for messages
+  ! Local variables
+  real, dimension(nsurf-1) :: Flx       ! Fluxes from neutral_surface_flux [A H ~> a m or a kg m-2]
+  real, dimension(nsurf-1) :: Flx_cores ! Fluxes from the shared cores [A H ~> a m or a kg m-2]
+  real, dimension(nk+1) :: Til, Tir     ! Left- and right-column interface tracer values [A ~> a]
+  real, dimension(nk) :: aL_l, aR_l     ! Left-column PPM edge values [A ~> a]
+  real, dimension(nk) :: aL_r, aR_r     ! Right-column PPM edge values [A ~> a]
+  real :: TL_top, TL_bot, TL_layer      ! Left-column tracer at and between two neutral surfaces [A ~> a]
+  real :: TR_top, TR_bot, TR_layer      ! Right-column tracer at and between two neutral surfaces [A ~> a]
+  real :: h_neglect                     ! A negligible thickness [H ~> m or kg m-2]
+  logical :: badL, badR, any_bad        ! Flags for out-of-range bounds passed to ppm_ave_unchecked
+  integer :: ks, klt, klb, krt, krb
+
+  h_neglect = 1.0e-30
+  call neutral_surface_flux(nk, nsurf, 2, hl, hr, Tl, Tr, PiL, PiR, KoL, KoR, hEff, Flx, .true., h_neglect)
+
+  call interface_scalar(nk, hl, Tl, Til, 2, h_neglect)
+  call interface_scalar(nk, hr, Tr, Tir, 2, h_neglect)
+  call ppm_left_right_edge_values(nk, Tl, Til, aL_l, aR_l)
+  call ppm_left_right_edge_values(nk, Tr, Tir, aL_r, aR_r)
+  any_bad = .false.
+  do ks = 1, nsurf-1
+    if (hEff(ks) == 0.) then
+      Flx_cores(ks) = 0.
+    else
+      klt = KoL(ks) ; klb = KoL(ks+1)
+      call neutral_column_values(PiL(ks), PiL(ks+1), klb-klt, Til(klt), Til(klt+1), Til(klb), Til(klb+1), &
+                                 aL_l(klt), aR_l(klt), Tl(klt), TL_top, TL_bot, TL_layer, badL)
+      krt = KoR(ks) ; krb = KoR(ks+1)
+      call neutral_column_values(PiR(ks), PiR(ks+1), krb-krt, Tir(krt), Tir(krt+1), Tir(krb), Tir(krb+1), &
+                                 aL_r(krt), aR_r(krt), Tr(krt), TR_top, TR_bot, TR_layer, badR)
+      Flx_cores(ks) = neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, hEff(ks), 1.0)
+      any_bad = any_bad .or. (badL .or. badR)
+    endif
+  enddo
+
+  test_flux_cores = test_data1d(verbose, nsurf-1, Flx_cores, Flx, title)
+  if (any_bad) then
+    test_flux_cores = .true.
+    write(stdout,'(a)') trim(title)//': the bounds passed to ppm_ave were flagged as out of range'
+  endif
+
+end function test_flux_cores
 
 !> Compares a single row, k, of output from find_neutral_surface_positions()
 logical function compare_nsp_row(KoL, KoR, pL, pR, KoL0, KoR0, pL0, pR0)
