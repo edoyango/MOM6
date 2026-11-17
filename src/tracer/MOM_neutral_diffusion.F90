@@ -774,6 +774,8 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   type(tracer_type), pointer                   :: Tracer => NULL() ! Pointer to the current tracer
 
   integer :: i, j, k, m, ks, nk
+  integer :: nIIB ! The I block size for the zonal faces
+  integer :: njj  ! The j block size for the zonal faces
   real :: Idt  ! The inverse of the time step [T-1 ~> s-1]
   real :: h_neglect, h_neglect_edge ! Negligible thicknesses [H ~> m or kg m-2]
 
@@ -804,8 +806,14 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   endif
 
   nk = GV%ke
+  nIIB = CS%niblock
+  if (CS%niblock == 0) nIIB = G%iec - G%isc + 2
+  njj = CS%njblock
+  if (CS%njblock == 0) njj = G%jec - G%jsc + 1
 
   !$omp target enter data map(alloc: uFlx, vFlx)
+  !$omp target enter data map(to: CS)
+  !$omp target enter data map(to: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
 
   do m = 1,Reg%ntr ! Loop over tracer registry
 
@@ -825,10 +833,12 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
       vFlx(i,j,k) = 0.
     enddo
 
-    !$omp target update from(uFlx, vFlx)
+    !$omp target update from(vFlx)
+    !$omp target update to(Reg%Tr(m)%t)
 
     ! x-flux
     if (CS%KhTh_use_vert_struct) then
+      !$omp target update from(uFlx)
       if (CS%tapering) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
@@ -859,8 +869,10 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
           endif
         enddo ; enddo
       endif
+      !$omp target update to(uFlx)
     else
       if (CS%tapering) then
+        !$omp target update from(uFlx)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
@@ -876,7 +888,12 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
                                       CS%coeff_r(:))
           endif
         enddo ; enddo
+        !$omp target update to(uFlx)
+      elseif (CS%continuous_reconstruction) then
+        call zonal_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, &
+                                CS%uhEff, uFlx, h_neglect, nIIB, njj)
       else
+        !$omp target update from(uFlx)
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
             call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i+1,j,:),       &
@@ -888,8 +905,10 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
                                       CS%remap_CS, h_neglect_edge)
           endif
         enddo ; enddo
+        !$omp target update to(uFlx)
       endif
     endif
+    !$omp target update from(uFlx)
 
     ! y-flux
     if (CS%KhTh_use_vert_struct) then
@@ -1143,6 +1162,8 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     endif
   enddo ! Loop over tracer registry
 
+  !$omp target exit data map(release: CS%uPoL, CS%uPoR, CS%uKoL, CS%uKoR, CS%uhEff)
+  !$omp target exit data map(release: CS)
   !$omp target exit data map(release: uFlx, vFlx)
 
   call cpu_clock_end(id_clock_ndiff)
@@ -2843,6 +2864,96 @@ elemental real function neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_
   neutral_flux_value = dT_ave * hEff * khtr
 
 end function neutral_flux_value
+
+!> Calculates the neutral diffusion fluxes of a tracer through the zonal faces, a block of faces at a
+!! time, from continuous reconstructions without tapering or a vertical structure of the diffusivity.
+subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx, h_neglect, nIIB, njj)
+  type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: T !< Layer tracer in arbitrary concentration
+                                                             !! units (e.g. [C ~> degC] for temperature)
+  integer,                 intent(in) :: nsurf !< Number of neutral surfaces
+  real,    dimension(SZI_(G),SZJ_(G),nsurf),   intent(in) :: PoL  !< Fractional position of each neutral surface
+                                                             !! within layer KoL of the western column [nondim]
+  real,    dimension(SZI_(G),SZJ_(G),nsurf),   intent(in) :: PoR  !< Fractional position of each neutral surface
+                                                             !! within layer KoR of the eastern column [nondim]
+  integer, dimension(SZI_(G),SZJ_(G),nsurf),   intent(in) :: KoL  !< Index of the first western interface above
+                                                             !! each neutral surface
+  integer, dimension(SZI_(G),SZJ_(G),nsurf),   intent(in) :: KoR  !< Index of the first eastern interface above
+                                                             !! each neutral surface
+  real,    dimension(SZI_(G),SZJ_(G),nsurf-1), intent(in) :: hEff !< Effective thickness between two neutral
+                                                             !! surfaces [H ~> m or kg m-2]
+  real,    dimension(SZIB_(G),SZJ_(G),nsurf-1), intent(inout) :: uFlx !< Zonal flux of tracer between pairs of
+                                                             !! neutral layers in units of conc H, e.g.
+                                                             !! [C H ~> degC m or degC kg m-2] for temperature
+  real,                    intent(in) :: h_neglect !< A negligibly small thickness [H ~> m or kg m-2]
+  integer,                 intent(in) :: nIIB  !< I block size for array calculations
+  integer,                 intent(in) :: njj   !< j block size for array calculations
+
+  ! Local variables
+  ! The block-sized work arrays below are dimensioned (nIIB+1,njj,nz[+1]).  Their first index covers the
+  ! tracer columns IsbB to IebB+1 on either side of the block's zonal faces.
+  real, dimension(nIIB+1,njj,SZK_(GV)+1) :: Ti_b ! Interface tracer in arbitrary concentration
+                                                 ! units (e.g. [C ~> degC] for temperature)
+  real, dimension(nIIB+1,njj,SZK_(GV)) :: aL_b   ! Upper PPM edge values of the tracer [A ~> a]
+  real, dimension(nIIB+1,njj,SZK_(GV)) :: aR_b   ! Lower PPM edge values of the tracer [A ~> a]
+  real :: TL_top, TL_bot, TL_layer  ! Western tracer at the top and bottom of a neutral layer and averaged
+                                    ! over it, in arbitrary concentration units [A ~> a]
+  real :: TR_top, TR_bot, TR_layer  ! Eastern tracer at the top and bottom of a neutral layer and averaged
+                                    ! over it, in arbitrary concentration units [A ~> a]
+  logical :: badL, badR ! True if the western or eastern bounds passed to ppm_ave_unchecked are out of range
+  logical :: bad        ! True if any bounds passed to ppm_ave_unchecked are out of range
+  integer :: I, j, ks, klt, klb, krt, krb, nk, II, jj
+  integer :: jsb, jeb   ! The j-index bounds of the current block.
+  integer :: IsbB, IebB ! The I-index bounds of the current block.
+  integer :: jje, IIe   ! The block-local j- and I-index end bounds.
+
+  nk = GV%ke
+  bad = .false.
+
+  !$omp target enter data map(alloc: Ti_b, aL_b, aR_b)
+
+  do jsb=G%jsc,G%jec,njj ; do IsbB=G%isc-1,G%iec,nIIB
+    IebB = min(IsbB + nIIB - 1, G%iec)
+    jeb = min(jsb + njj - 1, G%jec)
+    IIe = IebB - IsbB + 1
+    jje = jeb - jsb + 1
+
+    call neutral_reconstruction_block(G, IsbB, IebB+1, jsb, jeb, nk, h, T, IsbB, IsbB+nIIB, jsb, jsb+njj-1, &
+                                      Ti_b, aL_b, aR_b, h_neglect)
+
+    do concurrent (ks=1:nsurf-1, jj=1:jje, II=1:IIe, G%mask2dCu(IsbB+II-1,jsb+jj-1) > 0.) &
+        DO_LOCALITY(local(I, j, klt, klb, krt, krb, badL, badR)) &
+        DO_LOCALITY(local(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer)) &
+        DO_LOCALITY(reduce(.or.: bad))
+      I = IsbB + II - 1
+      j = jsb + jj - 1
+
+      if (hEff(I,j,ks) == 0.) then
+        uFlx(I,j,ks) = 0.
+      else
+        klt = KoL(I,j,ks) ; klb = KoL(I,j,ks+1)
+        call neutral_column_values(PoL(I,j,ks), PoL(I,j,ks+1), klb-klt, Ti_b(II,jj,klt), Ti_b(II,jj,klt+1), &
+                                   Ti_b(II,jj,klb), Ti_b(II,jj,klb+1), aL_b(II,jj,klt), aR_b(II,jj,klt), &
+                                   T(i,j,klt), TL_top, TL_bot, TL_layer, badL)
+        krt = KoR(I,j,ks) ; krb = KoR(I,j,ks+1)
+        call neutral_column_values(PoR(I,j,ks), PoR(I,j,ks+1), krb-krt, Ti_b(II+1,jj,krt), &
+                                   Ti_b(II+1,jj,krt+1), Ti_b(II+1,jj,krb), Ti_b(II+1,jj,krb+1), &
+                                   aL_b(II+1,jj,krt), aR_b(II+1,jj,krt), T(i+1,j,krt), &
+                                   TR_top, TR_bot, TR_layer, badR)
+        uFlx(I,j,ks) = neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, hEff(I,j,ks), 1.0)
+        bad = bad .or. (badL .or. badR)
+      endif
+    enddo
+  enddo ; enddo
+
+  !$omp target exit data map(release: Ti_b, aL_b, aR_b)
+
+  if (bad) call MOM_error(FATAL, "MOM_neutral_diffusion, zonal_neutral_flux: the bounds passed to "//&
+                                 "ppm_ave are out of order or more than one layer apart.")
+
+end subroutine zonal_neutral_flux
 
 !> Evaluate various parts of the reconstructions to calculate gradient-based flux limiter
 subroutine neutral_surface_T_eval(nk, ns, k_sub, Ks, Ps, T_mean, T_int, deg, iMethod, T_poly, &
