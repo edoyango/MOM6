@@ -1167,6 +1167,20 @@ subroutine calculate_energy_diagnostics(u, v, h, uh, vh, ADp, CDp, G, GV, US, CS
 
   if (.not.(CS%KE_term_on .or. (CS%id_KE > 0))) return
 
+  ! In GPU builds these inputs are computed on the device, so refresh the host copies used below.
+  if (CS%KE_term_on) then
+    !$omp target update from(uh, vh)
+  endif
+  if ((CS%id_PE_to_KE > 0) .or. (CS%id_PE_to_KE_btbc > 0)) then
+    !$omp target update from(ADp%PFu, ADp%PFv)
+  endif
+  if ((CS%id_KE_Coradv > 0) .or. (CS%id_KE_Coradv_btbc > 0)) then
+    !$omp target update from(ADp%CAu, ADp%CAv)
+  endif
+  if (CS%id_KE_horvisc > 0) then
+    !$omp target update from(ADp%diffu, ADp%diffv)
+  endif
+
   KE_u(:,:) = 0. ; KE_v(:,:) = 0.
 
   do k=1,nz ; do j=js,je ; do i=is,ie

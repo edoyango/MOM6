@@ -563,15 +563,13 @@ subroutine thickness_diffuse(h, uhtr, vhtr, tv, dt, G, GV, US, MEKE, VarMix, CDp
 
   ! offer diagnostic fields for averaging
   if (query_averaging_enabled(CS%diag)) then
-    !$omp target update if (CS%id_uhGM>0) from(uhD)
-    !$omp target update if (CS%id_vhGM>0) from(vhD)
     !$omp target update if (CS%id_GMwork>0) from(CS%GMWork)
     !$omp target update if (CS%id_KH_u>0) from(KH_u)
     !$omp target update if (CS%id_KH_v>0) from(KH_v)
     !$omp target update if (CS%id_KH_u1>0 .and. .not.CS%id_KH_u>0) from(KH_u(:,:,1))
     !$omp target update if (CS%id_KH_v1>0 .and. .not.CS%id_KH_v>0) from(KH_v(:,:,1))
-    if (CS%id_uhGM > 0)   call post_data(CS%id_uhGM, uhD, CS%diag)
-    if (CS%id_vhGM > 0)   call post_data(CS%id_vhGM, vhD, CS%diag)
+    if (CS%id_uhGM > 0)   call post_data(CS%id_uhGM, uhD, CS%diag, on_device=.true.)
+    if (CS%id_vhGM > 0)   call post_data(CS%id_vhGM, vhD, CS%diag, on_device=.true.)
     if (CS%id_GMwork > 0) call post_data(CS%id_GMwork, CS%GMwork, CS%diag)
     if (CS%id_KH_u > 0)   call post_data(CS%id_KH_u, KH_u, CS%diag)
     if (CS%id_KH_v > 0)   call post_data(CS%id_KH_v, KH_v, CS%diag)
