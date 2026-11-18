@@ -298,7 +298,7 @@ end function send_data_infra_1d
 !> Returns true if the argument data are successfully passed to a diagnostic manager
 !!  with the indicated unique reference id, false otherwise.
 logical function send_data_infra_2d(diag_field_id, field, is_in, ie_in, js_in, je_in, &
-                                    time, mask, rmask, weight, err_msg)
+                                    time, mask, rmask, weight, err_msg, on_device)
   integer,                           intent(in) :: diag_field_id !< The diagnostic manager identifier for this field
   real, dimension(:,:),              intent(in) :: field !< A 2-d array of values being recorded
   integer,                 optional, intent(in) :: is_in !< The starting i-index for the data being recorded
@@ -312,28 +312,31 @@ logical function send_data_infra_2d(diag_field_id, field, is_in, ie_in, js_in, j
                                                          !! record if there is averaging in time
   character(len=*),        optional, intent(out) :: err_msg !< A log indicating the status of the post upon
                                                          !! returning to the calling routine
+  logical,                 optional, intent(in) :: on_device !< If true, field and rmask are current on the
+                                                         !! OpenMP device and the diagnostic is updated there.
 
   if(present(rmask) .or. present(weight)) then
    if(present(rmask) .and. present(weight)) then
     send_data_infra_2d = send_data_fms(diag_field_id, field, time=time, is_in=is_in, js_in=js_in, mask=mask, &
-                                rmask=rmask, ie_in=ie_in, je_in=je_in, weight=weight, err_msg=err_msg)
+                                rmask=rmask, ie_in=ie_in, je_in=je_in, weight=weight, err_msg=err_msg, &
+                                on_device=on_device)
    elseif(present(rmask)) then
     send_data_infra_2d = send_data_fms(diag_field_id, field, time=time, is_in=is_in, js_in=js_in, mask=mask, &
-                                rmask=rmask, ie_in=ie_in, je_in=je_in, err_msg=err_msg)
+                                rmask=rmask, ie_in=ie_in, je_in=je_in, err_msg=err_msg, on_device=on_device)
    elseif(present(weight)) then
     send_data_infra_2d = send_data_fms(diag_field_id, field, time=time, is_in=is_in, js_in=js_in, mask=mask, &
-                                ie_in=ie_in, je_in=je_in, weight=weight, err_msg=err_msg)
+                                ie_in=ie_in, je_in=je_in, weight=weight, err_msg=err_msg, on_device=on_device)
    endif
   else
     send_data_infra_2d = send_data_fms(diag_field_id, field, time=time, is_in=is_in, js_in=js_in, mask=mask, &
-                                ie_in=ie_in, je_in=je_in, err_msg=err_msg)
+                                ie_in=ie_in, je_in=je_in, err_msg=err_msg, on_device=on_device)
   endif
 end function send_data_infra_2d
 
 !> Returns true if the argument data are successfully passed to a diagnostic manager
 !!  with the indicated unique reference id, false otherwise.
 logical function send_data_infra_3d(diag_field_id, field, is_in, ie_in, js_in, je_in, ks_in, ke_in, &
-                                    time, mask, rmask, weight, err_msg)
+                                    time, mask, rmask, weight, err_msg, on_device)
   integer,                             intent(in) :: diag_field_id !< The diagnostic manager identifier for this field
   real, dimension(:,:,:),              intent(in) :: field !< A rank 1 array of floating point values being recorded
   integer,                   optional, intent(in) :: is_in !< The starting i-index for the data being recorded
@@ -349,9 +352,11 @@ logical function send_data_infra_3d(diag_field_id, field, is_in, ie_in, js_in, j
                                                            !! record if there is averaging in time
   character(len=*),          optional, intent(out) :: err_msg !< A log indicating the status of the post upon
                                                            !! returning to the calling routine
+  logical,                   optional, intent(in) :: on_device !< If true, field and rmask are current on the
+                                                           !! OpenMP device and the diagnostic is updated there.
 
   send_data_infra_3d = send_data_fms(diag_field_id, field, time, is_in, js_in, ks_in, mask, &
-                               rmask, ie_in, je_in, ke_in, weight, err_msg)
+                               rmask, ie_in, je_in, ke_in, weight, err_msg, on_device=on_device)
 
 end function send_data_infra_3d
 
@@ -360,7 +365,7 @@ end function send_data_infra_3d
 !> Returns true if the argument data are successfully passed to a diagnostic manager
 !!  with the indicated unique reference id, false otherwise.
 logical function send_data_infra_2d_r8(diag_field_id, field, is_in, ie_in, js_in, je_in, &
-                                       time, mask, rmask, weight, err_msg)
+                                       time, mask, rmask, weight, err_msg, on_device)
   integer,                           intent(in) :: diag_field_id !< The diagnostic manager identifier for this field
   real(kind=real64), dimension(:,:), intent(in) :: field !< A 2-d array of values being recorded
   integer,                 optional, intent(in) :: is_in !< The starting i-index for the data being recorded
@@ -374,16 +379,18 @@ logical function send_data_infra_2d_r8(diag_field_id, field, is_in, ie_in, js_in
                                                          !! record if there is averaging in time
   character(len=*),        optional, intent(out) :: err_msg !< A log indicating the status of the post upon
                                                          !! returning to the calling routine
+  logical,                 optional, intent(in) :: on_device !< If true, field and rmask are current on the
+                                                         !! OpenMP device and the diagnostic is updated there.
 
   send_data_infra_2d_r8 = send_data_fms(diag_field_id, field, time, is_in, js_in, mask, &
-                                   rmask, ie_in, je_in, weight, err_msg)
+                                   rmask, ie_in, je_in, weight, err_msg, on_device=on_device)
 
 end function send_data_infra_2d_r8
 
 !> Returns true if the argument data are successfully passed to a diagnostic manager
 !!  with the indicated unique reference id, false otherwise.
 logical function send_data_infra_3d_r8(diag_field_id, field, is_in, ie_in, js_in, je_in, ks_in, ke_in, &
-                                    time, mask, rmask, weight, err_msg)
+                                    time, mask, rmask, weight, err_msg, on_device)
   integer,                             intent(in) :: diag_field_id !< The diagnostic manager identifier for this field
   real(kind=real64), dimension(:,:,:), intent(in) :: field !< A rank 1 array of floating point values being recorded
   integer,                   optional, intent(in) :: is_in !< The starting i-index for the data being recorded
@@ -399,9 +406,11 @@ logical function send_data_infra_3d_r8(diag_field_id, field, is_in, ie_in, js_in
                                                            !! record if there is averaging in time
   character(len=*),          optional, intent(out) :: err_msg !< A log indicating the status of the post upon
                                                            !! returning to the calling routine
+  logical,                   optional, intent(in) :: on_device !< If true, field and rmask are current on the
+                                                           !! OpenMP device and the diagnostic is updated there.
 
   send_data_infra_3d_r8 = send_data_fms(diag_field_id, field, time, is_in, js_in, ks_in, mask, rmask, &
-                                ie_in, je_in, ke_in, weight, err_msg)
+                                ie_in, je_in, ke_in, weight, err_msg, on_device=on_device)
 
 end function send_data_infra_3d_r8
 #endif
