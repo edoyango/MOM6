@@ -398,10 +398,6 @@ subroutine CorAdCalc_block(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, nk
   !$omp target enter data map(alloc: PV) if (CS%id_PV > 0)
   !$omp target enter data map(alloc: q2) &
   !$omp   if(associated(AD%rv_x_u) .or. associated(AD%rv_x_v))
-  !$omp target enter data map(alloc: AD%gradKEu) if (associated(AD%gradKEu))
-  !$omp target enter data map(alloc: AD%gradKEv) if (associated(AD%gradKEv))
-  !$omp target enter data map(alloc: AD%rv_x_u) if (associated(AD%rv_x_u))
-  !$omp target enter data map(alloc: AD%rv_x_v) if (associated(AD%rv_x_v))
 
   ! TODO: Do this outside of the function
   !$omp target enter data map(to: pbv, pbv%por_face_areaU, pbv%por_face_areaV) &
@@ -1412,18 +1408,15 @@ subroutine CorAdCalc_block(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, nk
   endif
   !$omp target exit data map(delete: RV) if (CS%id_RV > 0)
   !$omp target exit data map(delete: PV) if (CS%id_PV > 0)
-  !$omp target exit data map(from: AD%gradKEu) if (associated(AD%gradKEu))
-  !$omp target exit data map(from: AD%gradKEv) if (associated(AD%gradKEv))
-  !$omp target exit data map(from: AD%rv_x_u) if (associated(AD%rv_x_u))
-  !$omp target exit data map(from: AD%rv_x_v) if (associated(AD%rv_x_v))
   !$omp target exit data map(from: CAuS, CAvS) if (Stokes_VF)
 
   ! Here the various Coriolis-related derived quantities are offered for averaging.
   if (query_averaging_enabled(CS%diag)) then
-    if (CS%id_gKEu>0) call post_data(CS%id_gKEu, AD%gradKEu, CS%diag)
-    if (CS%id_gKEv>0) call post_data(CS%id_gKEv, AD%gradKEv, CS%diag)
-    if (CS%id_rvxu > 0) call post_data(CS%id_rvxu, AD%rv_x_u, CS%diag)
-    if (CS%id_rvxv > 0) call post_data(CS%id_rvxv, AD%rv_x_v, CS%diag)
+    ! gradKE[uv] and rv_x_[uv] stay mapped for the whole run (see MOM_diagnostics_init).
+    if (CS%id_gKEu>0) call post_data(CS%id_gKEu, AD%gradKEu, CS%diag, on_device=.true.)
+    if (CS%id_gKEv>0) call post_data(CS%id_gKEv, AD%gradKEv, CS%diag, on_device=.true.)
+    if (CS%id_rvxu > 0) call post_data(CS%id_rvxu, AD%rv_x_u, CS%diag, on_device=.true.)
+    if (CS%id_rvxv > 0) call post_data(CS%id_rvxv, AD%rv_x_v, CS%diag, on_device=.true.)
     if (Stokes_VF) then
       if (CS%id_CAuS > 0) call post_data(CS%id_CAuS, CAuS, CS%diag)
       if (CS%id_CAvS > 0) call post_data(CS%id_CAvS, CAvS, CS%diag)

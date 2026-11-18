@@ -1180,6 +1180,12 @@ subroutine calculate_energy_diagnostics(u, v, h, uh, vh, ADp, CDp, G, GV, US, CS
   if (CS%id_KE_horvisc > 0) then
     !$omp target update from(ADp%diffu, ADp%diffv)
   endif
+  if (CS%id_KE_adv > 0) then
+    !$omp target update from(ADp%gradKEu, ADp%gradKEv)
+  endif
+  if (CS%id_KE_visc > 0) then
+    !$omp target update from(ADp%du_dt_visc, ADp%dv_dt_visc)
+  endif
 
   KE_u(:,:) = 0. ; KE_v(:,:) = 0.
 
@@ -2334,6 +2340,15 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
   ! access from across several modules.
   call set_dependent_diagnostics(MIS, ADp, CDp, G, GV, CS)
 
+  ! These momentum budget terms are computed on the device. They stay mapped for the whole run, and the
+  ! routines that use them on the host refresh their host copies first.
+  !$omp target enter data map(to: ADp%gradKEu) if (associated(ADp%gradKEu))
+  !$omp target enter data map(to: ADp%gradKEv) if (associated(ADp%gradKEv))
+  !$omp target enter data map(to: ADp%rv_x_u) if (associated(ADp%rv_x_u))
+  !$omp target enter data map(to: ADp%rv_x_v) if (associated(ADp%rv_x_v))
+  !$omp target enter data map(to: ADp%du_dt_visc) if (associated(ADp%du_dt_visc))
+  !$omp target enter data map(to: ADp%dv_dt_visc) if (associated(ADp%dv_dt_visc))
+
 end subroutine MOM_diagnostics_init
 
 
@@ -2769,6 +2784,12 @@ subroutine MOM_diagnostics_end(CS, ADp, CDp)
   if (allocated(CS%dv_dt))      deallocate(CS%dv_dt)
   if (allocated(CS%du_dt))      deallocate(CS%du_dt)
 
+  !$omp target exit data map(delete: ADp%gradKEu) if (associated(ADp%gradKEu))
+  !$omp target exit data map(delete: ADp%gradKEv) if (associated(ADp%gradKEv))
+  !$omp target exit data map(delete: ADp%rv_x_u) if (associated(ADp%rv_x_u))
+  !$omp target exit data map(delete: ADp%rv_x_v) if (associated(ADp%rv_x_v))
+  !$omp target exit data map(delete: ADp%du_dt_visc) if (associated(ADp%du_dt_visc))
+  !$omp target exit data map(delete: ADp%dv_dt_visc) if (associated(ADp%dv_dt_visc))
   if (associated(ADp%gradKEu))    deallocate(ADp%gradKEu)
   if (associated(ADp%gradKEv))    deallocate(ADp%gradKEv)
   if (associated(ADp%du_dt_visc)) deallocate(ADp%du_dt_visc)

@@ -703,6 +703,8 @@ subroutine horizontal_viscosity_block(u, v, h, uh, vh, diffu, diffv, MEKE, VarMi
 
   !$omp target enter data map(alloc: dudx, dudy, dvdx, dvdy, sh_xx, sh_xy)
   !$omp target enter data map(alloc: h_u, h_v, hq)
+  !$omp target enter data map(alloc: Kh_h) if (CS%id_Kh_h > 0)
+  !$omp target enter data map(alloc: Kh_q) if (CS%id_Kh_q > 0)
   !$omp target enter data map(alloc: str_xx, str_xy, ShSt)
   !$omp target enter data map(alloc: Del2u, Del2v) if (CS%biharmonic)
   !$omp target enter data map(alloc: dDel2vdx, dDel2udy) if (CS%biharmonic)
@@ -2124,9 +2126,9 @@ subroutine horizontal_viscosity_block(u, v, h, uh, vh, diffu, diffv, MEKE, VarMi
   if (CS%id_sh_xx_h>0)   call post_data(CS%id_sh_xx_h, sh_xx_h, CS%diag)
   if (CS%id_sh_xy_q>0)   call post_data(CS%id_sh_xy_q, sh_xy_q, CS%diag)
   if (CS%id_Ah_q>0)      call post_data(CS%id_Ah_q, Ah_q, CS%diag)
-  if (CS%id_Kh_h>0)      call post_data(CS%id_Kh_h, Kh_h, CS%diag)
+  if (CS%id_Kh_h>0)      call post_data(CS%id_Kh_h, Kh_h, CS%diag, on_device=.true.)
   if (CS%id_grid_Re_Kh>0) call post_data(CS%id_grid_Re_Kh, grid_Re_Kh, CS%diag)
-  if (CS%id_Kh_q>0)      call post_data(CS%id_Kh_q, Kh_q, CS%diag)
+  if (CS%id_Kh_q>0)      call post_data(CS%id_Kh_q, Kh_q, CS%diag, on_device=.true.)
   if (CS%use_GME) then  ! post barotropic tension and strain
     if (CS%id_GME_coeff_h > 0) call post_data(CS%id_GME_coeff_h, GME_coeff_h, CS%diag)
     if (CS%id_GME_coeff_q > 0) call post_data(CS%id_GME_coeff_q, GME_coeff_q, CS%diag)
@@ -2154,6 +2156,8 @@ subroutine horizontal_viscosity_block(u, v, h, uh, vh, diffu, diffv, MEKE, VarMi
 
   if (CS%debug) then
     if (CS%Laplacian) then
+      !$omp target update from(Kh_h) if (CS%id_Kh_h > 0)
+      !$omp target update from(Kh_q) if (CS%id_Kh_q > 0)
       call hchksum(Kh_h, "Kh_h", G%HI, haloshift=1, unscale=US%L_to_m**2*US%s_to_T)
       call Bchksum(Kh_q, "Kh_q", G%HI, haloshift=0, symmetric=.true., unscale=US%L_to_m**2*US%s_to_T)
     endif
@@ -2219,6 +2223,8 @@ subroutine horizontal_viscosity_block(u, v, h, uh, vh, diffu, diffv, MEKE, VarMi
     !$omp target exit data map(delete: zc)
     deallocate(zc)
   endif
+  !$omp target exit data map(delete: Kh_h) if (CS%id_Kh_h > 0)
+  !$omp target exit data map(delete: Kh_q) if (CS%id_Kh_q > 0)
 end subroutine horizontal_viscosity_block
 
 !> Calculates the magnitude of the vorticity and divergence gradients, and the
