@@ -708,6 +708,8 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
   call cpu_clock_begin(id_clock_ndiff)
 
+  !$omp target enter data map(alloc: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d) map(to: Coef_x, Coef_y)
+
   h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
 
   if (.not. CS%continuous_reconstruction) then
@@ -741,8 +743,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   if (CS%niblock == 0) nii = G%iec - G%isc + 1
   nJJB = CS%njblock
   if (CS%njblock == 0) nJJB = G%jec - G%jsc + 2
-
-  !$omp target enter data map(alloc: uFlx, vFlx, tendency, trans_x_2d, trans_y_2d) map(to: Coef_x, Coef_y)
 
   do m = 1,Reg%ntr ! Loop over tracer registry
 
@@ -3747,6 +3747,8 @@ subroutine neutral_flux_divergence(G, GV, h, Coef_x, Coef_y, nsurf, uKoL, uKoR, 
   nk = GV%ke
   H_subroundoff = GV%H_subroundoff
 
+  !$omp target enter data map(alloc: dTr_b, dTrN_b, dTrS_b, dTrE_b, dTrW_b) if(.not.vert_struct)
+
   if (vert_struct) then
     !$omp target update from(uKoL, uKoR, vKoL, vKoR, uFlx, vFlx, T)
     do jsb=G%jsc,G%jec,njj ; do isb=G%isc,G%iec,nii
@@ -3813,8 +3815,6 @@ subroutine neutral_flux_divergence(G, GV, h, Coef_x, Coef_y, nsurf, uKoL, uKoR, 
     !$omp target update to(tendency) if(do_tend)
     return
   endif
-
-  !$omp target enter data map(alloc: dTr_b, dTrN_b, dTrS_b, dTrE_b, dTrW_b)
 
   do jsb=G%jsc,G%jec,njj ; do isb=G%isc,G%iec,nii
     ieb = min(isb + nii - 1, G%iec)
