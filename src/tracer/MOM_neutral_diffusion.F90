@@ -696,7 +696,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
   type(tracer_type), pointer                   :: Tracer => NULL() ! Pointer to the current tracer
 
-  integer :: i, j, k, m, ks, nk
+  integer :: i, j, k, m, ks
   integer :: nIIB ! The I block size for the zonal faces
   integer :: njj  ! The j block size for the zonal faces
   integer :: nii  ! The i block size for the meridional faces
@@ -732,7 +732,6 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     call pass_var(CS%Coef_h,G%Domain)
   endif
 
-  nk = GV%ke
   ns = CS%nsurf
   nIIB = CS%niblock
   if (CS%niblock == 0) nIIB = G%iec - G%isc + 2
@@ -772,80 +771,9 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
                             CS%KhTh_use_vert_struct, CS%deg, CS%remap_CS, h_neglect_edge, CS%hbl, CS%Coef_h)
 
     ! y-flux
-    if (CS%continuous_reconstruction) then
-      call meridional_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, &
-                                   CS%vhEff, vFlx, h_neglect, nii, nJJB, CS%tapering, CS%KhTh_use_vert_struct, &
-                                   CS%hbl, CS%Coef_h)
-    elseif (CS%KhTh_use_vert_struct) then
-      !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
-      if (CS%tapering) then
-        do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
-          if (G%mask2dCv(i,J)>0.) then
-            ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
-            call compute_tapering_coeffs(G%ke+1, CS%hbl(i,J), CS%hbl(i,J+1), CS%coeff_l(:), CS%coeff_r(:), &
-                                         h(i,J,:), h(i,J+1,:))
-
-            call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
-                                      tracer%t(i,j,:), tracer%t(i,j+1,:), &
-                                      CS%vPoL(i,J,:), CS%vPoR(i,J,:), &
-                                      CS%vKoL(i,J,:), CS%vKoR(i,J,:), &
-                                      CS%vhEff(i,J,:), vFlx(i,J,:),   &
-                                      CS%continuous_reconstruction, h_neglect, &
-                                      CS%remap_CS, h_neglect_edge, CS%coeff_l(:)*CS%Coef_h(i,j,:), &
-                                      CS%coeff_r(:)*CS%Coef_h(i,j+1,:))
-          endif
-        enddo ; enddo
-      else
-        do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
-          if (G%mask2dCv(i,J)>0.) then
-            call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
-                                      tracer%t(i,j,:), tracer%t(i,j+1,:), &
-                                      CS%vPoL(i,J,:), CS%vPoR(i,J,:), &
-                                      CS%vKoL(i,J,:), CS%vKoR(i,J,:), &
-                                      CS%vhEff(i,J,:), vFlx(i,J,:),   &
-                                      CS%continuous_reconstruction, h_neglect, &
-                                      CS%remap_CS, h_neglect_edge, CS%Coef_h(i,j,:), &
-                                      CS%Coef_h(i,j+1,:))
-          endif
-        enddo ; enddo
-      endif
-      !$omp target update to(vFlx)
-    else
-      if (CS%tapering) then
-        !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
-        do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
-          if (G%mask2dCv(i,J)>0.) then
-            ! compute coeff_l and coeff_r and pass them to neutral_surface_flux
-            call compute_tapering_coeffs(G%ke+1, CS%hbl(i,J), CS%hbl(i,J+1), CS%coeff_l(:), CS%coeff_r(:), &
-                                         h(i,J,:), h(i,J+1,:))
-
-            call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
-                                      tracer%t(i,j,:), tracer%t(i,j+1,:), &
-                                      CS%vPoL(i,J,:), CS%vPoR(i,J,:), &
-                                      CS%vKoL(i,J,:), CS%vKoR(i,J,:), &
-                                      CS%vhEff(i,J,:), vFlx(i,J,:),   &
-                                      CS%continuous_reconstruction, h_neglect, &
-                                      CS%remap_CS, h_neglect_edge, CS%coeff_l(:), &
-                                      CS%coeff_r(:))
-          endif
-        enddo ; enddo
-        !$omp target update to(vFlx)
-      else
-        !$omp target update from(vFlx, Reg%Tr(m)%t, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, CS%vhEff)
-        do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
-          if (G%mask2dCv(i,J)>0.) then
-            call neutral_surface_flux(nk, CS%nsurf, CS%deg, h(i,j,:), h(i,j+1,:),       &
-                                      tracer%t(i,j,:), tracer%t(i,j+1,:), &
-                                      CS%vPoL(i,J,:), CS%vPoR(i,J,:), &
-                                      CS%vKoL(i,J,:), CS%vKoR(i,J,:), &
-                                      CS%vhEff(i,J,:), vFlx(i,J,:),   &
-                                      CS%continuous_reconstruction, h_neglect, &
-                                      CS%remap_CS, h_neglect_edge)
-          endif
-        enddo ; enddo
-        !$omp target update to(vFlx)
-      endif
-    endif
+    call meridional_neutral_flux(G, GV, h, tracer%t, CS%nsurf, CS%vPoL, CS%vPoR, CS%vKoL, CS%vKoR, &
+                                 CS%vhEff, vFlx, h_neglect, nii, nJJB, CS%continuous_reconstruction, CS%tapering, &
+                                 CS%KhTh_use_vert_struct, CS%deg, CS%remap_CS, h_neglect_edge, CS%hbl, CS%Coef_h)
 
     ! Update the tracer concentration from divergence of neutral diffusive flux components, noting
     ! that uFlx and vFlx use an unexpected sign convention.
@@ -3594,10 +3522,10 @@ subroutine zonal_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, uFlx
 end subroutine zonal_neutral_flux
 
 !> Calculates the neutral diffusion fluxes of a tracer through the meridional faces, a block of faces at a
-!! time, from continuous reconstructions.  With tapering or a vertical structure of the diffusivity this is
+!! time.  With discontinuous reconstructions, tapering or a vertical structure of the diffusivity this is
 !! done on the host.
 subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff, vFlx, h_neglect, nii, nJJB, &
-                                   tapering, vert_struct, hbl, Coef_h)
+                                   continuous, tapering, vert_struct, deg, remap_CS, h_neglect_edge, hbl, Coef_h)
   type(ocean_grid_type),   intent(in) :: G     !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV    !< Ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h !< Layer thickness [H ~> m or kg m-2]
@@ -3620,8 +3548,14 @@ subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff,
   real,                    intent(in) :: h_neglect !< A negligibly small thickness [H ~> m or kg m-2]
   integer,                 intent(in) :: nii   !< i block size for array calculations
   integer,                 intent(in) :: nJJB  !< J block size for array calculations
+  logical,                 intent(in) :: continuous  !< If true, use continuous reconstructions
   logical,                 intent(in) :: tapering    !< If true, taper the diffusivity within the boundary layers
   logical,                 intent(in) :: vert_struct !< If true, the diffusivity has a vertical structure
+  integer,                 intent(in) :: deg   !< Degree of the discontinuous reconstruction polynomials
+  type(remapping_CS),      intent(in) :: remap_CS !< Remapping control structure used for the discontinuous
+                                                  !! reconstructions
+  real,                    intent(in) :: h_neglect_edge !< A negligibly small width used for the edge values of
+                                                  !! discontinuous reconstructions [H ~> m or kg m-2]
   real, dimension(SZI_(G),SZJ_(G)), optional, intent(in) :: hbl !< Boundary layer depth [H ~> m or kg m-2],
                                                              !! used if tapering is true
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), optional, intent(in) :: Coef_h !< The diffusivity coefficients
@@ -3647,7 +3581,21 @@ subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff,
   real, dimension(SZK_(GV)) :: aL_c, aR_c   ! A column's upper and lower PPM edge values of the tracer [A ~> a]
   real, dimension(SZK_(GV)+1) :: cl, cr     ! Tapering coefficients of the southern and northern columns [nondim]
   real :: khtr          ! The averaged diffusivity factor of a neutral layer, [nondim] or [L2 ~> m2]
-  integer :: i, J, k, ks, klt, klb, krt, krb, nk, ii, JJ
+  ! Variables used with discontinuous reconstructions
+  real, dimension(nii,nJJB+1,SZK_(GV),deg+1) :: Tpoly_b ! Coefficients of the polynomial reconstructions in the layers
+                                                 ! of the block's columns [A ~> a]
+  real, dimension(nii,nJJB+1,SZK_(GV),2) :: Tid_b ! Edge values of the reconstructions in the layers of the
+                                                 ! block's columns [A ~> a]
+  real, dimension(SZK_(GV),deg+1) :: Tpoly_c ! A column's polynomial reconstruction coefficients [A ~> a]
+  real, dimension(SZK_(GV),2) :: Tid_c       ! A column's reconstruction edge values [A ~> a]
+  real, dimension(SZK_(GV),2) :: Tslope_c    ! A column's reconstruction edge slopes, unused here, in units of
+                                             ! a vertical gradient [A H-1 ~> a m-1 or a m2 kg-1]
+  real :: TL_sub, TL_top_int, TL_bot_int ! Southern tracer averaged over a neutral layer and from the
+                                    ! polynomial at its top and bottom [A ~> a]
+  real :: TR_sub, TR_top_int, TR_bot_int ! Northern tracer averaged over a neutral layer and from the
+                                    ! polynomial at its top and bottom [A ~> a]
+  integer :: iMethod    ! The integration method of the discontinuous reconstructions
+  integer :: i, J, k, m, ks, klt, klb, krt, krb, nk, ii, JJ
   integer :: isb, ieb   ! The i-index bounds of the current block.
   integer :: JsbB, JebB ! The J-index bounds of the current block.
   integer :: iie, JJe   ! The block-local i- and J-index end bounds.
@@ -3655,9 +3603,8 @@ subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff,
   nk = GV%ke
   bad = .false.
 
-  if (tapering .or. vert_struct) then
+  if (tapering .or. vert_struct .or. (.not.continuous)) then
     !$omp target update from(T, PoL, PoR, KoL, KoR, hEff, vFlx)
-    allocate(cL_b(nii,nJJB,nk+1), cR_b(nii,nJJB,nk+1))
     do JsbB=G%jsc-1,G%jec,nJJB ; do isb=G%isc,G%iec,nii
       ieb = min(isb + nii - 1, G%iec)
       JebB = min(JsbB + nJJB - 1, G%jec)
@@ -3669,30 +3616,41 @@ subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff,
         i = isb + ii - 1
         j = JsbB + JJ - 1
 
-        call interface_scalar(nk, h(i,j,:), T(i,j,:), Ti_c, 2, h_neglect)
-        call ppm_left_right_edge_values(nk, T(i,j,:), Ti_c, aL_c, aR_c)
-        do k=1,nk+1 ; Ti_b(ii,JJ,k) = Ti_c(k) ; enddo
-        do k=1,nk ; aL_b(ii,JJ,k) = aL_c(k) ; aR_b(ii,JJ,k) = aR_c(k) ; enddo
+        if (continuous) then
+          call interface_scalar(nk, h(i,j,:), T(i,j,:), Ti_c, 2, h_neglect)
+          call ppm_left_right_edge_values(nk, T(i,j,:), Ti_c, aL_c, aR_c)
+          do k=1,nk+1 ; Ti_b(ii,JJ,k) = Ti_c(k) ; enddo
+          do k=1,nk ; aL_b(ii,JJ,k) = aL_c(k) ; aR_b(ii,JJ,k) = aR_c(k) ; enddo
+        else
+          Tpoly_c(:,:) = 0.
+          Tid_c(:,:) = 0.
+          call build_reconstructions_1d( remap_CS, nk, h(i,j,:), T(i,j,:), Tpoly_c, Tid_c, &
+                                         Tslope_c, iMethod, h_neglect, h_neglect_edge )
+          do m=1,deg+1 ; do k=1,nk ; Tpoly_b(ii,JJ,k,m) = Tpoly_c(k,m) ; enddo ; enddo
+          do m=1,2 ; do k=1,nk ; Tid_b(ii,JJ,k,m) = Tid_c(k,m) ; enddo ; enddo
+        endif
       enddo ; enddo
 
       ! Diffusivity factors at the interfaces of the columns on either side of each face
-      do JJ=1,JJe ; do ii=1,iie
-        i = isb + ii - 1
-        J = JsbB + JJ - 1
+      if (tapering .or. vert_struct) then
+        do JJ=1,JJe ; do ii=1,iie
+          i = isb + ii - 1
+          J = JsbB + JJ - 1
 
-        if (G%mask2dCv(i,J) > 0.) then
-          if (tapering) call compute_tapering_coeffs(nk+1, hbl(i,J), hbl(i,J+1), cl, cr, h(i,J,:), h(i,J+1,:))
-          do k=1,nk+1
-            if (tapering .and. vert_struct) then
-              cL_b(ii,JJ,k) = cl(k)*Coef_h(i,j,k) ; cR_b(ii,JJ,k) = cr(k)*Coef_h(i,j+1,k)
-            elseif (tapering) then
-              cL_b(ii,JJ,k) = cl(k) ; cR_b(ii,JJ,k) = cr(k)
-            else
-              cL_b(ii,JJ,k) = Coef_h(i,j,k) ; cR_b(ii,JJ,k) = Coef_h(i,j+1,k)
-            endif
-          enddo
-        endif
-      enddo ; enddo
+          if (G%mask2dCv(i,J) > 0.) then
+            if (tapering) call compute_tapering_coeffs(nk+1, hbl(i,J), hbl(i,J+1), cl, cr, h(i,J,:), h(i,J+1,:))
+            do k=1,nk+1
+              if (tapering .and. vert_struct) then
+                cL_b(ii,JJ,k) = cl(k)*Coef_h(i,j,k) ; cR_b(ii,JJ,k) = cr(k)*Coef_h(i,j+1,k)
+              elseif (tapering) then
+                cL_b(ii,JJ,k) = cl(k) ; cR_b(ii,JJ,k) = cr(k)
+              else
+                cL_b(ii,JJ,k) = Coef_h(i,j,k) ; cR_b(ii,JJ,k) = Coef_h(i,j+1,k)
+              endif
+            enddo
+          endif
+        enddo ; enddo
+      endif
 
       do JJ=1,JJe ; do ks=1,nsurf-1 ; do ii=1,iie
         i = isb + ii - 1
@@ -3704,22 +3662,36 @@ subroutine meridional_neutral_flux(G, GV, h, T, nsurf, PoL, PoR, KoL, KoR, hEff,
           else
             klt = KoL(i,J,ks) ; klb = KoL(i,J,ks+1)
             krt = KoR(i,J,ks) ; krb = KoR(i,J,ks+1)
+            khtr = 1.0
             ! these are added in this order to preserve vertically-uniform diffusivity answers
-            khtr = 0.25 * ((cL_b(ii,JJ,klb) + cL_b(ii,JJ,klt)) + (cR_b(ii,JJ,krb) + cR_b(ii,JJ,krt)))
-            call neutral_column_values(PoL(i,J,ks), PoL(i,J,ks+1), klb-klt, Ti_b(ii,JJ,klt), Ti_b(ii,JJ,klt+1), &
-                                       Ti_b(ii,JJ,klb), Ti_b(ii,JJ,klb+1), aL_b(ii,JJ,klt), aR_b(ii,JJ,klt), &
-                                       T(i,j,klt), TL_top, TL_bot, TL_layer, badL)
-            call neutral_column_values(PoR(i,J,ks), PoR(i,J,ks+1), krb-krt, Ti_b(ii,JJ+1,krt), &
-                                       Ti_b(ii,JJ+1,krt+1), Ti_b(ii,JJ+1,krb), Ti_b(ii,JJ+1,krb+1), &
-                                       aL_b(ii,JJ+1,krt), aR_b(ii,JJ+1,krt), T(i,j+1,krt), &
-                                       TR_top, TR_bot, TR_layer, badR)
-            vFlx(i,J,ks) = neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, hEff(i,J,ks), khtr)
-            bad = bad .or. (badL .or. badR)
+            if (tapering .or. vert_struct) &
+              khtr = 0.25 * ((cL_b(ii,JJ,klb) + cL_b(ii,JJ,klt)) + (cR_b(ii,JJ,krb) + cR_b(ii,JJ,krt)))
+            if (continuous) then
+              call neutral_column_values(PoL(i,J,ks), PoL(i,J,ks+1), klb-klt, Ti_b(ii,JJ,klt), Ti_b(ii,JJ,klt+1), &
+                                         Ti_b(ii,JJ,klb), Ti_b(ii,JJ,klb+1), aL_b(ii,JJ,klt), aR_b(ii,JJ,klt), &
+                                         T(i,j,klt), TL_top, TL_bot, TL_layer, badL)
+              call neutral_column_values(PoR(i,J,ks), PoR(i,J,ks+1), krb-krt, Ti_b(ii,JJ+1,krt), &
+                                         Ti_b(ii,JJ+1,krt+1), Ti_b(ii,JJ+1,krb), Ti_b(ii,JJ+1,krb+1), &
+                                         aL_b(ii,JJ+1,krt), aR_b(ii,JJ+1,krt), T(i,j+1,krt), &
+                                         TR_top, TR_bot, TR_layer, badR)
+              vFlx(i,J,ks) = neutral_flux_value(TL_top, TL_bot, TL_layer, TR_top, TR_bot, TR_layer, &
+                                                hEff(i,J,ks), khtr)
+              bad = bad .or. (badL .or. badR)
+            else
+              call neutral_disc_column_values(nk, klt, klb, PoL(i,J,ks), PoL(i,J,ks+1), T(i,j,klt:klt), &
+                       Tid_b(ii,JJ,klt:klt,:), Tid_b(ii,JJ,max(klt-1,1),2), Tid_b(ii,JJ,min(klt+1,nk),1), &
+                       deg, iMethod, Tpoly_b(ii,JJ,klt:klt,:), TL_top, TL_bot, TL_sub, TL_top_int, TL_bot_int)
+              call neutral_disc_column_values(nk, krt, krb, PoR(i,J,ks), PoR(i,J,ks+1), T(i,j+1,krt:krt), &
+                       Tid_b(ii,JJ+1,krt:krt,:), Tid_b(ii,JJ+1,max(krt-1,1),2), Tid_b(ii,JJ+1,min(krt+1,nk),1), &
+                       deg, iMethod, Tpoly_b(ii,JJ+1,krt:krt,:), TR_top, TR_bot, TR_sub, TR_top_int, TR_bot_int)
+              vFlx(i,J,ks) = neutral_disc_flux_value(TL_top, TL_bot, TL_sub, TL_top_int, TL_bot_int, &
+                                                     TR_top, TR_bot, TR_sub, TR_top_int, TR_bot_int, &
+                                                     hEff(i,J,ks), khtr)
+            endif
           endif
         endif
       enddo ; enddo ; enddo
     enddo ; enddo
-    deallocate(cL_b, cR_b)
     !$omp target update to(vFlx)
 
     if (bad) call MOM_error(FATAL, "MOM_neutral_diffusion, meridional_neutral_flux: the bounds passed to "//&
