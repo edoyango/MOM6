@@ -2120,6 +2120,10 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
     ! Calculate various time-averaged barotropic diagnostics.
     if (CS%answer_date >= 20190101) then
+      !$omp target update from(PFu_avg) if (CS%id_PFu_bt > 0)
+      !$omp target update from(PFv_avg) if (CS%id_PFv_bt > 0)
+      !$omp target update from(Coru_avg) if (CS%id_Coru_bt > 0)
+      !$omp target update from(Corv_avg) if (CS%id_Corv_bt > 0)
       if (CS%id_PFu_bt > 0) call post_data(CS%id_PFu_bt, PFu_avg, CS%diag)
       if (CS%id_PFv_bt > 0) call post_data(CS%id_PFv_bt, PFv_avg, CS%diag)
       if (CS%id_Coru_bt > 0) call post_data(CS%id_Coru_bt, Coru_avg, CS%diag)
@@ -2203,6 +2207,10 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       ADp%bt_lwd_v(i,J) = LDv_avg(i,J)
     enddo ; endif
 
+    !$omp target update from(BT_force_u) if (CS%id_ubtforce > 0)
+    !$omp target update from(BT_force_v) if (CS%id_vbtforce > 0)
+    !$omp target update from(u_accel_bt) if (CS%id_uaccel > 0)
+    !$omp target update from(v_accel_bt) if (CS%id_vaccel > 0)
     if (CS%id_ubtforce > 0) call post_data(CS%id_ubtforce, BT_force_u(IsdB:IedB,jsd:jed), CS%diag)
     if (CS%id_vbtforce > 0) call post_data(CS%id_vbtforce, BT_force_v(isd:ied,JsdB:JedB), CS%diag)
     if (CS%id_uaccel > 0) call post_data(CS%id_uaccel, u_accel_bt(IsdB:IedB,jsd:jed), CS%diag)
@@ -2222,8 +2230,10 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     if (CS%id_visc_rem_v > 0) call post_data(CS%id_visc_rem_v, visc_rem_v, CS%diag)
 
     if (CS%id_frhatu > 0) call post_data(CS%id_frhatu, CS%frhatu, CS%diag)
+    !$omp target update from(uhbtav) if (CS%id_uhbt > 0)
     if (CS%id_uhbt > 0) call post_data(CS%id_uhbt, uhbtav, CS%diag)
     if (CS%id_frhatv > 0) call post_data(CS%id_frhatv, CS%frhatv, CS%diag)
+    !$omp target update from(vhbtav) if (CS%id_vhbt > 0)
     if (CS%id_vhbt > 0) call post_data(CS%id_vhbt, vhbtav, CS%diag)
     if (CS%id_uhbt0 > 0) call post_data(CS%id_uhbt0, uhbt0(IsdB:IedB,jsd:jed), CS%diag)
     if (CS%id_vhbt0 > 0) call post_data(CS%id_vhbt0, vhbt0(isd:ied,JsdB:JedB), CS%diag)

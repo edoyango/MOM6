@@ -1219,17 +1219,27 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   !  Here various terms used in to update the momentum equations are
   !  offered for time averaging.
+  !$omp target update from(CS%PFu) if (CS%id_PFu > 0)
   if (CS%id_PFu > 0) call post_data(CS%id_PFu, CS%PFu, CS%diag)
+  !$omp target update from(CS%PFv) if (CS%id_PFv > 0)
   if (CS%id_PFv > 0) call post_data(CS%id_PFv, CS%PFv, CS%diag)
+  !$omp target update from(CS%CAu) if (CS%id_CAu > 0)
   if (CS%id_CAu > 0) call post_data(CS%id_CAu, CS%CAu, CS%diag)
+  !$omp target update from(CS%CAv) if (CS%id_CAv > 0)
   if (CS%id_CAv > 0) call post_data(CS%id_CAv, CS%CAv, CS%diag)
 
   ! Here the thickness fluxes are offered for time averaging.
+  !$omp target update from(uh) if (CS%id_uh > 0)
   if (CS%id_uh         > 0) call post_data(CS%id_uh,  uh,                   CS%diag)
+  !$omp target update from(vh) if (CS%id_vh > 0)
   if (CS%id_vh         > 0) call post_data(CS%id_vh,  vh,                   CS%diag)
+  !$omp target update from(u_av) if (CS%id_uav > 0)
   if (CS%id_uav        > 0) call post_data(CS%id_uav, u_av,                 CS%diag)
+  !$omp target update from(v_av) if (CS%id_vav > 0)
   if (CS%id_vav        > 0) call post_data(CS%id_vav, v_av,                 CS%diag)
+  !$omp target update from(CS%u_accel_bt) if (CS%id_u_BT_accel > 0)
   if (CS%id_u_BT_accel > 0) call post_data(CS%id_u_BT_accel, CS%u_accel_bt, CS%diag)
+  !$omp target update from(CS%v_accel_bt) if (CS%id_v_BT_accel > 0)
   if (CS%id_v_BT_accel > 0) call post_data(CS%id_v_BT_accel, CS%v_accel_bt, CS%diag)
 
   ! Calculate effective areas and post data

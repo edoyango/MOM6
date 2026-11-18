@@ -1948,6 +1948,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     if (CS%id_Kv_v > 0) call post_data(CS%id_Kv_v, Kv_v, CS%diag)
     if (CS%id_Kv_gl90_u > 0) call post_data(CS%id_Kv_gl90_u, Kv_gl90_u, CS%diag)
     if (CS%id_Kv_gl90_v > 0) call post_data(CS%id_Kv_gl90_v, Kv_gl90_v, CS%diag)
+    !$omp target update from(CS%a_u) if (CS%id_au_vv > 0)
+    !$omp target update from(CS%a_v) if (CS%id_av_vv > 0)
     if (CS%id_au_vv > 0) call post_data(CS%id_au_vv, CS%a_u, CS%diag)
     if (CS%id_av_vv > 0) call post_data(CS%id_av_vv, CS%a_v, CS%diag)
     if (CS%id_au_gl90_vv > 0) call post_data(CS%id_au_gl90_vv, CS%a_u_gl90, CS%diag)

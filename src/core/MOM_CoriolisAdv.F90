@@ -1406,11 +1406,11 @@ subroutine CorAdCalc_block(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, nk
 
   ! Diagnostics
   !$omp target exit data map(from: RV) if (CS%id_RV > 0)
-  !$omp target exit data map(from: PV) if (CS%id_RV > 0)
+  !$omp target exit data map(from: PV) if (CS%id_PV > 0)
   !$omp target exit data map(from: AD%gradKEu) if (associated(AD%gradKEu))
   !$omp target exit data map(from: AD%gradKEv) if (associated(AD%gradKEv))
   !$omp target exit data map(from: AD%rv_x_u) if (associated(AD%rv_x_u))
-  !$omp target exit data map(from: AD%rv_x_u) if (associated(AD%rv_x_u))
+  !$omp target exit data map(from: AD%rv_x_v) if (associated(AD%rv_x_v))
   !$omp target exit data map(from: CAuS, CAvS) if (Stokes_VF)
 
   ! Here the various Coriolis-related derived quantities are offered for averaging.

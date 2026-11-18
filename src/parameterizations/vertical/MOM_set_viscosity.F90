@@ -1215,6 +1215,10 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   !$omp   h_bbl_drag, dz_bbl_drag, do_i, dR_dS, dR_dT, D_u, D_v, press, S_EOS, T_EOS, tv%p_surf, CS)
 
 ! Offer diagnostics for averaging
+  !$omp target update from(visc%bbl_thick_u) if (CS%id_bbl_thick_u > 0)
+  !$omp target update from(visc%kv_bbl_u) if (CS%id_kv_bbl_u > 0)
+  !$omp target update from(visc%bbl_thick_v) if (CS%id_bbl_thick_v > 0)
+  !$omp target update from(visc%kv_bbl_v) if (CS%id_kv_bbl_v > 0)
   if (CS%id_bbl_thick_u > 0) &
     call post_data(CS%id_bbl_thick_u, visc%bbl_thick_u, CS%diag)
   if (CS%id_kv_bbl_u > 0) &
