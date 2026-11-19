@@ -2745,6 +2745,775 @@ pure subroutine find_kappa_tke(N2, S2, kappa_in, Idz, h_Int, dz_Int, dz_h_Int, I
 
 end subroutine find_kappa_tke
 
+!> This subroutine calculates new, consistent estimates of TKE and kappa for the columns of a segment
+!! of a row of a block, as find_kappa_tke does for one column.  It steps through the levels and the
+!! iterations of all of the columns of the segment together, keeping the state of the iterations of
+!! each column in block-sized work arrays, and leaves out find_kappa_tke's debugging code.
+pure subroutine find_kappa_tke_segment(N2, S2, kappa_in, Idz, h_Int, dz_Int, dz_h_Int, I_L2_bdry, f2, &
+                      nzc, CS, GV, US, K_Q, tke, kappa, use_col, aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, &
+                      k_src, dQmdK, dKdQ, e1, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+                      ks_src, ke_src, ks_kappa, ke_kappa, ks_kappa_prev, ke_kappa_prev, ke_tke, k_exit, &
+                      do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, going, &
+                      nib, njb, iis, iie, jj, kappa_src, local_src)
+  !$omp declare target
+  type(verticalGrid_type), intent(in) :: GV  !< The ocean's vertical grid structure.
+  type(unit_scale_type),   intent(in) :: US  !< A dimensional unit scaling type
+  type(Kappa_shear_CS),    intent(in) :: CS  !< This module's control structure.  Not a pointer:
+                                             !! see the note in kappa_shear_column.
+  integer, intent(in) :: nib !< The first dimension of the block-sized arrays
+  integer, intent(in) :: njb !< The second dimension of the block-sized arrays
+  integer, value      :: iis !< The first block-local i-index of the segment
+  integer, value      :: iie !< The last block-local i-index of the segment
+  integer, value      :: jj  !< The block-local j-index of the row of the segment
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: N2       !< The buoyancy frequency squared at interfaces [T-2 ~> s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: S2       !< The squared shear at interfaces [T-2 ~> s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: kappa_in !< The initial guess at the diffusivity [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: Idz      !< The inverse grid spacing of layers [Z-1 ~> m-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: h_Int    !< The thicknesses associated with interfaces [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dz_Int   !< The vertical distances around interfaces [Z ~> m]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dz_h_Int !< The ratio of the vertical distances to the thickness around an
+                                          !! interface [Z H-1 ~> nondim or m3 kg-1].  In non-Boussinesq mode
+                                          !! this is the specific volume.
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: I_L2_bdry !< The inverse of the squared distance to boundaries
+                                          !! [H-1 Z-1 ~> m-2 or m kg-1]
+  real, dimension(nib,njb), &
+                intent(in)    :: f2       !< The squared Coriolis parameter of each column [T-2 ~> s-2]
+  integer, dimension(nib,njb), &
+                intent(in)    :: nzc      !< The number of layers in each column
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: K_Q      !< The shear-driven diapycnal diffusivity divided by the turbulent
+                                          !! kinetic energy per unit mass at interfaces [H T Z-1 ~> s or kg s m-3]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke      !< The turbulent kinetic energy per unit mass at interfaces
+                                          !! [Z2 T-2 ~> m2 s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa    !< The diapycnal diffusivity at interfaces [H Z T-1 ~> m2 s-1 or Pa s]
+  logical, dimension(nib,njb), &
+                intent(in)    :: use_col  !< True for the columns of the segment to work on
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: aQ       !< Work space for the coupling between adjacent interfaces in the TKE
+                                          !! equations [H T-1 ~> m s-1 or kg m-2 s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: dQdz     !< Work space for half the partial derivative of TKE with depth
+                                          !! [Z T-2 ~> m s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dK       !< Work space for the change in kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dQ       !< Work space for the change in TKE [Z2 T-2 ~> m2 s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: cQ       !< Work space for the upward influences in the tridiagonal solver
+                                          !! for the TKE equations [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: cK       !< Work space for the upward influences in the hexadiagonal solver
+                                          !! for the kappa equations [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: I_Ld2    !< Work space for 1/Ld^2, where Ld is the effective decay length
+                                          !! scale for kappa [H-1 Z-1 ~> m-2 or m kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: TKE_decay !< Work space for the local TKE decay rate [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: k_src    !< Work space for the source term in the kappa equation [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dQmdK    !< Work space for the change in dQ(k-1) due to dK(k) with Newton's
+                                          !! method [Z T H-1 ~> s or m3 s kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dKdQ     !< Work space for the change in dK(k) due to dQ(k) with Newton's
+                                          !! method [H Z-1 T-1 ~> s-1 or kg m-3 s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: e1       !< Work space for the fractional change in a layer TKE due to a change
+                                          !! in the TKE of the layer above when all the kappas below are 0 [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: Newton_err !< Work space for the tolerance for max_err that determines when to
+                                          !! start using Newton's method [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: Newton_test !< Work space for the tolerance that is used in the test for
+                                          !! switching to or from Newton's method [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: cQcomp   !< Work space for 1 - cQ in the tridiagonal equations [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: cKcomp   !< Work space for 1 - cK in the tridiagonal equations [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: eden2    !< Work space for a term used in calculating e1 [H Z-2 ~> m-1 or kg m-4]
+  real, dimension(nib,njb), &
+                intent(inout) :: ome      !< Work space for a term used in calculating e1 [nondim]
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_src   !< Work space for the topmost interface with a nonzero source
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_src   !< Work space for the bottommost interface with a nonzero source
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_kappa !< Work space for the topmost interface being worked on
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_kappa !< Work space for the bottommost interface being worked on
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_kappa_prev !< Work space for the previous value of ks_kappa
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_kappa_prev !< Work space for the previous value of ke_kappa
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_tke   !< Work space for the bottommost interface of the TKE solver
+  integer, dimension(nib,njb), &
+                intent(inout) :: k_exit   !< Work space for the interface at which the deep TKE adjustment
+                                          !! stopped, or 0 for columns that do not make that adjustment
+  logical, dimension(nib,njb), &
+                intent(inout) :: do_Newton !< Work space for whether to use Newton's method next
+  logical, dimension(nib,njb), &
+                intent(inout) :: abort_Newton !< Work space for whether Newton's method has encountered a 0 pivot
+  logical, dimension(nib,njb), &
+                intent(inout) :: within_tolerance !< Work space for whether all interfaces are within tolerance
+  logical, dimension(nib,njb), &
+                intent(inout) :: check_Newton !< Work space for whether a column tests for the use of Newton's
+                                          !! method in its convergence test
+  logical, dimension(nib,njb), &
+                intent(inout) :: iterating !< Work space for whether a column is still iterating
+  logical, dimension(nib,njb), &
+                intent(inout) :: going    !< Work space for whether a column is still in a loop that the column
+                                          !! version leaves early
+  real, dimension(nib,njb,SZK_(GV)+1), optional, &
+                intent(inout) :: kappa_src !< The source term for kappa [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), optional, &
+                intent(inout) :: local_src !< The sum of all local sources for kappa [T-1 ~> s-1]
+
+  ! Local variables
+  real :: tke_src       ! The net source of TKE due to mixing against the shear and stratification
+                        ! [Z2 T-3 ~> m2 s-3] or [H Z T-3 ~> m2 s-3 or kg m-1 s-3].
+                        ! (For convenience, a term involving the non-dissipation of q0 is also included here.)
+  real :: bQ            ! The inverse of the pivot in the tridiagonal equations [T H-1 ~> s m-1 or m2 s kg-1]
+  real :: bK            ! The inverse of the pivot in the tridiagonal equations [Z-1 ~> m-1].
+  real :: bQd1          ! A term in the denominator of bQ [H T-1 ~> m s-1 or kg m-2 s-1]
+  real :: bKd1          ! A term in the denominator of bK [Z ~> m].
+  real :: c_s2          !   The coefficient for the decay of TKE due to
+                        ! shear (i.e. proportional to |S|*tke) [nondim].
+  real :: c_n2          !   The coefficient for the decay of TKE due to
+                        ! stratification (i.e. proportional to N*tke) [nondim].
+  real :: Ri_crit       !   The critical shear Richardson number for shear-
+                        ! driven mixing [nondim]. The theoretical value is 0.25.
+  real :: q0            !   The background level of TKE [Z2 T-2 ~> m2 s-2].
+  real :: Ilambda2      ! 1.0 / CS%lambda**2 [nondim]
+  real :: TKE_min       !   The minimum value of shear-driven TKE that can be
+                        ! solved for [Z2 T-2 ~> m2 s-2].
+  real :: kappa0        ! The background diapycnal diffusivity [H Z T-1 ~> m2 s-1 or Pa s]
+  real :: kappa_trunc   ! Diffusivities smaller than this are rounded to 0 [H Z T-1 ~> m2 s-1 or Pa s]
+  real :: eden1         ! A variable used in calculating e1 [H Z-2 ~> m-1 or kg m-4]
+  real :: I_eden        ! The inverse of the denominator in e1 [Z2 H-1 ~> m or m4 kg-1]
+  real :: diffusive_src ! The diffusive source in the kappa equation [H T-1 ~> m s-1 or kg m-2 s-1]
+  real :: chg_by_k0     ! The value of k_src that leads to an increase of
+                        ! kappa_0 if only the diffusive term is a sink [T-1 ~> s-1]
+  real :: kappa_mean    ! A mean value of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  ! Temporary variables used in the Newton's method iterations.
+  real :: decay_term_k  ! The decay term in the diffusivity equation [Z-1 ~> m-1]
+  real :: decay_term_Q  ! The decay term in the TKE equation - proportional to [H Z-1 T-1 ~> s-1 or kg m-3 s-1]
+  real :: I_Q           ! The inverse of TKE [T2 Z-2 ~> s2 m-2]
+  real :: kap_src       ! A source term in the kappa equation [H T-1 ~> m s-1 or kg m-2 s-1]
+  real :: v1            ! A temporary variable proportional to [H Z-1 T-1 ~> s-1 or kg m-3 s-1]
+  real :: v2            ! A temporary variable in [Z T-2 ~> m s-2]
+  real :: tol_err       ! The tolerance for max_err that determines when to
+                        ! stop iterating [nondim].
+  real, parameter :: roundoff = 1.0e-16 ! A negligible fractional change in TKE [nondim].
+                        ! This could be larger but performance gains are small.
+
+  logical, parameter :: tke_noflux_bottom_BC = .false. ! Specify the boundary conditions
+  logical, parameter :: tke_noflux_top_BC = .false.    ! that are applied to the TKE equations.
+  logical :: any_iterating ! True if any column of the segment is still iterating
+  logical :: any_going  ! True if any column of the segment is still in a loop that it may leave early
+  integer :: k_lo, k_hi ! The range of interfaces worked on by any column of the segment in a loop
+  integer :: nz_max     ! The largest number of layers of the columns worked on
+  integer :: ke_tke_max ! The largest value of ke_tke of the columns using separate steps
+  integer :: II, itt, k, K2, kb, nz
+
+  c_N2 = CS%C_N**2 ; c_S2 = CS%C_S**2
+  q0 = CS%TKE_bg ; kappa0 = CS%kappa_0
+  TKE_min = max(CS%TKE_bg, 1.0E-20*US%m_to_Z**2*US%T_to_s**2)
+  Ri_crit = CS%Rino_crit
+  Ilambda2 = 1.0 / CS%lambda**2
+  kappa_trunc = CS%kappa_trunc
+  tol_err = CS%kappa_tol_err
+
+  ! Set the state of every column of the segment, with no sources in the columns not worked on.
+  nz_max = 0
+  do II=iis,iie
+    do_Newton(II,jj) = .false. ; abort_Newton(II,jj) = .false.
+    Newton_err(II,jj) = 0.2     ! This initial value may be automatically reduced later.
+    ks_kappa(II,jj) = 2 ; ke_kappa(II,jj) = 0 ; ks_kappa_prev(II,jj) = 2 ; ke_kappa_prev(II,jj) = 0
+    ke_src(II,jj) = 0 ; ks_src(II,jj) = 1 ; ke_tke(II,jj) = 0 ; k_exit(II,jj) = 0
+    if (use_col(II,jj)) then
+      nz = nzc(II,jj) ; nz_max = max(nz_max, nz)
+      ke_kappa(II,jj) = nz ; ke_kappa_prev(II,jj) = nz
+      ks_src(II,jj) = nz+1
+    endif
+  enddo
+
+  do K=2,nz_max ; do II=iis,iie ; if (use_col(II,jj)) then ; if (K <= nzc(II,jj)) then
+    if (N2(II,jj,K) < Ri_crit * S2(II,jj,K)) then ! Equivalent to Ri < Ri_crit.
+      K_src(II,jj,K) = (2.0 * CS%Shearmix_rate * sqrt(S2(II,jj,K))) * &
+                       ((Ri_crit*S2(II,jj,K) - N2(II,jj,K)) / (Ri_crit*S2(II,jj,K) + CS%FRi_curvature*N2(II,jj,K)))
+      ke_src(II,jj) = K
+      if (ks_src(II,jj) > k) ks_src(II,jj) = K
+    else
+      k_src(II,jj,K) = 0.0
+    endif
+  endif ; endif ; enddo ; enddo
+
+  ! If there is no source anywhere in a column, return kappa(K) = 0 there.
+  k_hi = 0
+  do II=iis,iie
+    iterating(II,jj) = (ks_src(II,jj) <= ke_src(II,jj))
+    if (use_col(II,jj) .and. .not.iterating(II,jj)) k_hi = max(k_hi, nzc(II,jj)+1)
+  enddo
+  do K=1,k_hi ; do II=iis,iie
+    if (use_col(II,jj) .and. .not.iterating(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      kappa(II,jj,K) = 0.0 ; K_Q(II,jj,K) = 0.0 ; tke(II,jj,K) = TKE_min
+      if (present(kappa_src)) kappa_src(II,jj,K) = 0.0
+      if (present(local_src)) local_src(II,jj,K) = 0.0
+    endif ; endif
+  enddo ; enddo
+
+  do K=1,nz_max+1 ; do II=iis,iie ; if (iterating(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+    kappa(II,jj,K) = kappa_in(II,jj,K)
+!     TKE_decay(K) = c_n*sqrt(N2(K)) + c_s*sqrt(S2(K)) ! The expression in JHL.
+    TKE_decay(II,jj,K) = sqrt(c_n2*N2(II,jj,K) + c_s2*S2(II,jj,K))
+    if ((kappa(II,jj,K) > 0.0) .and. (K_Q(II,jj,K) > 0.0)) then
+      TKE(II,jj,K) = kappa(II,jj,K) / K_Q(II,jj,K) ! Perhaps take the max with TKE_min
+    else
+      TKE(II,jj,K) = TKE_min
+    endif
+  endif ; endif ; enddo ; enddo
+
+  ! Apply boundary conditions to kappa, then calculate the term (e1) that allows changes in TKE to be
+  ! calculated quickly below the deepest nonzero value of kappa.  If kappa = 0, below interface
+  ! k-1, the final changes in TKE are related by dQ(K+1) = e1(K+1)*dQ(K).
+  do II=iis,iie ; if (iterating(II,jj)) then
+    nz = nzc(II,jj)
+    kappa(II,jj,1) = 0.0 ; kappa(II,jj,nz+1) = 0.0
+    eden2(II,jj) = kappa0 * Idz(II,jj,nz)
+    if (tke_noflux_bottom_BC) then
+      eden1 = h_Int(II,jj,nz+1)*TKE_decay(II,jj,nz+1)
+      I_eden = 1.0 / (eden2(II,jj) + eden1)
+      e1(II,jj,nz+1) = eden2(II,jj) * I_eden ; ome(II,jj) = eden1 * I_eden
+    else
+      e1(II,jj,nz+1) = 0.0 ; ome(II,jj) = 1.0
+    endif
+  endif ; enddo
+  do k=nz_max,2,-1 ; do II=iis,iie ; if (iterating(II,jj)) then ; if (K <= nzc(II,jj)) then
+    eden1 = h_Int(II,jj,K)*TKE_decay(II,jj,K) + ome(II,jj) * eden2(II,jj)
+    eden2(II,jj) = kappa0 * Idz(II,jj,k-1)
+    I_eden = 1.0 / (eden2(II,jj) + eden1)
+    e1(II,jj,K) = eden2(II,jj) * I_eden ; ome(II,jj) = eden1 * I_eden ! = 1-e1
+  endif ; endif ; enddo ; enddo
+  do II=iis,iie ; if (iterating(II,jj)) then
+    e1(II,jj,1) = 0.0
+  endif ; enddo
+
+  ! Iterate here to convergence to within some tolerance of order tol_err.
+  do itt=1,CS%max_RiNo_it
+    any_iterating = .false.
+    do II=iis,iie ; if (iterating(II,jj)) any_iterating = .true. ; enddo
+    if (.not.any_iterating) exit
+
+  ! ----------------------------------------------------
+  ! Calculate TKE, in the columns that are not using Newton's method.
+  ! ----------------------------------------------------
+
+    !   Use separate steps of the TKE and kappa equations, that are
+    ! explicit in the nonlinear source terms, implicit in a linearized
+    ! version of the nonlinear sink terms, and implicit in the linear
+    ! terms.
+    ke_tke_max = 0
+    do II=iis,iie ; if (iterating(II,jj) .and. .not.do_Newton(II,jj)) then
+      ke_tke(II,jj) = max(ke_kappa(II,jj),ke_kappa_prev(II,jj))+1
+      ke_tke_max = max(ke_tke_max, ke_tke(II,jj))
+    endif ; enddo
+    ! aQ is the coupling between adjacent interfaces [Z T-1 ~> m s-1].
+    do k=1,min(ke_tke_max,nz_max) ; do II=iis,iie
+      if (iterating(II,jj) .and. .not.do_Newton(II,jj) .and. (k <= ke_tke(II,jj))) then ; if (k <= nzc(II,jj)) then
+        aQ(II,jj,k) = (0.5*(kappa(II,jj,K)+kappa(II,jj,K+1)) + kappa0) * Idz(II,jj,k)
+      endif ; endif
+    enddo ; enddo
+    do II=iis,iie ; if (iterating(II,jj) .and. .not.do_Newton(II,jj)) then
+      dQ(II,jj,1) = -TKE(II,jj,1)
+      if (tke_noflux_top_BC) then
+        tke_src = dz_h_Int(II,jj,1)*kappa0*S2(II,jj,1) + q0 * TKE_decay(II,jj,1) ! Uses that kappa(1) = 0
+        bQd1 = h_Int(II,jj,1) * TKE_decay(II,jj,1)
+        bQ = 1.0 / (bQd1 +  aQ(II,jj,1))
+        tke(II,jj,1) = bQ * (h_Int(II,jj,1)*tke_src)
+        cQ(II,jj,2) = aQ(II,jj,1) * bQ ; cQcomp(II,jj) = bQd1 * bQ ! = 1 - cQ
+      else
+        tke(II,jj,1) = q0 ; cQ(II,jj,2) = 0.0 ; cQcomp(II,jj) = 1.0
+      endif
+    endif ; enddo
+    do K=2,ke_tke_max-1 ; do II=iis,iie
+      if (iterating(II,jj) .and. .not.do_Newton(II,jj) .and. (K <= ke_tke(II,jj)-1)) then
+        dQ(II,jj,K) = -TKE(II,jj,K)
+        tke_src = dz_h_Int(II,jj,K)*(kappa(II,jj,K) + kappa0)*S2(II,jj,K) + q0*TKE_decay(II,jj,K)
+        bQd1 = h_Int(II,jj,K)*(TKE_decay(II,jj,K) + dz_h_Int(II,jj,K)*N2(II,jj,K)*K_Q(II,jj,K)) + &
+               cQcomp(II,jj)*aQ(II,jj,k-1)
+        bQ = 1.0 / (bQd1 + aQ(II,jj,k))
+        tke(II,jj,K) = bQ * (h_Int(II,jj,K)*tke_src + aQ(II,jj,k-1)*tke(II,jj,K-1))
+        cQ(II,jj,K+1) = aQ(II,jj,k) * bQ ; cQcomp(II,jj) = bQd1 * bQ ! = 1 - cQ
+      endif
+    enddo ; enddo
+    do II=iis,iie
+      k_exit(II,jj) = 0
+      if (iterating(II,jj) .and. .not.do_Newton(II,jj)) then
+        nz = nzc(II,jj)
+        if ((ke_tke(II,jj) == nz+1) .and. .not.(tke_noflux_bottom_BC)) then
+          tke(II,jj,nz+1) = TKE_min
+          dQ(II,jj,nz+1) = 0.0
+        else
+          k = ke_tke(II,jj)
+          tke_src = dz_h_Int(II,jj,K)*kappa0*S2(II,jj,K) + q0*TKE_decay(II,jj,K) ! Uses that kappa(ke_tke) = 0
+          if (K == nz+1) then
+            dQ(II,jj,K) = -TKE(II,jj,K)
+            bQ = 1.0 / (h_Int(II,jj,K)*TKE_decay(II,jj,K) + cQcomp(II,jj)*aQ(II,jj,k-1))
+            tke(II,jj,K) = max(TKE_min, bQ * (h_Int(II,jj,K)*tke_src + aQ(II,jj,k-1)*tke(II,jj,K-1)))
+            dQ(II,jj,K) = tke(II,jj,K) + dQ(II,jj,K)
+          else
+            bQ = 1.0 / ((h_Int(II,jj,K)*TKE_decay(II,jj,K) + cQcomp(II,jj)*aQ(II,jj,k-1)) + aQ(II,jj,k))
+            cQ(II,jj,K+1) = aQ(II,jj,k) * bQ
+            ! Account for all changes deeper in the water column.
+            dQ(II,jj,K) = -TKE(II,jj,K)
+            tke(II,jj,K) = max((bQ * (h_Int(II,jj,K)*tke_src + aQ(II,jj,k-1)*tke(II,jj,K-1)) + &
+                                cQ(II,jj,K+1)*(tke(II,jj,K+1) - e1(II,jj,K+1)*tke(II,jj,K))) / &
+                               (1.0 - cQ(II,jj,K+1)*e1(II,jj,K+1)), TKE_min)
+            dQ(II,jj,K) = tke(II,jj,K) + dQ(II,jj,K)
+            ! The adjustment of TKE deeper in the water column below ends at k_exit, which is nz+2
+            ! if the adjustment goes all the way to the bottom.
+            k_exit(II,jj) = nz+2
+          endif
+        endif
+      endif
+      going(II,jj) = (k_exit(II,jj) > 0)
+    enddo
+    ! Adjust TKE deeper in the water column in case ke_tke increases.
+    ! This might not be strictly necessary?
+    k_lo = nz_max+2
+    do II=iis,iie ; if (going(II,jj)) k_lo = min(k_lo, ke_tke(II,jj)+1) ; enddo
+    do K=k_lo,nz_max+1
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie
+        if (going(II,jj) .and. (K >= ke_tke(II,jj)+1)) then ; if (K <= nzc(II,jj)+1) then
+          dQ(II,jj,K) = e1(II,jj,K)*dQ(II,jj,K-1)
+          tke(II,jj,K) = max(tke(II,jj,K) + dQ(II,jj,K), TKE_min)
+          if (abs(dQ(II,jj,K)) < roundoff*tke(II,jj,K)) then
+            k_exit(II,jj) = K ; going(II,jj) = .false.
+          endif
+        endif ; endif
+      enddo
+    enddo
+    k_lo = nz_max+1
+    do II=iis,iie
+      going(II,jj) = (k_exit(II,jj) > 0)
+      if (going(II,jj)) k_lo = min(k_lo, k_exit(II,jj)+1)
+    enddo
+    do K2=k_lo,nz_max
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie
+        if (going(II,jj) .and. (K2 >= k_exit(II,jj)+1)) then ; if (K2 <= nzc(II,jj)) then
+          if (dQ(II,jj,K2) == 0.0) then
+            going(II,jj) = .false.
+          else
+            dQ(II,jj,K2) = 0.0
+          endif
+        endif ; endif
+      enddo
+    enddo
+    do K=ke_tke_max-1,1,-1 ; do II=iis,iie
+      if (iterating(II,jj) .and. .not.do_Newton(II,jj) .and. (K <= ke_tke(II,jj)-1)) then
+        tke(II,jj,K) = max(tke(II,jj,K) + cQ(II,jj,K+1)*tke(II,jj,K+1), TKE_min)
+        dQ(II,jj,K) = tke(II,jj,K) + dQ(II,jj,K)
+      endif
+    enddo ; enddo
+
+  ! ----------------------------------------------------
+  ! Calculate kappa, here defined at interfaces.
+  ! ----------------------------------------------------
+
+    do II=iis,iie
+      going(II,jj) = (iterating(II,jj) .and. .not.do_Newton(II,jj))
+      if (going(II,jj)) then
+        ke_kappa_prev(II,jj) = ke_kappa(II,jj) ; ks_kappa_prev(II,jj) = ks_kappa(II,jj)
+
+        dK(II,jj,1) = 0.0 ! kappa takes boundary values of 0.
+        cK(II,jj,2) = 0.0 ; cKcomp(II,jj) = 1.0
+      endif
+    enddo
+    if (itt == 1) then ; do K=2,nz_max ; do II=iis,iie ; if (going(II,jj)) then ; if (K <= nzc(II,jj)) then
+      I_Ld2(II,jj,K) = dz_h_Int(II,jj,K)*(N2(II,jj,K)*Ilambda2 + f2(II,jj)) / tke(II,jj,K) + I_L2_bdry(II,jj,K)
+    endif ; endif ; enddo ; enddo ; endif
+    do K=2,nz_max
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie ; if (going(II,jj)) then ; if (K <= nzc(II,jj)) then
+        dK(II,jj,K) = -kappa(II,jj,K)
+        if (itt>1) &
+          I_Ld2(II,jj,K) = dz_h_Int(II,jj,K)*(N2(II,jj,K)*Ilambda2 + f2(II,jj)) / tke(II,jj,K) + I_L2_bdry(II,jj,K)
+        bKd1 = h_Int(II,jj,K)*I_Ld2(II,jj,K) + cKcomp(II,jj)*Idz(II,jj,k-1)
+        bK = 1.0 / (bKd1 + Idz(II,jj,k))
+
+        kappa(II,jj,K) = bK * (Idz(II,jj,k-1)*kappa(II,jj,K-1) + h_Int(II,jj,K) * K_src(II,jj,K))
+        cK(II,jj,K+1) = Idz(II,jj,k) * bK ; cKcomp(II,jj) = bKd1 * bK ! = 1 - cK(K+1)
+
+        ! Neglect values that are smaller than kappa_trunc.
+        if (kappa(II,jj,K) < cKcomp(II,jj)*kappa_trunc) then
+          kappa(II,jj,K) = 0.0
+          if (K > ke_src(II,jj)) then
+            ke_kappa(II,jj) = k-1 ; K_Q(II,jj,K) = 0.0 ; going(II,jj) = .false.
+          endif
+        elseif (kappa(II,jj,K) < 2.0*cKcomp(II,jj)*kappa_trunc) then
+          kappa(II,jj,K) = 2.0 * (kappa(II,jj,K) - cKcomp(II,jj)*kappa_trunc)
+        endif
+      endif ; endif ; enddo
+    enddo
+    k_lo = nz_max+2 ; k_hi = 0
+    do II=iis,iie
+      going(II,jj) = (iterating(II,jj) .and. .not.do_Newton(II,jj))
+      if (going(II,jj)) then
+        kb = ke_kappa(II,jj)
+        K_Q(II,jj,kb) = kappa(II,jj,kb) / tke(II,jj,kb)
+        dK(II,jj,kb) = dK(II,jj,kb) + kappa(II,jj,kb)
+        k_lo = min(k_lo, ke_kappa(II,jj)+2) ; k_hi = max(k_hi, ke_kappa_prev(II,jj))
+      endif
+    enddo
+    do K=k_lo,k_hi ; do II=iis,iie
+      if (going(II,jj) .and. (K >= ke_kappa(II,jj)+2) .and. (K <= ke_kappa_prev(II,jj))) then
+        dK(II,jj,K) = -kappa(II,jj,K) ; kappa(II,jj,K) = 0.0 ; K_Q(II,jj,K) = 0.0
+      endif
+    enddo ; enddo
+    k_hi = 0
+    do II=iis,iie ; if (going(II,jj)) k_hi = max(k_hi, ke_kappa(II,jj)-1) ; enddo
+    do K=k_hi,2,-1
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie ; if (going(II,jj) .and. (K <= ke_kappa(II,jj)-1)) then
+        kappa(II,jj,K) = kappa(II,jj,K) + cK(II,jj,K+1)*kappa(II,jj,K+1)
+        ! Neglect values that are smaller than kappa_trunc.
+        if (kappa(II,jj,K) <= kappa_trunc) then
+          kappa(II,jj,K) = 0.0
+          if (K < ks_src(II,jj)) then
+            ks_kappa(II,jj) = k+1 ; K_Q(II,jj,K) = 0.0 ; going(II,jj) = .false. ; cycle
+          endif
+        elseif (kappa(II,jj,K) < 2.0*kappa_trunc) then
+          kappa(II,jj,K) = 2.0 * (kappa(II,jj,K) - kappa_trunc)
+        endif
+
+        dK(II,jj,K) = dK(II,jj,K) + kappa(II,jj,K)
+        K_Q(II,jj,K) = kappa(II,jj,K) / tke(II,jj,K)
+      endif ; enddo
+    enddo
+    k_lo = nz_max+1 ; k_hi = 0
+    do II=iis,iie ; if (iterating(II,jj) .and. .not.do_Newton(II,jj)) then
+      k_lo = min(k_lo, ks_kappa_prev(II,jj)) ; k_hi = max(k_hi, ks_kappa(II,jj)-2)
+    endif ; enddo
+    do K=k_lo,k_hi ; do II=iis,iie
+      if (iterating(II,jj) .and. .not.do_Newton(II,jj) .and. &
+          (K >= ks_kappa_prev(II,jj)) .and. (K <= ks_kappa(II,jj)-2)) then
+        kappa(II,jj,K) = 0.0 ; K_Q(II,jj,K) = 0.0
+      endif
+    enddo ; enddo
+
+  ! ----------------------------------------------------
+  !   Once the solutions are close enough, use a Newton's method solver of the
+  ! whole system to accelerate convergence.
+  ! ----------------------------------------------------
+    do II=iis,iie
+      going(II,jj) = (iterating(II,jj) .and. do_Newton(II,jj))
+      if (going(II,jj)) then
+        ks_kappa_prev(II,jj) = ks_kappa(II,jj) ; ke_kappa_prev(II,jj) = ke_kappa(II,jj)
+        ke_kappa(II,jj) = nzc(II,jj)
+        ks_kappa(II,jj) = 2
+        dK(II,jj,1) = 0.0 ; cK(II,jj,2) = 0.0 ; cKcomp(II,jj) = 1.0 ; dKdQ(II,jj,1) = 0.0
+        aQ(II,jj,1) = (0.5*(kappa(II,jj,1)+kappa(II,jj,2))+kappa0) * Idz(II,jj,1)
+        dQdz(II,jj,1) = 0.5*(TKE(II,jj,1) - TKE(II,jj,2))*Idz(II,jj,1)
+        if (tke_noflux_top_BC) then
+          tke_src = h_Int(II,jj,1) * (kappa0*dz_h_Int(II,jj,1)*S2(II,jj,1) - &
+                                      (TKE(II,jj,1) - q0)*TKE_decay(II,jj,1)) - &
+                    aQ(II,jj,1) * (TKE(II,jj,1) - TKE(II,jj,2))
+
+          bQ = 1.0 / (aQ(II,jj,1) + h_Int(II,jj,1)*TKE_decay(II,jj,1))
+          cQ(II,jj,2) = aQ(II,jj,1) * bQ
+          cQcomp(II,jj) = (h_Int(II,jj,1)*TKE_decay(II,jj,1)) * bQ ! = 1 - cQ(2)
+          dQmdK(II,jj,2) = -dQdz(II,jj,1) * bQ
+          dQ(II,jj,1) = bQ * tke_src
+        else
+          dQ(II,jj,1) = 0.0 ; cQ(II,jj,2) = 0.0 ; cQcomp(II,jj) = 1.0 ; dQmdK(II,jj,2) = 0.0
+        endif
+      endif
+    enddo
+    do K=2,nz_max
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie ; if (going(II,jj)) then ; if (K <= nzc(II,jj)) then
+        I_Q = 1.0 / TKE(II,jj,K)
+        I_Ld2(II,jj,K) = (N2(II,jj,K)*Ilambda2 + f2(II,jj)) * dz_h_Int(II,jj,K)*I_Q + I_L2_bdry(II,jj,K)
+
+        kap_src = h_Int(II,jj,K) * (K_src(II,jj,K) - I_Ld2(II,jj,K)*kappa(II,jj,K)) + &
+                            Idz(II,jj,k-1)*(kappa(II,jj,K-1)-kappa(II,jj,K)) - &
+                            Idz(II,jj,k)*(kappa(II,jj,K)-kappa(II,jj,K+1))
+
+        ! Ensure that the pivot is always positive, and that 0 <= cK <= 1.
+        ! Otherwise do not use Newton's method.
+        decay_term_k = -Idz(II,jj,k-1)*dQmdK(II,jj,K)*dKdQ(II,jj,K-1) + h_Int(II,jj,K)*I_Ld2(II,jj,K)
+        if (decay_term_k < 0.0) then
+          abort_Newton(II,jj) = .true. ; going(II,jj) = .false. ; cycle
+        endif
+        bK = 1.0 / (Idz(II,jj,k) + Idz(II,jj,k-1)*cKcomp(II,jj) + decay_term_k)
+
+        cK(II,jj,K+1) = bK * Idz(II,jj,k)
+        cKcomp(II,jj) = bK * (Idz(II,jj,k-1)*cKcomp(II,jj) + decay_term_k) ! = 1-cK(K+1)
+        if (CS%dKdQ_iteration_bug) then
+          dKdQ(II,jj,K) = bK * (Idz(II,jj,k-1)*dKdQ(II,jj,K-1)*cQ(II,jj,K) + &
+                      US%m_to_Z*(N2(II,jj,K)*Ilambda2 + f2(II,jj)) * I_Q**2 * kappa(II,jj,K) )
+        else
+          dKdQ(II,jj,K) = bK * (Idz(II,jj,k-1)*dKdQ(II,jj,K-1)*cQ(II,jj,K) + &
+                      dz_Int(II,jj,K)*(N2(II,jj,K)*Ilambda2 + f2(II,jj)) * I_Q**2 * kappa(II,jj,K) )
+        endif
+        dK(II,jj,K) = bK * (kap_src + Idz(II,jj,k-1)*dK(II,jj,K-1) + &
+                            Idz(II,jj,k-1)*dKdQ(II,jj,K-1)*dQ(II,jj,K-1))
+
+        ! Truncate away negligibly small values of kappa.
+        if (dK(II,jj,K) <= cKcomp(II,jj)*(kappa_trunc - kappa(II,jj,K))) then
+          dK(II,jj,K) = -cKcomp(II,jj)*kappa(II,jj,K)
+        elseif (dK(II,jj,K) < cKcomp(II,jj)*(2.0*kappa_trunc - kappa(II,jj,K))) then
+          dK(II,jj,K) = 2.0 * dK(II,jj,K) - cKcomp(II,jj)*(2.0*kappa_trunc - kappa(II,jj,K))
+        endif
+
+        ! Solve for dQ(K)...
+        aQ(II,jj,k) = (0.5*(kappa(II,jj,K)+kappa(II,jj,K+1))+kappa0) * Idz(II,jj,k)
+        dQdz(II,jj,k) = 0.5*(TKE(II,jj,K) - TKE(II,jj,K+1))*Idz(II,jj,k)
+        tke_src = h_Int(II,jj,K) * ((dz_h_Int(II,jj,K) * ((kappa(II,jj,K) + kappa0)*S2(II,jj,K) - &
+                                                          kappa(II,jj,k)*N2(II,jj,K))) - &
+                                    (TKE(II,jj,k) - q0)*TKE_decay(II,jj,k)) - &
+                  (aQ(II,jj,k) * (TKE(II,jj,K) - TKE(II,jj,K+1)) - aQ(II,jj,k-1) * (TKE(II,jj,K-1) - TKE(II,jj,K)))
+        v1 = aQ(II,jj,k-1) + dQdz(II,jj,k-1)*dKdQ(II,jj,K-1)
+        v2 = (v1*dQmdK(II,jj,K) + dQdz(II,jj,k-1)*cK(II,jj,K)) + &
+             ((dQdz(II,jj,k-1) - dQdz(II,jj,k)) + dz_Int(II,jj,K)*(S2(II,jj,K) - N2(II,jj,K)))
+
+        ! Ensure that the pivot is always positive, and that 0 <= cQ <= 1.
+        ! Otherwise do not use Newton's method.
+        decay_term_Q = h_Int(II,jj,K)*TKE_decay(II,jj,K) - dQdz(II,jj,k-1)*dKdQ(II,jj,K-1)*cQ(II,jj,K) - &
+                       v2*dKdQ(II,jj,K)
+        if (decay_term_Q < 0.0) then
+          abort_Newton(II,jj) = .true. ; going(II,jj) = .false. ; cycle
+        endif
+        bQ = 1.0 / (aQ(II,jj,k) + (cQcomp(II,jj)*aQ(II,jj,k-1) + decay_term_Q))
+
+        cQ(II,jj,K+1) = aQ(II,jj,k) * bQ
+        cQcomp(II,jj) = (cQcomp(II,jj)*aQ(II,jj,k-1) + decay_term_Q) * bQ
+        dQmdK(II,jj,K+1) = (v2 * cK(II,jj,K+1) - dQdz(II,jj,k)) * bQ
+
+        ! Ensure that TKE+dQ will not drop below 0.5*TKE.
+        dQ(II,jj,K) = max(bQ * ((v1 * dQ(II,jj,K-1) + dQdz(II,jj,k-1)*dK(II,jj,k-1)) + &
+                                (v2 * dK(II,jj,K) + tke_src)), cQcomp(II,jj)*(-0.5*TKE(II,jj,K)))
+
+        ! Check whether the next layer will be affected by any nonzero kappas.
+        if ((itt > 1) .and. (K > ke_src(II,jj)) .and. (dK(II,jj,K) == 0.0) .and. &
+            ((kappa(II,jj,K) + kappa(II,jj,K+1)) == 0.0)) then
+        ! Could also do  .and. (bQ*abs(tke_src) < roundoff*TKE(K)) then
+          ke_kappa(II,jj) = k-1 ; going(II,jj) = .false.
+        endif
+      endif ; endif ; enddo
+    enddo
+    do II=iis,iie
+      going(II,jj) = .false.
+      if (iterating(II,jj) .and. do_Newton(II,jj)) then
+        nz = nzc(II,jj)
+        if ((ke_kappa(II,jj) == nz) .and. (.not. abort_Newton(II,jj))) then
+          dK(II,jj,nz+1) = 0.0 ; dKdQ(II,jj,nz+1) = 0.0
+          if (tke_noflux_bottom_BC) then
+            K = nz+1
+            tke_src = h_Int(II,jj,K) * (kappa0*dz_h_Int(II,jj,K)*S2(II,jj,K) - &
+                                        (TKE(II,jj,K) - q0)*TKE_decay(II,jj,K)) + &
+                      aQ(II,jj,k-1) * (TKE(II,jj,K-1) - TKE(II,jj,K))
+
+            v1 = aQ(II,jj,k-1) + dQdz(II,jj,k-1)*dKdQ(II,jj,K-1)
+            decay_term_Q = max(0.0, h_Int(II,jj,K)*TKE_decay(II,jj,K) - &
+                                    dQdz(II,jj,k-1)*dKdQ(II,jj,K-1)*cQ(II,jj,K))
+            if (decay_term_Q < 0.0) then
+              abort_Newton(II,jj) = .true.
+            else
+              bQ = 1.0 / (aQ(II,jj,k) + (cQcomp(II,jj)*aQ(II,jj,k-1) + decay_term_Q))
+            ! Ensure that TKE+dQ will not drop below 0.5*TKE.
+              dQ(II,jj,K) = max(bQ * ((v1 * dQ(II,jj,K-1) + dQdz(II,jj,k-1)*dK(II,jj,K-1)) + tke_src), &
+                                -0.5*TKE(II,jj,K))
+              TKE(II,jj,K) = max(TKE(II,jj,K) + dQ(II,jj,K), TKE_min)
+            endif
+          else
+            dQ(II,jj,nz+1) = 0.0
+          endif
+        elseif (.not. abort_Newton(II,jj)) then
+          ! Alter the first-guess determination of dQ(K).
+          kb = ke_kappa(II,jj)
+          dQ(II,jj,kb+1) = dQ(II,jj,kb+1) / (1.0 - cQ(II,jj,kb+2)*e1(II,jj,kb+2))
+          TKE(II,jj,kb+1) = max(TKE(II,jj,kb+1) + dQ(II,jj,kb+1), TKE_min)
+          going(II,jj) = .true.
+        endif
+      endif
+    enddo
+    k_lo = nz_max+2
+    do II=iis,iie ; if (going(II,jj)) k_lo = min(k_lo, ke_kappa(II,jj)+2) ; enddo
+    do K=k_lo,nz_max+1
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie
+        if (going(II,jj) .and. (K >= ke_kappa(II,jj)+2)) then ; if (K <= nzc(II,jj)+1) then
+          dK(II,jj,K) = 0.0
+        ! Ensure that TKE+dQ will not drop below 0.5*TKE.
+          dQ(II,jj,K) = max(e1(II,jj,K)*dQ(II,jj,K-1),-0.5*TKE(II,jj,K))
+          TKE(II,jj,K) = max(TKE(II,jj,K) + dQ(II,jj,K), TKE_min)
+          if (abs(dQ(II,jj,K)) < roundoff*TKE(II,jj,K)) going(II,jj) = .false.
+        endif ; endif
+      enddo
+    enddo
+    k_hi = 0
+    do II=iis,iie
+      going(II,jj) = (iterating(II,jj) .and. do_Newton(II,jj) .and. .not.abort_Newton(II,jj))
+      if (going(II,jj)) k_hi = max(k_hi, ke_kappa(II,jj))
+    enddo
+    do K=k_hi,2,-1 ; do II=iis,iie ; if (going(II,jj) .and. (K <= ke_kappa(II,jj))) then
+      ! Ensure that TKE+dQ will not drop below 0.5*TKE.
+      dQ(II,jj,K) = max(dQ(II,jj,K) + (cQ(II,jj,K+1)*dQ(II,jj,K+1) + dQmdK(II,jj,K+1) * dK(II,jj,K+1)), &
+                        -0.5*TKE(II,jj,K))
+      TKE(II,jj,K) = max(TKE(II,jj,K) + dQ(II,jj,K), TKE_min)
+      dK(II,jj,K) = dK(II,jj,K) + (cK(II,jj,K+1)*dK(II,jj,K+1) + dKdQ(II,jj,K) * dQ(II,jj,K))
+      ! Truncate away negligibly small values of kappa.
+      if (dK(II,jj,K) <= kappa_trunc - kappa(II,jj,K)) then
+        dK(II,jj,K) = -kappa(II,jj,K)
+        kappa(II,jj,K) = 0.0
+        if ((K < ks_src(II,jj)) .and. (K+1 > ks_kappa(II,jj))) ks_kappa(II,jj) = K+1
+      elseif (dK(II,jj,K) < 2.0*kappa_trunc - kappa(II,jj,K)) then
+        dK(II,jj,K) =  2.0*dK(II,jj,K) - (2.0*kappa_trunc - kappa(II,jj,K))
+        kappa(II,jj,K) = max(kappa(II,jj,K) + dK(II,jj,K), 0.0) ! The max is for paranoia.
+        if (K<=ks_kappa(II,jj)) ks_kappa(II,jj) = 2
+      else
+        kappa(II,jj,K) = kappa(II,jj,K) + dK(II,jj,K)
+        if (K<=ks_kappa(II,jj)) ks_kappa(II,jj) = 2
+      endif
+    endif ; enddo ; enddo
+    do II=iis,iie ; if (going(II,jj)) then
+      dQ(II,jj,1) = max(dQ(II,jj,1) + cQ(II,jj,2)*dQ(II,jj,2) + dQmdK(II,jj,2) * dK(II,jj,2), &
+                        TKE_min - TKE(II,jj,1))
+      TKE(II,jj,1) = max(TKE(II,jj,1) + dQ(II,jj,1), TKE_min)
+      dK(II,jj,1) = 0.0
+    endif ; enddo
+
+    ! Test kappa for convergence...
+    do II=iis,iie
+      check_Newton(II,jj) = .false.
+      going(II,jj) = iterating(II,jj)
+      if (iterating(II,jj)) then
+        if ((tol_err < Newton_err(II,jj)) .and. (.not.abort_Newton(II,jj))) then
+          !  A lower tolerance is used to switch to Newton's method than to switch back.
+          check_Newton(II,jj) = .true.
+          Newton_test(II,jj) = Newton_err(II,jj) ; if (do_Newton(II,jj)) Newton_test(II,jj) = 2.0*Newton_err(II,jj)
+          within_tolerance(II,jj) = .true. ; do_Newton(II,jj) = .true.
+        else  ! Newton's method will not be used again, so no need to check.
+          within_tolerance(II,jj) = .true.
+        endif
+      endif
+    enddo
+    k_lo = nz_max+1 ; k_hi = 0
+    do II=iis,iie ; if (going(II,jj)) then
+      k_lo = min(k_lo, min(ks_kappa(II,jj),ks_kappa_prev(II,jj)))
+      k_hi = max(k_hi, max(ke_kappa(II,jj),ke_kappa_prev(II,jj)))
+    endif ; enddo
+    do K=k_lo,k_hi
+      any_going = .false.
+      do II=iis,iie ; if (going(II,jj)) any_going = .true. ; enddo
+      if (.not.any_going) exit
+      do II=iis,iie
+        if (going(II,jj) .and. (K >= min(ks_kappa(II,jj),ks_kappa_prev(II,jj))) .and. &
+            (K <= max(ke_kappa(II,jj),ke_kappa_prev(II,jj)))) then
+          if (check_Newton(II,jj)) then
+            kappa_mean = kappa0 + (kappa(II,jj,K) - 0.5*dK(II,jj,K))
+            if (abs(dK(II,jj,K)) > Newton_test(II,jj) * kappa_mean) then
+              if (do_Newton(II,jj)) abort_Newton(II,jj) = .true.
+              within_tolerance(II,jj) = .false. ; do_Newton(II,jj) = .false. ; going(II,jj) = .false. ; cycle
+            elseif (abs(dK(II,jj,K)) > tol_err * kappa_mean) then
+              within_tolerance(II,jj) = .false.
+              if (.not.do_Newton(II,jj)) then ; going(II,jj) = .false. ; cycle ; endif
+            endif
+            if (abs(dQ(II,jj,K)) > Newton_test(II,jj)*(tke(II,jj,K) - 0.5*dQ(II,jj,K))) then
+              if (do_Newton(II,jj)) abort_Newton(II,jj) = .true.
+              do_Newton(II,jj) = .false. ; if (.not.within_tolerance(II,jj)) going(II,jj) = .false.
+            endif
+          else
+            if (abs(dK(II,jj,K)) > tol_err * (kappa0 + (kappa(II,jj,K) - 0.5*dK(II,jj,K)))) then
+              within_tolerance(II,jj) = .false. ; going(II,jj) = .false.
+            endif
+          endif
+        endif
+      enddo
+    enddo
+
+    do II=iis,iie
+      going(II,jj) = (iterating(II,jj) .and. abort_Newton(II,jj))
+      if (going(II,jj)) then
+        do_Newton(II,jj) = .false. ; abort_Newton(II,jj) = .false.
+        ! We went to Newton too quickly last time, so restrict the tolerance.
+        Newton_err(II,jj) = 0.5*Newton_err(II,jj)
+        ke_kappa_prev(II,jj) = nzc(II,jj)
+      endif
+    enddo
+    do K=2,nz_max ; do II=iis,iie ; if (going(II,jj)) then ; if (K <= nzc(II,jj)) then
+      K_Q(II,jj,K) = kappa(II,jj,K) / max(TKE(II,jj,K), TKE_min)
+    endif ; endif ; enddo ; enddo
+
+    do II=iis,iie ; if (iterating(II,jj)) then
+      if (within_tolerance(II,jj)) iterating(II,jj) = .false.
+    endif ; enddo
+  enddo
+
+  ! The columns that are still using Newton's method need K_Q to be calculated.
+  do K=1,nz_max+1 ; do II=iis,iie ; if (do_Newton(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+    if (K <= ks_kappa(II,jj)-1) then
+      K_Q(II,jj,K) = 0.0
+    elseif (K <= ke_kappa(II,jj)) then
+      K_Q(II,jj,K) = kappa(II,jj,K) / TKE(II,jj,K)
+    else
+      K_Q(II,jj,K) = 0.0
+    endif
+  endif ; endif ; enddo ; enddo
+
+  ! The columns with sources are those with ks_src <= ke_src.
+  if (present(local_src)) then
+    do II=iis,iie ; if (ks_src(II,jj) <= ke_src(II,jj)) then
+      local_src(II,jj,1) = 0.0 ; local_src(II,jj,nzc(II,jj)+1) = 0.0
+    endif ; enddo
+    do K=2,nz_max ; do II=iis,iie ; if (ks_src(II,jj) <= ke_src(II,jj)) then ; if (K <= nzc(II,jj)) then
+      diffusive_src = Idz(II,jj,k-1)*(kappa(II,jj,K-1)-kappa(II,jj,K)) + Idz(II,jj,k)*(kappa(II,jj,K+1)-kappa(II,jj,K))
+      chg_by_k0 = kappa0 * ((Idz(II,jj,k-1)+Idz(II,jj,k)) / h_Int(II,jj,K) + I_Ld2(II,jj,K))
+      if (diffusive_src <= 0.0) then
+        local_src(II,jj,K) = K_src(II,jj,K) + chg_by_k0
+      else
+        local_src(II,jj,K) = (K_src(II,jj,K) + chg_by_k0) + diffusive_src / h_Int(II,jj,K)
+      endif
+    endif ; endif ; enddo ; enddo
+  endif
+  if (present(kappa_src)) then
+    do II=iis,iie ; if (ks_src(II,jj) <= ke_src(II,jj)) then
+      kappa_src(II,jj,1) = 0.0 ; kappa_src(II,jj,nzc(II,jj)+1) = 0.0
+    endif ; enddo
+    do K=2,nz_max ; do II=iis,iie ; if (ks_src(II,jj) <= ke_src(II,jj)) then ; if (K <= nzc(II,jj)) then
+      kappa_src(II,jj,K) = K_src(II,jj,K)
+    endif ; endif ; enddo ; enddo
+  endif
+
+end subroutine find_kappa_tke_segment
+
 !> This subroutine initializes the parameters that regulate shear-driven mixing
 function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
   type(time_type),         intent(in)    :: Time !< The current model time.
