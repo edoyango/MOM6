@@ -392,6 +392,7 @@ subroutine calculate_density_2d(T, S, pressure, rho, EOS, dom, rho_ref)
   real, dimension(size(rho,1), size(rho,2)) :: Sa
     ! Salinity converted to [ppt]
   integer :: is, ie, js, je, npts
+  integer :: i, j
   integer :: domain(2,2)
 
   if (present(dom)) then
@@ -400,18 +401,21 @@ subroutine calculate_density_2d(T, S, pressure, rho, EOS, dom, rho_ref)
     domain(1,:) = [1, size(rho,1)]
     domain(2,:) = [1, size(rho,2)]
   endif
+  is = domain(1,1) ; ie = domain(1,2)
+  js = domain(2,1) ; je = domain(2,2)
 
   if ((EOS%RL2_T2_to_Pa == 1.0) .and. (EOS%R_to_kg_m3 == 1.0) .and. &
       (EOS%C_to_degC == 1.0) .and. (EOS%S_to_ppt == 1.0)) then
     call EOS%type%calculate_density_array_2d(T, S, pressure, rho, domain, &
         rho_ref=rho_ref)
   else ! This is the same as above, but with some extra work to rescale variables.
-    is = domain(1,1) ; ie = domain(1,2)
-    js = domain(2,1) ; je = domain(2,2)
-
-    pres(is:ie, js:je) = EOS%RL2_T2_to_Pa * pressure(is:ie, js:je)
-    Ta(is:ie, js:je) = EOS%C_to_degC * T(is:ie, js:je)
-    Sa(is:ie, js:je) = EOS%S_to_ppt * S(is:ie, js:je)
+    ! The rescaling is done where the EOS kernels run, so the inputs are read from there.
+    !$omp target enter data map(alloc: pres, Ta, Sa)
+    do concurrent (j=js:je, i=is:ie)
+      pres(i,j) = EOS%RL2_T2_to_Pa * pressure(i,j)
+      Ta(i,j) = EOS%C_to_degC * T(i,j)
+      Sa(i,j) = EOS%S_to_ppt * S(i,j)
+    enddo
 
     if (present(rho_ref)) then
       call EOS%type%calculate_density_array_2d(Ta, Sa, pres, rho, domain, &
@@ -419,10 +423,14 @@ subroutine calculate_density_2d(T, S, pressure, rho, EOS, dom, rho_ref)
     else
       call EOS%type%calculate_density_array_2d(Ta, Sa, pres, rho, domain)
     endif
+    !$omp target exit data map(delete: pres, Ta, Sa)
   endif
 
-  if (EOS%kg_m3_to_R /= 1.) &
-    rho(is:ie, js:je) = EOS%kg_m3_to_R * rho(is:ie, js:je)
+  if (EOS%kg_m3_to_R /= 1.) then
+    do concurrent (j=js:je, i=is:ie)
+      rho(i,j) = EOS%kg_m3_to_R * rho(i,j)
+    enddo
+  endif
 end subroutine calculate_density_2d
 
 
@@ -452,6 +460,7 @@ subroutine calculate_density_3d(T, S, pressure, rho, EOS, dom, rho_ref)
   real, dimension(size(rho,1), size(rho,2), size(rho,3)) :: Sa
     ! Salinity converted to [ppt]
   integer :: is, ie, js, je, ks, ke
+  integer :: i, j, k
   integer :: domain(3,2)
 
   if (present(dom)) then
@@ -471,9 +480,13 @@ subroutine calculate_density_3d(T, S, pressure, rho, EOS, dom, rho_ref)
     call EOS%type%calculate_density_array_3d(T, S, pressure, rho, domain, &
         rho_ref=rho_ref)
   else ! This is the same as above, but with some extra work to rescale variables.
-    pres(is:ie, js:je, ks:ke) = EOS%RL2_T2_to_Pa * pressure(is:ie, js:je, ks:ke)
-    Ta(is:ie, js:je, ks:ke) = EOS%C_to_degC * T(is:ie, js:je, ks:ke)
-    Sa(is:ie, js:je, ks:ke) = EOS%S_to_ppt * S(is:ie, js:je, ks:ke)
+    ! The rescaling is done where the EOS kernels run, so the inputs are read from there.
+    !$omp target enter data map(alloc: pres, Ta, Sa)
+    do concurrent (k=ks:ke, j=js:je, i=is:ie)
+      pres(i,j,k) = EOS%RL2_T2_to_Pa * pressure(i,j,k)
+      Ta(i,j,k) = EOS%C_to_degC * T(i,j,k)
+      Sa(i,j,k) = EOS%S_to_ppt * S(i,j,k)
+    enddo
 
     if (present(rho_ref)) then
       call EOS%type%calculate_density_array_3d(Ta, Sa, pres, rho, domain, &
@@ -481,10 +494,14 @@ subroutine calculate_density_3d(T, S, pressure, rho, EOS, dom, rho_ref)
     else
       call EOS%type%calculate_density_array_3d(Ta, Sa, pres, rho, domain)
     endif
+    !$omp target exit data map(delete: pres, Ta, Sa)
   endif
 
-  if (EOS%kg_m3_to_R /= 1.) &
-    rho(is:ie, js:je, ks:ke) = EOS%kg_m3_to_R * rho(is:ie, js:je, ks:ke)
+  if (EOS%kg_m3_to_R /= 1.) then
+    do concurrent (k=ks:ke, j=js:je, i=is:ie)
+      rho(i,j,k) = EOS%kg_m3_to_R * rho(i,j,k)
+    enddo
+  endif
 end subroutine calculate_density_3d
 
 
