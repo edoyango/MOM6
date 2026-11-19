@@ -1980,6 +1980,205 @@ pure subroutine calculate_projected_state(kappa, u0, v0, T0, S0, dt, nz, dz, I_d
 
 end subroutine calculate_projected_state
 
+!> This subroutine calculates the velocities, temperatures and salinities that the water columns
+!! of a segment of a row of a block will have after mixing for dt with diffusivities kappa, as
+!! calculate_projected_state does for one column, working through the levels of all of the
+!! columns together.  It also calculates the projected buoyancy frequency and shear.
+pure subroutine calculate_projected_state_segment(kappa, u0, v0, T0, S0, dt, nzc, dz, I_dz_int, &
+                     dbuoy_dT, dbuoy_dS, vel_under, u, v, T, Sal, N2, S2, use_col, c1, a_b, d1, ks, ke, &
+                     GV, US, nib, njb, iis, iie, jj, ks_int, ke_int)
+  !$omp declare target
+  type(verticalGrid_type), intent(in) :: GV  !< The ocean's vertical grid structure.
+  type(unit_scale_type),   intent(in) :: US  !< A dimensional unit scaling type
+  integer, intent(in) :: nib !< The first dimension of the block-sized arrays
+  integer, intent(in) :: njb !< The second dimension of the block-sized arrays
+  integer, value      :: iis !< The first block-local i-index of the segment
+  integer, value      :: iie !< The last block-local i-index of the segment
+  integer, value      :: jj  !< The block-local j-index of the row of the segment
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: kappa !< The diapycnal diffusivity at interfaces [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: u0    !< The initial zonal velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: v0    !< The initial meridional velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: T0    !< The initial temperature [C ~> degC]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: S0    !< The initial salinity [S ~> ppt]
+  real, dimension(nib,njb), &
+                intent(in)    :: dt    !< The time step of each column [T ~> s]
+  integer, dimension(nib,njb), &
+                intent(in)    :: nzc   !< The number of layers in each column
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: dz    !< The layer thicknesses [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: I_dz_int !< The inverse of the distance between successive
+                                          !! layer centers [Z-1 ~> m-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dT !< The partial derivative of buoyancy with
+                                          !! temperature [Z T-2 C-1 ~> m s-2 degC-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dS !< The partial derivative of buoyancy with
+                                          !! salinity [Z T-2 S-1 ~> m s-2 ppt-1]
+  real,         intent(in)    :: vel_under !< Any velocities that are smaller in magnitude
+                                          !! than this value are set to 0 [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: u     !< The zonal velocity after dt [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: v     !< The meridional velocity after dt [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: T     !< The temperature after dt [C ~> degC]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: Sal   !< The salinity after dt [S ~> ppt]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2    !< The buoyancy frequency squared at interfaces [T-2 ~> s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2    !< The squared shear at interfaces [T-2 ~> s-2]
+  logical, dimension(nib,njb), &
+                intent(in)    :: use_col !< True for the columns of the segment to work on
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: c1    !< Work space for a tridiagonal variable [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: a_b   !< Work space for a tridiagonal coupling coefficient [H ~> m or kg m-2]
+  real, dimension(nib,njb), &
+                intent(inout) :: d1    !< Work space for a tridiagonal variable [nondim]
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks    !< Work space for the topmost layer worked on in each column
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke    !< Work space for the bottommost layer worked on in each column
+  integer, dimension(nib,njb), optional, &
+                intent(in)    :: ks_int !< The topmost k-index with a non-zero diffusivity in each column
+  integer, dimension(nib,njb), optional, &
+                intent(in)    :: ke_int !< The bottommost k-index with a non-zero diffusivity in each column
+
+  ! Local variables
+  real :: a_a        ! A tridiagonal coupling coefficient [H ~> m or kg m-2]
+  real :: b1, b1nz_0 ! Tridiagonal variables [H-1 ~> m-1 or m2 kg-1]
+  real :: bd1        ! A term in the denominator of b1 [H ~> m or kg m-2]
+  integer :: k_min   ! The smallest value of ks of the columns worked on
+  integer :: k_max   ! The largest value of ke of the columns worked on
+  integer :: kt_min  ! The smallest value of ks of the columns with a tridiagonal solver
+  integer :: kt_max  ! The largest value of ke of the columns with a tridiagonal solver
+  integer :: nz_copy ! The largest number of layers of the columns that are copied without mixing
+  integer :: II, k, kb, nz
+
+  ! Find the range of layers worked on in each column.  A column that is not worked on gets ks > ke.
+  k_min = GV%ke+1 ; k_max = 0 ; kt_min = GV%ke+1 ; kt_max = 0 ; nz_copy = 0
+  do II=iis,iie
+    ks(II,jj) = 1 ; ke(II,jj) = 0
+    if (use_col(II,jj)) then
+      ke(II,jj) = nzc(II,jj)
+      if (present(ks_int)) ks(II,jj) = max(ks_int(II,jj)-1,1)
+      if (present(ke_int)) ke(II,jj) = min(ke_int(II,jj),nzc(II,jj))
+      if (ks(II,jj) <= ke(II,jj)) then
+        k_min = min(k_min, ks(II,jj)) ; k_max = max(k_max, ke(II,jj))
+        if (dt(II,jj) > 0.0) then
+          kt_min = min(kt_min, ks(II,jj)) ; kt_max = max(kt_max, ke(II,jj))
+        else
+          nz_copy = max(nz_copy, nzc(II,jj))
+        endif
+      endif
+    endif
+  enddo
+
+  do II=iis,iie ; if (ks(II,jj) <= ke(II,jj)) then ; if (dt(II,jj) > 0.0) then
+    k = ks(II,jj)
+    a_b(II,jj) = dt(II,jj)*(kappa(II,jj,k+1)*I_dz_int(II,jj,k+1))
+    b1 = 1.0 / (dz(II,jj,k) + a_b(II,jj))
+    c1(II,jj,k+1) = a_b(II,jj) * b1 ; d1(II,jj) = dz(II,jj,k) * b1 ! = 1 - c1
+
+    u(II,jj,k) = (b1 * dz(II,jj,k))*u0(II,jj,k) ; v(II,jj,k) = (b1 * dz(II,jj,k))*v0(II,jj,k)
+    T(II,jj,k) = (b1 * dz(II,jj,k))*T0(II,jj,k) ; Sal(II,jj,k) = (b1 * dz(II,jj,k))*S0(II,jj,k)
+  endif ; endif ; enddo
+  do K=kt_min+1,kt_max-1 ; do II=iis,iie
+    if ((K >= ks(II,jj)+1) .and. (K <= ke(II,jj)-1)) then ; if (dt(II,jj) > 0.0) then
+      a_a = a_b(II,jj)
+      a_b(II,jj) = dt(II,jj)*(kappa(II,jj,K+1)*I_dz_int(II,jj,K+1))
+      bd1 = dz(II,jj,k) + d1(II,jj)*a_a
+      b1 = 1.0 / (bd1 + a_b(II,jj))
+      c1(II,jj,K+1) = a_b(II,jj) * b1 ; d1(II,jj) = bd1 * b1 ! d1 = 1 - c1
+
+      u(II,jj,k) = b1 * (dz(II,jj,k)*u0(II,jj,k) + a_a*u(II,jj,k-1))
+      v(II,jj,k) = b1 * (dz(II,jj,k)*v0(II,jj,k) + a_a*v(II,jj,k-1))
+      T(II,jj,k) = b1 * (dz(II,jj,k)*T0(II,jj,k) + a_a*T(II,jj,k-1))
+      Sal(II,jj,k) = b1 * (dz(II,jj,k)*S0(II,jj,k) + a_a*Sal(II,jj,k-1))
+    endif ; endif
+  enddo ; enddo
+  do II=iis,iie ; if (ks(II,jj) <= ke(II,jj)) then ; if (dt(II,jj) > 0.0) then
+    kb = ke(II,jj) ; nz = nzc(II,jj)
+    !   T and S have insulating boundary conditions, u & v use no-slip
+    ! bottom boundary conditions at the solid bottom.
+
+    ! For insulating boundary conditions or mixing simply stopping, use...
+    a_a = a_b(II,jj)
+    b1 = 1.0 / (dz(II,jj,kb) + d1(II,jj)*a_a)
+    T(II,jj,kb) = b1 * (dz(II,jj,kb)*T0(II,jj,kb) + a_a*T(II,jj,kb-1))
+    Sal(II,jj,kb) = b1 * (dz(II,jj,kb)*S0(II,jj,kb) + a_a*Sal(II,jj,kb-1))
+
+    !   There is no distinction between the effective boundary conditions for
+    ! tracers and velocities if the mixing is separated from the bottom, but if
+    ! the mixing goes all the way to the bottom, use no-slip BCs for velocities.
+    if (kb == nz) then
+      a_b(II,jj) = dt(II,jj)*(kappa(II,jj,nz+1)*I_dz_int(II,jj,nz+1))
+      b1nz_0 = 1.0 / ((dz(II,jj,nz) + d1(II,jj)*a_a) + a_b(II,jj))
+    else
+      b1nz_0 = b1
+    endif
+    u(II,jj,kb) = b1nz_0 * (dz(II,jj,kb)*u0(II,jj,kb) + a_a*u(II,jj,kb-1))
+    v(II,jj,kb) = b1nz_0 * (dz(II,jj,kb)*v0(II,jj,kb) + a_a*v(II,jj,kb-1))
+    if (abs(u(II,jj,kb)) < vel_under) u(II,jj,kb) = 0.0
+    if (abs(v(II,jj,kb)) < vel_under) v(II,jj,kb) = 0.0
+  endif ; endif ; enddo
+  do k=kt_max-1,kt_min,-1 ; do II=iis,iie
+    if ((k >= ks(II,jj)) .and. (k <= ke(II,jj)-1)) then ; if (dt(II,jj) > 0.0) then
+      u(II,jj,k) = u(II,jj,k) + c1(II,jj,k+1)*u(II,jj,k+1)
+      v(II,jj,k) = v(II,jj,k) + c1(II,jj,k+1)*v(II,jj,k+1)
+      if (abs(u(II,jj,k)) < vel_under) u(II,jj,k) = 0.0
+      if (abs(v(II,jj,k)) < vel_under) v(II,jj,k) = 0.0
+      T(II,jj,k) = T(II,jj,k) + c1(II,jj,k+1)*T(II,jj,k+1)
+      Sal(II,jj,k) = Sal(II,jj,k) + c1(II,jj,k+1)*Sal(II,jj,k+1)
+    endif ; endif
+  enddo ; enddo
+
+  ! Columns with dt <= 0.0 are copied without mixing.
+  do k=1,nz_copy ; do II=iis,iie
+    if (ks(II,jj) <= ke(II,jj)) then ; if (k <= nzc(II,jj)) then ; if (.not.(dt(II,jj) > 0.0)) then
+      u(II,jj,k) = u0(II,jj,k) ; v(II,jj,k) = v0(II,jj,k)
+      T(II,jj,k) = T0(II,jj,k) ; Sal(II,jj,k) = S0(II,jj,k)
+      if (abs(u(II,jj,k)) < vel_under) u(II,jj,k) = 0.0
+      if (abs(v(II,jj,k)) < vel_under) v(II,jj,k) = 0.0
+    endif ; endif ; endif
+  enddo ; enddo
+
+  ! Store the squared shear and the buoyancy frequency at interfaces
+  do II=iis,iie ; if (ks(II,jj) <= ke(II,jj)) then
+    k = ks(II,jj) ; kb = ke(II,jj) ; nz = nzc(II,jj)
+    S2(II,jj,1) = 0.0 ; S2(II,jj,nz+1) = 0.0
+    if (k > 1) &
+      S2(II,jj,k) = (((u(II,jj,k)-u0(II,jj,k-1))**2) + ((v(II,jj,k)-v0(II,jj,k-1))**2)) * &
+                    (US%L_to_Z*I_dz_int(II,jj,k))**2
+    if (kb<nz) &
+      S2(II,jj,kb+1) = (((u0(II,jj,kb+1)-u(II,jj,kb))**2) + ((v0(II,jj,kb+1)-v(II,jj,kb))**2)) * &
+                       (US%L_to_Z*I_dz_int(II,jj,kb+1))**2
+
+    N2(II,jj,1) = 0.0 ; N2(II,jj,nz+1) = 0.0
+    if (k > 1) &
+      N2(II,jj,k) = max(0.0, I_dz_int(II,jj,k) * &
+        (dbuoy_dT(II,jj,k) * (T0(II,jj,k-1)-T(II,jj,k)) + dbuoy_dS(II,jj,k) * (S0(II,jj,k-1)-Sal(II,jj,k))))
+    if (kb<nz) &
+      N2(II,jj,kb+1) = max(0.0, I_dz_int(II,jj,kb+1) * &
+        (dbuoy_dT(II,jj,kb+1) * (T(II,jj,kb)-T0(II,jj,kb+1)) + &
+         dbuoy_dS(II,jj,kb+1) * (Sal(II,jj,kb)-S0(II,jj,kb+1))))
+  endif ; enddo
+  do K=k_min+1,k_max ; do II=iis,iie ; if ((K >= ks(II,jj)+1) .and. (K <= ke(II,jj))) then
+    S2(II,jj,K) = (((u(II,jj,k)-u(II,jj,k-1))**2) + ((v(II,jj,k)-v(II,jj,k-1))**2)) * &
+                  (US%L_to_Z*I_dz_int(II,jj,K))**2
+    N2(II,jj,K) = max(0.0, I_dz_int(II,jj,K) * &
+      (dbuoy_dT(II,jj,K) * (T(II,jj,k-1)-T(II,jj,k)) + dbuoy_dS(II,jj,K) * (Sal(II,jj,k-1)-Sal(II,jj,k))))
+  endif ; enddo ; enddo
+
+end subroutine calculate_projected_state_segment
+
 !> This subroutine calculates new, consistent estimates of TKE and kappa.
 pure subroutine find_kappa_tke(N2, S2, kappa_in, Idz, h_Int, dz_Int, dz_h_Int, I_L2_bdry, f2, &
                           nz, CS, GV, US, K_Q, tke, kappa, kappa_src, local_src)
