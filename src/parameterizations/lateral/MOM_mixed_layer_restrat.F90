@@ -2222,14 +2222,16 @@ subroutine mixedlayer_restrat_register_restarts(HI, GV, US, param_file, CS, rest
     allocate(CS%MLD_filtered(HI%isd:HI%ied,HI%jsd:HI%jed), source=0.)
     call register_restart_field(CS%MLD_filtered, "MLD_MLE_filtered", .false., restart_CS, &
                                 longname="Time-filtered MLD for use in MLE", &
-                                units=get_thickness_units(GV), conversion=GV%H_to_MKS)
+                                units=get_thickness_units(GV), conversion=GV%H_to_MKS, &
+                                on_device=use_Bodner)
   endif
   if (CS%MLE_MLD_decay_time2>0. .or. use_Bodner) then
     ! CS%MLD_filtered_slow is used to keep a running mean of the PBL's seasonal or winter MLD.
     allocate(CS%MLD_filtered_slow(HI%isd:HI%ied,HI%jsd:HI%jed), source=0.)
     call register_restart_field(CS%MLD_filtered_slow, "MLD_MLE_filtered_slow", .false., restart_CS, &
                                 longname="Slower time-filtered MLD for use in MLE", &
-                                units=get_thickness_units(GV), conversion=GV%H_to_MKS)
+                                units=get_thickness_units(GV), conversion=GV%H_to_MKS, &
+                                on_device=use_Bodner)
   endif
   if (use_Bodner) then
     ! CS%MLD_filtered_slow is used to keep a running mean of the PBL's seasonal or winter MLD.
@@ -2237,7 +2239,8 @@ subroutine mixedlayer_restrat_register_restarts(HI, GV, US, param_file, CS, rest
     allocate(CS%wpup_filtered(HI%isd:HI%ied,HI%jsd:HI%jed), source=0.)
     call register_restart_field(CS%wpup_filtered, "MLE_Bflux", .false., restart_CS, &
                                 longname="Time-filtered vertical turbulent momentum flux for use in MLE", &
-                                units=mom_flux_units, conversion=US%L_to_m*GV%H_to_mks*US%s_to_T**2 )
+                                units=mom_flux_units, conversion=US%L_to_m*GV%H_to_mks*US%s_to_T**2, &
+                                on_device=.true.)
   endif
 
 end subroutine mixedlayer_restrat_register_restarts

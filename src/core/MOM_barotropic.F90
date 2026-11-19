@@ -6794,7 +6794,7 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   vd(3) = var_desc("vbtav","m s-1","Time mean barotropic meridional velocity",&
                 hor_grid='v', z_grid='1')
   call register_restart_pair(CS%ubtav, CS%vbtav, vd(2), vd(3), .false., restart_CS, &
-                             conversion=US%L_T_to_m_s)
+                             conversion=US%L_T_to_m_s, on_device=.true.)
 
   if (CS%gradual_BT_ICs) then
     vd(2) = var_desc("ubt_IC", "m s-1", &

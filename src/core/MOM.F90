@@ -3777,6 +3777,10 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   if (associated(CS%tv%p_surf)) call pass_var(CS%tv%p_surf, G%Domain, halo=dynamics_stencil)
   call cpu_clock_end(id_clock_pass_init)
 
+  ! The device copies of the state were mapped before the state was initialized, perhaps from a
+  ! restart file, so bring them up to date now that the host copies and their halos are complete.
+  !$omp target update to(CS%u, CS%v, CS%h)
+
   ! Update derived thermodynamic quantities.
   if (allocated(CS%tv%SpV_avg)) then
     call calc_derived_thermo(CS%tv, CS%h, G, GV, US, halo=dynamics_stencil, debug=CS%debug)
@@ -4112,6 +4116,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     endif
     !$omp target update from(CS%ave_ssh_ibc)
     call set_initialized(CS%ave_ssh_ibc, "ave_ssh", restart_CSp)
+  else
+    ! The host copy was read from a restart file.
+    !$omp target update to(CS%ave_ssh_ibc)
   endif
   if (CS%split) deallocate(eta)
 
@@ -4308,7 +4315,8 @@ subroutine set_restart_fields(GV, US, param_file, CS, restart_CSp)
                                 "Ocean surface pressure used in EoS", "Pa", conversion=US%RL2_T2_to_Pa)
 
   call register_restart_field(CS%ave_ssh_ibc, "ave_ssh", .false., restart_CSp, &
-                              "Time average sea surface height", "meter", conversion=US%Z_to_m)
+                              "Time average sea surface height", "meter", conversion=US%Z_to_m, &
+                              on_device=.true.)
 
   ! hML is needed when using the ice shelf module
   call get_param(param_file, '', "ICE_SHELF", use_ice_shelf, default=.false., &
