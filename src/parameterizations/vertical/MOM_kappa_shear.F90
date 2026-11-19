@@ -1846,6 +1846,709 @@ pure subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, 
 
 end subroutine kappa_shear_column
 
+!> This subroutine calculates shear-driven diffusivity and TKE in the columns of a segment of a row
+!! of a block, as kappa_shear_column does for one column.  It steps through the levels and the
+!! iterations of all of the columns of the segment together, keeping the state of each column in
+!! block-sized arrays and working on the block-sized input arrays in place.  All of its work space
+!! is passed in, so it has no local arrays, and it can be called for single columns from GPU kernels.
+pure subroutine kappa_shear_segment(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, hlay, dz_lay, I_dz_int, &
+                      kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, do_col, &
+                      Idz, u_test, v_test, T_test, S_test, N2, S2, h_Int, dz_Int, dz_h_Int, kappa_src, &
+                      kappa_out, kappa_mid, tke_pred, kappa_pred, I_L2_bdry, K_Q, K_Q_tmp, local_src_avg, &
+                      tol_min, tol_max, tol_chg, dist_from_top, h_from_top, local_src, &
+                      aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, dKdQ, e1, c1, &
+                      dt_rem, dt_now, dt_test, dt_inc, dt_cps, Idtt, dt_wt, dist_from_bot, h_from_bot, &
+                      ks_kappa, ke_kappa, active, limit_dt, searching, valid_dt, refining, mixing, use_col, &
+                      a_b, d1, ks_c, ke_c, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+                      ks_src, ke_src, ks_kap, ke_kap, ks_kap_prev, ke_kap_prev, ke_tke, k_exit, &
+                      do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, going, &
+                      CS, GV, US, nib, njb, iis, iie, jj)
+  !$omp declare target
+  type(verticalGrid_type), intent(in) :: GV  !< The ocean's vertical grid structure.
+  type(unit_scale_type),   intent(in) :: US  !< A dimensional unit scaling type
+  type(Kappa_shear_CS),    intent(in) :: CS  !< The control structure returned by a previous call to
+                                             !! kappa_shear_init.  Not a pointer: see the note in
+                                             !! kappa_shear_column.
+  integer, intent(in) :: nib !< The first dimension of the block-sized arrays
+  integer, intent(in) :: njb !< The second dimension of the block-sized arrays
+  integer, value      :: iis !< The first block-local i-index of the segment
+  integer, value      :: iie !< The last block-local i-index of the segment
+  integer, value      :: jj  !< The block-local j-index of the row of the segment
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa    !< The time-weighted average of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke      !< The Turbulent Kinetic Energy per unit mass at
+                                          !! an interface [Z2 T-2 ~> m2 s-2].
+  real,         intent(in)    :: dt       !< Time increment [T ~> s].
+  integer, dimension(nib,njb), &
+                intent(in)    :: nzc      !< The number of active layers in each column.
+  real, dimension(nib,njb), &
+                intent(in)    :: f2       !< The square of the Coriolis parameter of each column [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dT !< The derivative of buoyancy with respect to temperature
+                                          !! [H L T-2 ~> m s-2 degC-1 or m s-2 kg-1 m2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dS !< The derivative of buoyancy with respect to salinity
+                                          !! [H L T-2 ~> m s-2 ppt-1 or m s-2 kg-1 m2]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: hlay     !< The layer thickness [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: dz_lay   !< The geometric layer thickness in height units [Z ~> m]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: I_dz_int !< The inverse of the distance between velocity & density
+                                          !! points above and below an interface [Z-1 ~> m-1].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_avg !< The time-weighted average of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: u        !< On entry, the zonal velocity after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! zonal velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: v        !< On entry, the meridional velocity after eliminating massless
+                                          !! layers and applying background diffusion; on exit, the
+                                          !! projected meridional velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: T        !< On entry, the temperature after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! temperature [C ~> degC]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: Sal      !< On entry, the salinity after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! salinity [S ~> ppt]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke_avg  !< The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2_init  !< The initial value of N2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2_init  !< The initial value of S2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2_mean  !< The time-weighted average of N2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2_mean  !< The time-weighted average of S2 [T-2 ~> s-2].
+  logical, dimension(nib,njb), &
+                intent(in)    :: do_col   !< True for the columns of the segment to work on
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: Idz      !< Work space for the inverse of the distance between TKE points
+                                          !! [Z-1 ~> m-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: u_test   !< Work space for temporary velocities [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: v_test   !< Work space for temporary velocities [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: T_test   !< Work space for temporary temperatures [C ~> degC]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: S_test   !< Work space for temporary salinities [S ~> ppt]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2       !< Work space for the squared buoyancy frequency at an
+                                          !! interface [T-2 ~> s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2       !< Work space for the squared shear at an interface [T-2 ~> s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: h_Int    !< Work space for the extent of a finite-volume space surrounding
+                                          !! an interface, as used in calculating kappa and TKE [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dz_Int   !< Work space for the vertical distance with the space surrounding
+                                          !! an interface, as used in calculating kappa and TKE [Z ~> m]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dz_h_Int !< Work space for the ratio of the vertical distances to the
+                                          !! thickness around an interface [Z H-1 ~> nondim or m3 kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_src !< Work space for the shear-dependent source term in the kappa
+                                          !! equation [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_out !< Work space for the kappa that results from the kappa equation
+                                          !! [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_mid !< Work space for the average of the initial and predictor
+                                          !! estimates of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke_pred !< Work space for the value of TKE from a predictor step
+                                          !! [Z2 T-2 ~> m2 s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_pred !< Work space for the value of kappa from a predictor step
+                                          !! [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: I_L2_bdry !< Work space for the inverse of the square of twice the harmonic
+                                          !! mean distance to the top and bottom boundaries [H-1 Z-1 ~> m-2 or m kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: K_Q      !< Work space for diffusivity divided by TKE [H T Z-1 ~> s or kg s m-3]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: K_Q_tmp  !< Work space for a temporary copy of diffusivity divided by TKE
+                                          !! [H T Z-1 ~> s or kg s m-3]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: local_src_avg !< Work space for the time-integral of the local source [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tol_min  !< Work space for the minimum tolerated ksrc for the corrector step
+                                          !! [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tol_max  !< Work space for the maximum tolerated ksrc for the corrector step
+                                          !! [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tol_chg  !< Work space for the tolerated kappa change integrated over a
+                                          !! timestep [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dist_from_top !< Work space for the distance from the top surface [Z ~> m]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: h_from_top !< Work space for the total thickness above an interface
+                                          !! [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: local_src !< Work space for the sum of all sources of kappa, including
+                                          !! kappa_src and sources from the elliptic term [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: aQ       !< Work space for find_kappa_tke_segment [H T-1 ~> m s-1 or kg m-2 s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: dQdz     !< Work space for find_kappa_tke_segment [Z T-2 ~> m s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dK       !< Work space for find_kappa_tke_segment [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dQ       !< Work space for find_kappa_tke_segment [Z2 T-2 ~> m2 s-2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: cQ       !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: cK       !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: I_Ld2    !< Work space for find_kappa_tke_segment [H-1 Z-1 ~> m-2 or m kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: TKE_decay !< Work space for find_kappa_tke_segment [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: k_src    !< Work space for find_kappa_tke_segment [T-1 ~> s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dQmdK    !< Work space for find_kappa_tke_segment [Z T H-1 ~> s or m3 s kg-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: dKdQ     !< Work space for find_kappa_tke_segment [H Z-1 T-1 ~> s-1 or kg m-3 s-1]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: e1       !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: c1       !< Work space for calculate_projected_state_segment [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_rem   !< Work space for the remaining time to advance the solution [T ~> s]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_now   !< Work space for the time step used in the current iteration [T ~> s]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_test  !< Work space for a time-step that is being tested for whether it
+                                          !! gives acceptably small changes in k_src [T ~> s]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_inc   !< Work space for an increment to dt_test that is being tested [T ~> s]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_cps   !< Work space for the time steps passed to
+                                          !! calculate_projected_state_segment [T ~> s]
+  real, dimension(nib,njb), &
+                intent(inout) :: Idtt     !< Work space for the inverse of the time-step being tested [T-1 ~> s-1]
+  real, dimension(nib,njb), &
+                intent(inout) :: dt_wt    !< Work space for the fractional weight of the current iteration [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: dist_from_bot !< Work space for the distance from the bottom surface [Z ~> m]
+  real, dimension(nib,njb), &
+                intent(inout) :: h_from_bot !< Work space for the total thickness below an interface
+                                          !! [H ~> m or kg m-2]
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_kappa !< Work space for the topmost interface with a nonzero kappa
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_kappa !< Work space for the bottommost interface with a nonzero kappa
+  logical, dimension(nib,njb), &
+                intent(inout) :: active   !< Work space for whether a column is still being worked on
+  logical, dimension(nib,njb), &
+                intent(inout) :: limit_dt !< Work space for whether the time step of a column is being limited
+  logical, dimension(nib,njb), &
+                intent(inout) :: searching !< Work space for whether a column is still searching for an
+                                          !! acceptable time step
+  logical, dimension(nib,njb), &
+                intent(inout) :: valid_dt !< Work space for whether all levels of a column so far exhibit
+                                          !! acceptably small changes in k_src
+  logical, dimension(nib,njb), &
+                intent(inout) :: refining !< Work space for whether the time step of a column is being refined
+  logical, dimension(nib,njb), &
+                intent(inout) :: mixing   !< Work space for whether a column has any nonzero kappa
+  logical, dimension(nib,njb), &
+                intent(inout) :: use_col  !< Work space for the columns to work on in a call
+  real, dimension(nib,njb), &
+                intent(inout) :: a_b      !< Work space for calculate_projected_state_segment [H ~> m or kg m-2]
+  real, dimension(nib,njb), &
+                intent(inout) :: d1       !< Work space for calculate_projected_state_segment [nondim]
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_c     !< Work space for calculate_projected_state_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_c     !< Work space for calculate_projected_state_segment
+  real, dimension(nib,njb), &
+                intent(inout) :: Newton_err !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: Newton_test !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: cQcomp   !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: cKcomp   !< Work space for find_kappa_tke_segment [nondim]
+  real, dimension(nib,njb), &
+                intent(inout) :: eden2    !< Work space for find_kappa_tke_segment [H Z-2 ~> m-1 or kg m-4]
+  real, dimension(nib,njb), &
+                intent(inout) :: ome      !< Work space for find_kappa_tke_segment [nondim]
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_src   !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_src   !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_kap   !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_kap   !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ks_kap_prev !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_kap_prev !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: ke_tke   !< Work space for find_kappa_tke_segment
+  integer, dimension(nib,njb), &
+                intent(inout) :: k_exit   !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: do_Newton !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: abort_Newton !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: within_tolerance !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: check_Newton !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: iterating !< Work space for find_kappa_tke_segment
+  logical, dimension(nib,njb), &
+                intent(inout) :: going    !< Work space for whether a column is still in a loop that the
+                                          !! column version leaves early
+
+  ! Local variables
+  real :: K_src_test    ! The shear-dependent source term in the kappa equation with a time step that is
+                        ! being tested [T-1 ~> s-1]
+  real :: Ri_crit       !   The critical shear Richardson number for shear-
+                        ! driven mixing [nondim]. The theoretical value is 0.25.
+  real :: k0dt          ! The background diffusivity times the timestep [H Z ~> m2 or kg m-1].
+  real :: I_lz_rescale_sqr ! The inverse of a rescaling factor for L2_bdry (Lz) squared [nondim].
+  real :: tol_dksrc     ! Tolerance for the change in the kappa source within an iteration
+                        ! relative to the local source [nondim].  This must be greater than 1.
+  real :: tol2          ! The tolerance for the change in the kappa source within an iteration
+                        ! relative to the average local source over previous iterations [nondim].
+  real :: tol_dksrc_low ! The tolerance for the fractional decrease in ksrc
+                        ! within an iteration [nondim].  0 < tol_dksrc_low < 1.
+  real :: Norm          ! A factor that normalizes two weights to 1 [H-2 ~> m-2 or m4 kg-2].
+  real :: wt_a          ! The fraction of a layer thickness identified with the interface
+                        ! above a layer [nondim]
+  real :: wt_b          ! The fraction of a layer thickness identified with the interface
+                        ! below a layer [nondim]
+  logical :: any_col    ! True if any column of the segment is worked on in the next step
+  integer :: dt_refinements ! The number of 2-fold refinements that will be used
+                           ! to estimate the maximum permitted time step.  I.e.,
+                           ! the resolution is 1/2^dt_refinements.
+  integer :: nz_max     ! The largest number of layers of the columns worked on
+  integer :: k_lo, k_hi ! The range of interfaces worked on by any column of the segment in a loop
+  integer :: II, k, nz, itt, itt_dt
+
+  Ri_crit = CS%Rino_crit
+  k0dt = dt*CS%kappa_0
+
+  I_lz_rescale_sqr = 1.0 ; if (CS%lz_rescale > 0) I_lz_rescale_sqr = 1/(CS%lz_rescale*CS%lz_rescale)
+
+  tol_dksrc = CS%kappa_src_max_chg
+  if (tol_dksrc == 10.0) then
+    ! This is equivalent to the expression below, but avoids changes at roundoff for the default value.
+    tol_dksrc_low = 0.95
+  else
+    tol_dksrc_low = (tol_dksrc - 0.5)/tol_dksrc
+  endif
+  tol2 = 2.0*CS%kappa_tol_err
+  dt_refinements = 5 ! Selected so that 1/2^dt_refinements < 1-tol_dksrc_low
+
+  nz_max = 0
+  do II=iis,iie
+    active(II,jj) = do_col(II,jj)
+    if (do_col(II,jj)) nz_max = max(nz_max, nzc(II,jj))
+  enddo
+
+  ! Set up Idz as the inverse of layer thicknesses.
+  do k=1,nz_max ; do II=iis,iie ; if (do_col(II,jj)) then ; if (k <= nzc(II,jj)) then
+    Idz(II,jj,k) = 1.0 / dz_lay(II,jj,k)
+  endif ; endif ; enddo ; enddo
+
+  do II=iis,iie ; if (do_col(II,jj)) then
+    dist_from_top(II,jj,1) = 0.0 ; h_from_top(II,jj,1) = 0.0
+  endif ; enddo
+  do K=2,nz_max ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)) then
+    dist_from_top(II,jj,K) = dist_from_top(II,jj,K-1) + dz_lay(II,jj,K-1)
+    h_from_top(II,jj,K) = h_from_top(II,jj,K-1) + hlay(II,jj,K-1)
+  endif ; endif ; enddo ; enddo
+
+  ! Find the inverse of the squared distances from the boundaries.
+  do II=iis,iie ; if (do_col(II,jj)) then
+    dist_from_bot(II,jj) = 0.0 ; h_from_bot(II,jj) = 0.0
+  endif ; enddo
+  do K=nz_max,2,-1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)) then
+    dist_from_bot(II,jj) = dist_from_bot(II,jj) + dz_lay(II,jj,K)
+    h_from_bot(II,jj) = h_from_bot(II,jj) + hlay(II,jj,K)
+    ! Find the inverse of the squared distances from the boundaries,
+    I_L2_bdry(II,jj,K) = ((dist_from_top(II,jj,K) + dist_from_bot(II,jj)) * &
+                          (h_from_top(II,jj,K) + h_from_bot(II,jj))) / &
+                         ((dist_from_top(II,jj,K) * dist_from_bot(II,jj)) * &
+                          (h_from_top(II,jj,K) * h_from_bot(II,jj)))
+    ! reduce the distance by a factor of "lz_rescale"
+    I_L2_bdry(II,jj,K) = I_lz_rescale_sqr*I_L2_bdry(II,jj,K)
+  endif ; endif ; enddo ; enddo
+
+  ! This uses half the harmonic mean of thicknesses to provide two estimates
+  ! of the boundary between cells, and the inverse of the harmonic mean to
+  ! weight the two estimates.  The net effect is that interfaces around thin
+  ! layers have thin cells, and the total thickness adds up properly.
+  ! The top- and bottom- interfaces have zero thickness, consistent with
+  ! adding additional zero thickness layers.
+  do II=iis,iie ; if (do_col(II,jj)) then
+    h_Int(II,jj,1) = 0.0 ; h_Int(II,jj,2) = hlay(II,jj,1)
+    dz_Int(II,jj,1) = 0.0 ; dz_Int(II,jj,2) = dz_lay(II,jj,1)
+  endif ; enddo
+  do K=2,nz_max-1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)-1) then
+    Norm = 1.0 / (hlay(II,jj,K)*(hlay(II,jj,K-1)+hlay(II,jj,K+1)) + 2.0*hlay(II,jj,K-1)*hlay(II,jj,K+1))
+    wt_a = ((hlay(II,jj,K)+hlay(II,jj,K+1)) * hlay(II,jj,K-1)) * Norm
+    wt_b = ((hlay(II,jj,K-1)+hlay(II,jj,K)) * hlay(II,jj,K+1)) * Norm
+    h_Int(II,jj,K) = h_Int(II,jj,K) + hlay(II,jj,K) * wt_a
+    h_Int(II,jj,K+1) = hlay(II,jj,K) * wt_b
+    dz_Int(II,jj,K) = dz_Int(II,jj,K) + dz_lay(II,jj,K) * wt_a
+    dz_Int(II,jj,K+1) = dz_lay(II,jj,K) * wt_b
+  endif ; endif ; enddo ; enddo
+  do II=iis,iie ; if (do_col(II,jj)) then
+    nz = nzc(II,jj)
+    h_Int(II,jj,nz) = h_Int(II,jj,nz) + hlay(II,jj,nz) ; h_Int(II,jj,nz+1) = 0.0
+    dz_Int(II,jj,nz) = dz_Int(II,jj,nz) + dz_lay(II,jj,nz) ; dz_Int(II,jj,nz+1) = 0.0
+  endif ; enddo
+
+  if (GV%Boussinesq) then
+    do K=1,nz_max+1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      dz_h_Int(II,jj,K) = GV%H_to_Z
+    endif ; endif ; enddo ; enddo
+  else
+    ! Find an effective average specific volume around an interface.
+    do K=1,nz_max+1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      dz_h_Int(II,jj,K) = 0.0
+    endif ; endif ; enddo ; enddo
+    do II=iis,iie ; if (do_col(II,jj)) then
+      if (hlay(II,jj,1) > 0.0) dz_h_Int(II,jj,1) = dz_lay(II,jj,1) / hlay(II,jj,1)
+    endif ; enddo
+    do K=2,nz_max+1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      if (h_Int(II,jj,K) > 0.0) then
+        dz_h_Int(II,jj,K) = dz_Int(II,jj,K) / h_Int(II,jj,K)
+      else
+        dz_h_Int(II,jj,K) = dz_h_Int(II,jj,K-1)
+      endif
+    endif ; endif ; enddo ; enddo
+  endif
+
+  ! This call just calculates N2 and S2.
+  do II=iis,iie ; if (do_col(II,jj)) then
+    dt_cps(II,jj) = 0.0
+  endif ; enddo
+  call calculate_projected_state_segment(kappa, u, v, T, Sal, dt_cps, nzc, hlay, I_dz_int, dbuoy_dT, dbuoy_dS, &
+                   CS%vel_underflow, u, v, T, Sal, N2, S2, do_col, c1, a_b, d1, ks_c, ke_c, &
+                   GV, US, nib, njb, iis, iie, jj)
+  do K=1,nz_max+1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+    N2_init(II,jj,K) = N2(II,jj,K)
+    S2_init(II,jj,K) = S2(II,jj,K)
+  endif ; endif ; enddo ; enddo
+
+! ----------------------------------------------------
+! Iterate
+! ----------------------------------------------------
+  do II=iis,iie ; if (do_col(II,jj)) then
+    dt_rem(II,jj) = dt
+  endif ; enddo
+  do K=1,nz_max+1 ; do II=iis,iie ; if (do_col(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+    K_Q(II,jj,K) = 0.0
+    kappa_avg(II,jj,K) = 0.0 ; tke_avg(II,jj,K) = 0.0
+    N2_mean(II,jj,K) = 0.0 ; S2_mean(II,jj,K) = 0.0
+    local_src_avg(II,jj,K) = 0.0
+    ! Use the grid spacings to scale errors in the source.
+    if ( h_Int(II,jj,K) > 0.0 ) &
+      local_src_avg(II,jj,K) = 0.1 * k0dt * I_dz_int(II,jj,K) / h_Int(II,jj,K)
+  endif ; endif ; enddo ; enddo
+
+  do itt=1,CS%max_KS_it
+    any_col = .false.
+    do II=iis,iie ; if (active(II,jj)) any_col = .true. ; enddo
+    if (.not.any_col) exit
+
+! ----------------------------------------------------
+! Calculate new values of u, v, rho, N^2 and S.
+! ----------------------------------------------------
+
+    call find_kappa_tke_segment(N2, S2, kappa, Idz, h_Int, dz_Int, dz_h_Int, I_L2_bdry, f2, nzc, CS, GV, US, &
+                K_Q, tke, kappa_out, active, aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, dKdQ, e1, &
+                Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, ks_src, ke_src, ks_kap, ke_kap, ks_kap_prev, &
+                ke_kap_prev, ke_tke, k_exit, do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, &
+                going, nib, njb, iis, iie, jj, kappa_src=kappa_src, local_src=local_src)
+
+    ! Determine the range of non-zero values of kappa_out.
+    do II=iis,iie
+      going(II,jj) = active(II,jj)
+      if (active(II,jj)) then
+        ks_kappa(II,jj) = GV%ke+1 ; ke_kappa(II,jj) = 0
+      endif
+    enddo
+    do K=2,nz_max
+      any_col = .false.
+      do II=iis,iie ; if (going(II,jj)) any_col = .true. ; enddo
+      if (.not.any_col) exit
+      do II=iis,iie ; if (going(II,jj)) then ; if (K <= nzc(II,jj)) then
+        if (kappa_out(II,jj,K) > 0.0) then
+          ks_kappa(II,jj) = K ; going(II,jj) = .false.
+        endif
+      endif ; endif ; enddo
+    enddo
+    k_hi = 0
+    do II=iis,iie
+      going(II,jj) = .false.
+      if (active(II,jj)) going(II,jj) = (ks_kappa(II,jj) <= nzc(II,jj))
+      if (going(II,jj)) k_hi = max(k_hi, nzc(II,jj))
+    enddo
+    do k=k_hi,2,-1
+      any_col = .false.
+      do II=iis,iie ; if (going(II,jj)) any_col = .true. ; enddo
+      if (.not.any_col) exit
+      do II=iis,iie ; if (going(II,jj) .and. (k >= ks_kappa(II,jj))) then ; if (k <= nzc(II,jj)) then
+        if (kappa_out(II,jj,K) > 0.0) then
+          ke_kappa(II,jj) = K ; going(II,jj) = .false.
+        endif
+      endif ; endif ; enddo
+    enddo
+    do II=iis,iie ; if (active(II,jj)) then
+      if (ke_kappa(II,jj) == nzc(II,jj)) kappa_out(II,jj,nzc(II,jj)+1) = 0.0
+    endif ; enddo
+
+    ! Determine how long to use this value of kappa (dt_now).
+    do II=iis,iie
+      limit_dt(II,jj) = .false.
+      if (active(II,jj)) then
+        if ((ke_kappa(II,jj) < ks_kappa(II,jj)) .or. (itt==CS%max_KS_it)) then
+          dt_now(II,jj) = dt_rem(II,jj)
+        else
+          ! Limit dt_now so that |k_src(k)-kappa_src(k)| < tol * local_src(k)
+          limit_dt(II,jj) = .true.
+          dt_test(II,jj) = dt_rem(II,jj)
+        endif
+      endif
+      searching(II,jj) = limit_dt(II,jj)
+    enddo
+    do K=2,nz_max ; do II=iis,iie ; if (limit_dt(II,jj)) then ; if (K <= nzc(II,jj)) then
+      tol_max(II,jj,K) = kappa_src(II,jj,K) + tol_dksrc * local_src(II,jj,K)
+      tol_min(II,jj,K) = kappa_src(II,jj,K) - tol_dksrc_low * local_src(II,jj,K)
+      tol_chg(II,jj,K) = tol2 * local_src_avg(II,jj,K)
+    endif ; endif ; enddo ; enddo
+
+    do itt_dt=1,(CS%max_KS_it+1-itt)/2
+      !   The maximum number of times that the time-step is halved in
+      ! seeking an acceptable timestep is reduced with each iteration,
+      ! so that as the maximum number of iterations is approached, the
+      ! whole remaining timestep is used.  Typically, an acceptable
+      ! timestep is found long before the minimum is reached, so the
+      ! value of max_KS_it may be unimportant, especially if it is large
+      ! enough.
+      any_col = .false.
+      do II=iis,iie ; if (searching(II,jj)) then
+        dt_cps(II,jj) = 0.5*dt_test(II,jj) ; any_col = .true.
+      endif ; enddo
+      if (.not.any_col) exit
+      call calculate_projected_state_segment(kappa_out, u, v, T, Sal, dt_cps, nzc, hlay, I_dz_int, &
+                   dbuoy_dT, dbuoy_dS, CS%vel_underflow, u_test, v_test, T_test, S_test, N2, S2, searching, &
+                   c1, a_b, d1, ks_c, ke_c, GV, US, nib, njb, iis, iie, jj, ks_int=ks_kappa, ke_int=ke_kappa)
+      do II=iis,iie
+        going(II,jj) = searching(II,jj)
+        if (searching(II,jj)) then
+          valid_dt(II,jj) = .true.
+          Idtt(II,jj) = 1.0 / dt_test(II,jj)
+        endif
+      enddo
+      k_lo = nz_max+1 ; k_hi = 0
+      do II=iis,iie ; if (going(II,jj)) then
+        k_lo = min(k_lo, max(ks_kappa(II,jj)-1,2)) ; k_hi = max(k_hi, min(ke_kappa(II,jj)+1,nzc(II,jj)))
+      endif ; enddo
+      do K=k_lo,k_hi
+        any_col = .false.
+        do II=iis,iie ; if (going(II,jj)) any_col = .true. ; enddo
+        if (.not.any_col) exit
+        do II=iis,iie
+          if (going(II,jj) .and. (K >= max(ks_kappa(II,jj)-1,2)) .and. (K <= ke_kappa(II,jj)+1)) then
+            if (K <= nzc(II,jj)) then
+              if (N2(II,jj,K) < Ri_crit * S2(II,jj,K)) then ! Equivalent to Ri < Ri_crit.
+                K_src_test = (2.0 * CS%Shearmix_rate * sqrt(S2(II,jj,K))) * &
+                    ((Ri_crit*S2(II,jj,K) - N2(II,jj,K)) / (Ri_crit*S2(II,jj,K) + CS%FRi_curvature*N2(II,jj,K)))
+                if (CS%restrictive_tolerance_check) then
+                  if ((K_src_test > min(tol_max(II,jj,K), kappa_src(II,jj,K) + Idtt(II,jj)*tol_chg(II,jj,K))) .or. &
+                      (K_src_test < max(tol_min(II,jj,K), kappa_src(II,jj,K) - Idtt(II,jj)*tol_chg(II,jj,K)))) then
+                    valid_dt(II,jj) = .false. ; going(II,jj) = .false.
+                  endif
+                else
+                  if ((K_src_test > max(tol_max(II,jj,K), kappa_src(II,jj,K) + Idtt(II,jj)*tol_chg(II,jj,K))) .or. &
+                      (K_src_test < min(tol_min(II,jj,K), kappa_src(II,jj,K) - Idtt(II,jj)*tol_chg(II,jj,K)))) then
+                    valid_dt(II,jj) = .false. ; going(II,jj) = .false.
+                  endif
+                endif
+              else
+                if (0.0 < min(tol_min(II,jj,K), kappa_src(II,jj,K) - Idtt(II,jj)*tol_chg(II,jj,K))) then
+                  valid_dt(II,jj) = .false. ; going(II,jj) = .false.
+                endif
+              endif
+            endif
+          endif
+        enddo
+      enddo
+
+      do II=iis,iie ; if (searching(II,jj)) then
+        if (valid_dt(II,jj)) then
+          searching(II,jj) = .false.
+        else
+          dt_test(II,jj) = 0.5*dt_test(II,jj)
+        endif
+      endif ; enddo
+    enddo
+    do II=iis,iie
+      refining(II,jj) = .false.
+      if (limit_dt(II,jj)) then
+        if ((dt_test(II,jj) < dt_rem(II,jj)) .and. valid_dt(II,jj)) then
+          dt_inc(II,jj) = 0.5*dt_test(II,jj)
+          refining(II,jj) = .true.
+        else
+          dt_inc(II,jj) = 0.0
+        endif
+      endif
+    enddo
+    any_col = .false.
+    do II=iis,iie ; if (refining(II,jj)) any_col = .true. ; enddo
+    if (any_col) then ; do itt_dt=1,dt_refinements
+      do II=iis,iie ; if (refining(II,jj)) then
+        dt_cps(II,jj) = 0.5*(dt_test(II,jj)+dt_inc(II,jj))
+      endif ; enddo
+      call calculate_projected_state_segment(kappa_out, u, v, T, Sal, dt_cps, nzc, hlay, I_dz_int, &
+                   dbuoy_dT, dbuoy_dS, CS%vel_underflow, u_test, v_test, T_test, S_test, N2, S2, refining, &
+                   c1, a_b, d1, ks_c, ke_c, GV, US, nib, njb, iis, iie, jj, ks_int=ks_kappa, ke_int=ke_kappa)
+      do II=iis,iie
+        going(II,jj) = refining(II,jj)
+        if (refining(II,jj)) then
+          valid_dt(II,jj) = .true.
+          Idtt(II,jj) = 1.0 / (dt_test(II,jj)+dt_inc(II,jj))
+        endif
+      enddo
+      k_lo = nz_max+1 ; k_hi = 0
+      do II=iis,iie ; if (going(II,jj)) then
+        k_lo = min(k_lo, max(ks_kappa(II,jj)-1,2)) ; k_hi = max(k_hi, min(ke_kappa(II,jj)+1,nzc(II,jj)))
+      endif ; enddo
+      do K=k_lo,k_hi
+        any_col = .false.
+        do II=iis,iie ; if (going(II,jj)) any_col = .true. ; enddo
+        if (.not.any_col) exit
+        do II=iis,iie
+          if (going(II,jj) .and. (K >= max(ks_kappa(II,jj)-1,2)) .and. (K <= ke_kappa(II,jj)+1)) then
+            if (K <= nzc(II,jj)) then
+              if (N2(II,jj,K) < Ri_crit * S2(II,jj,K)) then ! Equivalent to Ri < Ri_crit.
+                K_src_test = (2.0 * CS%Shearmix_rate * sqrt(S2(II,jj,K))) * &
+                    ((Ri_crit*S2(II,jj,K) - N2(II,jj,K)) / (Ri_crit*S2(II,jj,K) + CS%FRi_curvature*N2(II,jj,K)))
+                if ((K_src_test > max(tol_max(II,jj,K), kappa_src(II,jj,K) + Idtt(II,jj)*tol_chg(II,jj,K))) .or. &
+                    (K_src_test < min(tol_min(II,jj,K), kappa_src(II,jj,K) - Idtt(II,jj)*tol_chg(II,jj,K)))) then
+                  valid_dt(II,jj) = .false. ; going(II,jj) = .false.
+                endif
+              else
+                if (0.0 < min(tol_min(II,jj,K), kappa_src(II,jj,K) - Idtt(II,jj)*tol_chg(II,jj,K))) then
+                  valid_dt(II,jj) = .false. ; going(II,jj) = .false.
+                endif
+              endif
+            endif
+          endif
+        enddo
+      enddo
+
+      do II=iis,iie ; if (refining(II,jj)) then
+        if (valid_dt(II,jj)) dt_test(II,jj) = dt_test(II,jj) + dt_inc(II,jj)
+        dt_inc(II,jj) = 0.5*dt_inc(II,jj)
+      endif ; enddo
+    enddo ; endif
+
+    do II=iis,iie ; if (limit_dt(II,jj)) then
+      dt_now(II,jj) = min(dt_test(II,jj)*(1.0+CS%kappa_tol_err)+dt_inc(II,jj), dt_rem(II,jj))
+    endif ; enddo
+    do K=2,nz_max ; do II=iis,iie ; if (limit_dt(II,jj)) then ; if (K <= nzc(II,jj)) then
+      local_src_avg(II,jj,K) = local_src_avg(II,jj,K) + dt_now(II,jj) * local_src(II,jj,K)
+    endif ; endif ; enddo ; enddo
+
+    ! The state has already been projected forward. Now find new values of kappa.
+
+    do II=iis,iie
+      mixing(II,jj) = .false.
+      if (active(II,jj)) mixing(II,jj) = .not.(ke_kappa(II,jj) < ks_kappa(II,jj))
+    enddo
+
+    ! There is no mixing now in the columns without any nonzero kappa, and will not be again.
+    k_hi = 0
+    do II=iis,iie ; if (active(II,jj) .and. .not.mixing(II,jj)) then
+      dt_wt(II,jj) = dt_rem(II,jj) / dt ; dt_rem(II,jj) = 0.0
+      k_hi = max(k_hi, nzc(II,jj)+1)
+    endif ; enddo
+    do K=1,k_hi ; do II=iis,iie
+      if (active(II,jj) .and. .not.mixing(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+        kappa_mid(II,jj,K) = 0.0
+        ! This would be here but does nothing.
+        ! kappa_avg(K) = kappa_avg(K) + kappa_mid(K)*dt_wt
+        tke_avg(II,jj,K) = tke_avg(II,jj,K) + dt_wt(II,jj)*tke(II,jj,K)
+      endif ; endif
+    enddo ; enddo
+
+    call calculate_projected_state_segment(kappa_out, u, v, T, Sal, dt_now, nzc, hlay, I_dz_int, &
+                 dbuoy_dT, dbuoy_dS, CS%vel_underflow, u_test, v_test, T_test, S_test, N2, S2, mixing, &
+                 c1, a_b, d1, ks_c, ke_c, GV, US, nib, njb, iis, iie, jj, ks_int=ks_kappa, ke_int=ke_kappa)
+
+    do K=1,nz_max+1 ; do II=iis,iie ; if (mixing(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      K_Q_tmp(II,jj,K) = K_Q(II,jj,K)
+    endif ; endif ; enddo ; enddo
+    call find_kappa_tke_segment(N2, S2, kappa_out, Idz, h_Int, dz_Int, dz_h_Int, I_L2_bdry, f2, nzc, CS, GV, US, &
+                K_Q_tmp, tke_pred, kappa_pred, mixing, aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, &
+                dKdQ, e1, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, ks_src, ke_src, ks_kap, ke_kap, &
+                ks_kap_prev, ke_kap_prev, ke_tke, k_exit, do_Newton, abort_Newton, within_tolerance, &
+                check_Newton, iterating, going, nib, njb, iis, iie, jj)
+
+    do II=iis,iie ; if (mixing(II,jj)) then
+      ks_kappa(II,jj) = GV%ke+1 ; ke_kappa(II,jj) = 0
+    endif ; enddo
+    do K=1,nz_max+1 ; do II=iis,iie ; if (mixing(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      kappa_mid(II,jj,K) = 0.5*(kappa_out(II,jj,K) + kappa_pred(II,jj,K))
+      if ((kappa_mid(II,jj,K) > 0.0) .and. (K<ks_kappa(II,jj))) ks_kappa(II,jj) = K
+      if (kappa_mid(II,jj,K) > 0.0) ke_kappa(II,jj) = K
+    endif ; endif ; enddo ; enddo
+
+    call calculate_projected_state_segment(kappa_mid, u, v, T, Sal, dt_now, nzc, hlay, I_dz_int, &
+                 dbuoy_dT, dbuoy_dS, CS%vel_underflow, u_test, v_test, T_test, S_test, N2, S2, mixing, &
+                 c1, a_b, d1, ks_c, ke_c, GV, US, nib, njb, iis, iie, jj, ks_int=ks_kappa, ke_int=ke_kappa)
+
+    call find_kappa_tke_segment(N2, S2, kappa_out, Idz, h_Int, dz_Int, dz_h_Int, I_L2_bdry, f2, nzc, CS, GV, US, &
+                K_Q, tke_pred, kappa_pred, mixing, aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, &
+                dKdQ, e1, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, ks_src, ke_src, ks_kap, ke_kap, &
+                ks_kap_prev, ke_kap_prev, ke_tke, k_exit, do_Newton, abort_Newton, within_tolerance, &
+                check_Newton, iterating, going, nib, njb, iis, iie, jj)
+
+    do II=iis,iie ; if (mixing(II,jj)) then
+      dt_wt(II,jj) = dt_now(II,jj) / dt ; dt_rem(II,jj) = dt_rem(II,jj) - dt_now(II,jj)
+    endif ; enddo
+    do K=1,nz_max+1 ; do II=iis,iie ; if (mixing(II,jj)) then ; if (K <= nzc(II,jj)+1) then
+      kappa_mid(II,jj,K) = 0.5*(kappa_out(II,jj,K) + kappa_pred(II,jj,K))
+      kappa_avg(II,jj,K) = kappa_avg(II,jj,K) + kappa_mid(II,jj,K)*dt_wt(II,jj)
+      tke_avg(II,jj,K) = tke_avg(II,jj,K) + dt_wt(II,jj)*0.5*(tke_pred(II,jj,K) + tke(II,jj,K))
+      N2_mean(II,jj,K) = N2_mean(II,jj,K) + dt_wt(II,jj)*N2(II,jj,K)
+      S2_mean(II,jj,K) = S2_mean(II,jj,K) + dt_wt(II,jj)*S2(II,jj,K)
+      kappa(II,jj,K) = kappa_pred(II,jj,K) ! First guess for the next iteration.
+    endif ; endif ; enddo ; enddo
+
+    ! Update the values of u, v, T, Sal, N2, and S2 for the next iteration.
+    do II=iis,iie
+      use_col(II,jj) = .false.
+      if (active(II,jj)) use_col(II,jj) = (dt_rem(II,jj) > 0.0)
+    enddo
+    call calculate_projected_state_segment(kappa_mid, u, v, T, Sal, dt_now, nzc, hlay, I_dz_int, &
+                 dbuoy_dT, dbuoy_dS, CS%vel_underflow, u, v, T, Sal, N2, S2, use_col, &
+                 c1, a_b, d1, ks_c, ke_c, GV, US, nib, njb, iis, iie, jj)
+
+    do II=iis,iie ; if (active(II,jj)) then
+      if (dt_rem(II,jj) <= 0.0) active(II,jj) = .false.
+    endif ; enddo
+  enddo ! end itt loop
+
+end subroutine kappa_shear_segment
+
 !>   This subroutine calculates the velocities, temperature and salinity that
 !! the water column will have after mixing for dt with diffusivities kappa.  It
 !! may also calculate the projected buoyancy frequency and shear.
