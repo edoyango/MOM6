@@ -975,7 +975,8 @@ subroutine calc_Visbeck_coeffs_old(h, slope_x, slope_y, N2_u, N2_v, G, GV, US, C
   enddo
 
   if (associated(OBC) .and. CS%OBC_friendly) then
-   ! Store the direction of any OBC faces.
+   ! Store the direction of any OBC faces.  They are set on the host and then copied to the device.
+    OBC_dir_u(:,:) = 0 ; OBC_dir_v(:,:) = 0
    !$OMP parallel do default(shared)
     do j=js-1,je+1 ; do I=is-1,ie ; if (OBC%segnum_u(I,j) /= 0) then
       if (OBC%segnum_u(I,j) > 0) OBC_dir_u(I,j) = 1   !  OBC_DIRECTION_E
@@ -986,6 +987,7 @@ subroutine calc_Visbeck_coeffs_old(h, slope_x, slope_y, N2_u, N2_v, G, GV, US, C
       if (OBC%segnum_v(i,J) > 0) OBC_dir_v(i,J) = 1   ! OBC_DIRECTION_N
       if (OBC%segnum_v(i,J) < 0) OBC_dir_v(i,J) = -1  !  OBC_DIRECTION_S
     endif ; enddo ; enddo
+    !$omp target update to(OBC_dir_u, OBC_dir_v)
 
     ! Use the masked product of the 4 (or 2) thicknesses around a velocity-point interface for weights.
     !$OMP parallel do default(shared)
