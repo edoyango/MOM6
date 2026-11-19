@@ -753,7 +753,12 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
                 ! velocity, and density equations [H ~> m or kg m-2]
     c1_col      ! c1 is used in the tridiagonal (and similar) solvers [nondim].
 
-  real :: f2    ! The squared Coriolis parameter of each column [T-2 ~> s-2].
+  real, dimension(merge(G%iecB-(G%isc-1)+2, CS%niblock, CS%niblock==0), &
+                  merge(G%jecB-(G%jsc-1)+2, CS%njblock, CS%njblock==0)) :: &
+    f2_2d       ! The squared Coriolis parameter of each column [T-2 ~> s-2].
+  logical, dimension(merge(G%iecB-(G%isc-1)+2, CS%niblock, CS%niblock==0), &
+                     merge(G%jecB-(G%jsc-1)+2, CS%njblock, CS%njblock==0)) :: &
+    do_col      ! True for the columns with any open adjacent velocity points
   real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
 
   real :: dz_in_lay     !   The running sum of the thickness in a layer [H ~> m or kg m-2]
@@ -827,7 +832,7 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   !$omp &                            Idz, h_lay, dz_lay, u0xdz, v0xdz, T0xdz, S0xdz, &
   !$omp &                            kappa, tke, kappa_avg, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
   !$omp &                            I_dz_int, u, v, T, Sal, pressure, T_int, Sal_int, dbuoy_dT, dbuoy_dS, &
-  !$omp &                            dSpV_dT, dSpV_dS, rho_int, a1_col, c1_col, kc, kf, nzc_2d)
+  !$omp &                            dSpV_dT, dSpV_dS, rho_int, a1_col, c1_col, kc, kf, nzc_2d, f2_2d, do_col)
 
   if ((CS%id_N2_init>0) .or. CS%debug) diag_N2_init(:,:,:) = 0.0
   if ((CS%id_S2_init>0) .or. CS%debug) diag_S2_init(:,:,:) = 0.0
@@ -1139,17 +1144,21 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   !---------------------------------------
   ! Work on each column.
   !---------------------------------------
-    do concurrent( JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(nzc, f2, I, J))
+    do concurrent( JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(I, J))
       I = IsbB + II - 1 ; J = JsbB + JJ - 1
-      if ((G%mask2dCu(I,j) + G%mask2dCu(I,j+1)) + &
-          (G%mask2dCv(i,J) + G%mask2dCv(i+1,J)) > 0.0) then
-        nzc = nzc_2d(II,JJ)
-        f2 = G%Coriolis2Bu(I,J)
+      do_col(II,JJ) = ((G%mask2dCu(I,j) + G%mask2dCu(I,j+1)) + &
+                       (G%mask2dCv(i,J) + G%mask2dCv(i+1,J)) > 0.0)
+      f2_2d(II,JJ) = G%Coriolis2Bu(I,J)
+    enddo
 
-        call kappa_shear_column(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, &
-                                h_lay, dz_lay, I_dz_int, kappa_avg, u, v, T, Sal, &
-                                tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
-                                CS, GV, US, nIIB, nJJB, II, JJ)
+    call kappa_shear_block(kappa, tke, dt, nzc_2d, f2_2d, do_col, dbuoy_dT, dbuoy_dS, h_lay, dz_lay, &
+                           I_dz_int, kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
+                           CS, GV, US, nIIB, nJJB, IIe, JJe)
+
+    do concurrent( JJ=1:JJe, II=1:IIe ) DO_LOCALITY(local(nzc, I, J))
+      I = IsbB + II - 1 ; J = JsbB + JJ - 1
+      if (do_col(II,JJ)) then
+        nzc = nzc_2d(II,JJ)
 
       ! Extrapolate from the vertically reduced grid back to the original layers.
         if (nz == nzc) then
@@ -1361,7 +1370,7 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
   !$omp &                            Idz, h_lay, dz_lay, u0xdz, v0xdz, T0xdz, S0xdz, &
   !$omp &                            kappa, tke, kappa_avg, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
   !$omp &                            I_dz_int, u, v, T, Sal, pressure, T_int, Sal_int, dbuoy_dT, dbuoy_dS, &
-  !$omp &                            dSpV_dT, dSpV_dS, rho_int, a1_col, c1_col, kc, kf, nzc_2d)
+  !$omp &                            dSpV_dT, dSpV_dS, rho_int, a1_col, c1_col, kc, kf, nzc_2d, f2_2d, do_col)
 
 end subroutine Calc_kappa_shear_vertex
 
@@ -1847,6 +1856,205 @@ pure subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, 
   enddo
 
 end subroutine kappa_shear_column
+
+!> This subroutine calculates shear-driven diffusivity and TKE in the columns of a block, as
+!! kappa_shear_column does for each column, by calling kappa_shear_segment for segments of the
+!! rows of the block in a single loop that is offloaded to GPUs.  It holds the work space of
+!! kappa_shear_segment in block-sized arrays, so the memory it uses scales with the block size.
+subroutine kappa_shear_block(kappa, tke, dt, nzc, f2, do_col, dbuoy_dT, dbuoy_dS, hlay, dz_lay, I_dz_int, &
+                             kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
+                             CS, GV, US, nib, njb, iie, jje)
+  type(verticalGrid_type), intent(in) :: GV  !< The ocean's vertical grid structure.
+  type(unit_scale_type),   intent(in) :: US  !< A dimensional unit scaling type
+  type(Kappa_shear_CS),    intent(in) :: CS  !< The control structure returned by a previous call to
+                                             !! kappa_shear_init.
+  integer, intent(in) :: nib !< The first dimension of the block-sized arrays
+  integer, intent(in) :: njb !< The second dimension of the block-sized arrays
+  integer, intent(in) :: iie !< The number of columns of the block to work on in the first dimension
+  integer, intent(in) :: jje !< The number of columns of the block to work on in the second dimension
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa    !< The time-weighted average of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke      !< The Turbulent Kinetic Energy per unit mass at
+                                          !! an interface [Z2 T-2 ~> m2 s-2].
+  real,         intent(in)    :: dt       !< Time increment [T ~> s].
+  integer, dimension(nib,njb), &
+                intent(in)    :: nzc      !< The number of active layers in each column.
+  real, dimension(nib,njb), &
+                intent(in)    :: f2       !< The square of the Coriolis parameter of each column [T-2 ~> s-2].
+  logical, dimension(nib,njb), &
+                intent(in)    :: do_col   !< True for the columns of the block to work on
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dT !< The derivative of buoyancy with respect to temperature
+                                          !! [H L T-2 ~> m s-2 degC-1 or m s-2 kg-1 m2]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: dbuoy_dS !< The derivative of buoyancy with respect to salinity
+                                          !! [H L T-2 ~> m s-2 ppt-1 or m s-2 kg-1 m2]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: hlay     !< The layer thickness [H ~> m or kg m-2]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(in)    :: dz_lay   !< The geometric layer thickness in height units [Z ~> m]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(in)    :: I_dz_int !< The inverse of the distance between velocity & density
+                                          !! points above and below an interface [Z-1 ~> m-1].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: kappa_avg !< The time-weighted average of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: u        !< On entry, the zonal velocity after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! zonal velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: v        !< On entry, the meridional velocity after eliminating massless
+                                          !! layers and applying background diffusion; on exit, the
+                                          !! projected meridional velocity [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: T        !< On entry, the temperature after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! temperature [C ~> degC]
+  real, dimension(nib,njb,SZK_(GV)), &
+                intent(inout) :: Sal      !< On entry, the salinity after eliminating massless layers
+                                          !! and applying background diffusion; on exit, the projected
+                                          !! salinity [S ~> ppt]
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: tke_avg  !< The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2_init  !< The initial value of N2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2_init  !< The initial value of S2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: N2_mean  !< The time-weighted average of N2 [T-2 ~> s-2].
+  real, dimension(nib,njb,SZK_(GV)+1), &
+                intent(inout) :: S2_mean  !< The time-weighted average of S2 [T-2 ~> s-2].
+
+  ! Local variables
+  ! The work space of kappa_shear_segment and of the routines that it calls, which are described there.
+  real, dimension(nib,njb,SZK_(GV)) :: &
+    Idz, &              ! The inverse of the distance between TKE points [Z-1 ~> m-1]
+    u_test, v_test, &   ! Temporary velocities [L T-1 ~> m s-1]
+    T_test, &           ! Temporary temperatures [C ~> degC]
+    S_test, &           ! Temporary salinities [S ~> ppt]
+    aQ, &               ! The coupling between adjacent interfaces in the TKE equations
+                        ! [H T-1 ~> m s-1 or kg m-2 s-1]
+    dQdz                ! Half the partial derivative of TKE with depth [Z T-2 ~> m s-2]
+  real, dimension(nib,njb,SZK_(GV)+1) :: &
+    N2, S2, &           ! The squared buoyancy frequency and shear at interfaces [T-2 ~> s-2]
+    h_Int, &            ! The extent of the space surrounding an interface [H ~> m or kg m-2]
+    dz_Int, &           ! The vertical distance with the space surrounding an interface [Z ~> m]
+    dz_h_Int, &         ! The ratio of the vertical distances to the thickness around an interface
+                        ! [Z H-1 ~> nondim or m3 kg-1]
+    kappa_src, &        ! The shear-dependent source term in the kappa equation [T-1 ~> s-1]
+    kappa_out, kappa_mid, kappa_pred, & ! Estimates of kappa [H Z T-1 ~> m2 s-1 or Pa s]
+    tke_pred, &         ! The value of TKE from a predictor step [Z2 T-2 ~> m2 s-2]
+    I_L2_bdry, &        ! The inverse of the squared distances to the boundaries [H-1 Z-1 ~> m-2 or m kg-1]
+    K_Q, K_Q_tmp, &     ! Diffusivity divided by TKE [H T Z-1 ~> s or kg s m-3]
+    local_src_avg, &    ! The time-integral of the local source [nondim]
+    tol_min, tol_max, & ! The tolerated range of ksrc for the corrector step [T-1 ~> s-1]
+    tol_chg, &          ! The tolerated kappa change integrated over a timestep [nondim]
+    dist_from_top, &    ! The distance from the top surface [Z ~> m]
+    h_from_top, &       ! The total thickness above an interface [H ~> m or kg m-2]
+    local_src, &        ! The sum of all sources of kappa [T-1 ~> s-1]
+    dK, &               ! The change in kappa [H Z T-1 ~> m2 s-1 or Pa s]
+    dQ, &               ! The change in TKE [Z2 T-2 ~> m2 s-2]
+    cQ, cK, c1, &       ! The upward influences in the tridiagonal and hexadiagonal solvers [nondim]
+    I_Ld2, &            ! 1/Ld^2, where Ld is the effective decay length scale for kappa
+                        ! [H-1 Z-1 ~> m-2 or m kg-1]
+    TKE_decay, &        ! The local TKE decay rate [T-1 ~> s-1]
+    k_src, &            ! The source term in the kappa equation [T-1 ~> s-1]
+    dQmdK, &            ! The change in dQ(k-1) due to dK(k) with Newton's method [Z T H-1 ~> s or m3 s kg-1]
+    dKdQ, &             ! The change in dK(k) due to dQ(k) with Newton's method [H Z-1 T-1 ~> s-1 or kg m-3 s-1]
+    e1                  ! The fractional change in a layer TKE due to a change in the TKE of the
+                        ! layer above when all the kappas below are 0 [nondim]
+  real, dimension(nib,njb) :: &
+    dt_rem, dt_now, dt_test, dt_inc, dt_cps, & ! Time steps of each column [T ~> s]
+    Idtt, &             ! The inverse of the time-step being tested [T-1 ~> s-1]
+    dt_wt, &            ! The fractional weight of the current iteration [nondim]
+    dist_from_bot, &    ! The distance from the bottom surface [Z ~> m]
+    h_from_bot, &       ! The total thickness below an interface [H ~> m or kg m-2]
+    a_b, &              ! A tridiagonal coupling coefficient [H ~> m or kg m-2]
+    d1, &               ! A tridiagonal variable [nondim]
+    Newton_err, Newton_test, & ! Tolerances for switching to and from Newton's method [nondim]
+    cQcomp, cKcomp, &   ! 1 - cQ or 1 - cK in the tridiagonal equations [nondim]
+    eden2, &            ! A term used in calculating e1 [H Z-2 ~> m-1 or kg m-4]
+    ome                 ! A term used in calculating e1 [nondim]
+  integer, dimension(nib,njb) :: &
+    ks_kappa, ke_kappa, ks_c, ke_c, ks_src, ke_src, ks_kap, ke_kap, & ! Ranges of interfaces of each column
+    ks_kap_prev, ke_kap_prev, ke_tke, k_exit                          ! Ranges of interfaces of each column
+  logical, dimension(nib,njb) :: &
+    active, limit_dt, searching, valid_dt, refining, mixing, use_col, & ! The state of each column
+    do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, going ! The state of each column
+  integer :: nw         ! The number of columns in each segment of a row
+  integer :: nseg       ! The number of segments in each row
+  integer :: is_seg, ie_seg ! The first and last block-local i-indices of a segment
+  integer :: jj, iseg
+
+  if ((iie < 1) .or. (jje < 1)) return
+
+  !$omp target enter data map(alloc: Idz, u_test, v_test, T_test, S_test, aQ, dQdz, N2, S2, h_Int, dz_Int, &
+  !$omp &                            dz_h_Int, kappa_src, kappa_out, kappa_mid, kappa_pred, tke_pred, I_L2_bdry, &
+  !$omp &                            K_Q, K_Q_tmp, local_src_avg, tol_min, tol_max, tol_chg, dist_from_top, &
+  !$omp &                            h_from_top, local_src, dK, dQ, cQ, cK, c1, I_Ld2, TKE_decay, k_src, &
+  !$omp &                            dQmdK, dKdQ, e1)
+  !$omp target enter data map(alloc: dt_rem, dt_now, dt_test, dt_inc, dt_cps, Idtt, dt_wt, dist_from_bot, &
+  !$omp &                            h_from_bot, a_b, d1, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+  !$omp &                            ks_kappa, ke_kappa, ks_c, ke_c, ks_src, ke_src, ks_kap, ke_kap, &
+  !$omp &                            ks_kap_prev, ke_kap_prev, ke_tke, k_exit, active, limit_dt, searching, &
+  !$omp &                            valid_dt, refining, mixing, use_col, do_Newton, abort_Newton, &
+  !$omp &                            within_tolerance, check_Newton, iterating, going)
+
+  nw = CS%segment_width
+  if ((nw == 0) .or. (nw > iie)) nw = iie
+  nseg = (iie + nw - 1) / nw
+
+  if (nw == 1) then
+    ! With single-column segments, passing the same index as the first and last column of each
+    ! segment lets the compiler see that each column loop runs once, and keep the state of each
+    ! column in registers on GPUs.
+    do concurrent( jj=1:jje, iseg=1:nseg ) DO_LOCALITY(local(is_seg))
+      is_seg = iseg
+      call kappa_shear_segment(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, hlay, dz_lay, I_dz_int, &
+                     kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, do_col, &
+                     Idz, u_test, v_test, T_test, S_test, N2, S2, h_Int, dz_Int, dz_h_Int, kappa_src, &
+                     kappa_out, kappa_mid, tke_pred, kappa_pred, I_L2_bdry, K_Q, K_Q_tmp, local_src_avg, &
+                     tol_min, tol_max, tol_chg, dist_from_top, h_from_top, local_src, &
+                     aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, dKdQ, e1, c1, &
+                     dt_rem, dt_now, dt_test, dt_inc, dt_cps, Idtt, dt_wt, dist_from_bot, h_from_bot, &
+                     ks_kappa, ke_kappa, active, limit_dt, searching, valid_dt, refining, mixing, use_col, &
+                     a_b, d1, ks_c, ke_c, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+                     ks_src, ke_src, ks_kap, ke_kap, ks_kap_prev, ke_kap_prev, ke_tke, k_exit, &
+                     do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, going, &
+                     CS, GV, US, nib, njb, is_seg, is_seg, jj)
+    enddo
+  else
+    do concurrent( jj=1:jje, iseg=1:nseg ) DO_LOCALITY(local(is_seg, ie_seg))
+      is_seg = (iseg-1)*nw + 1 ; ie_seg = min(iseg*nw, iie)
+      call kappa_shear_segment(kappa, tke, dt, nzc, f2, dbuoy_dT, dbuoy_dS, hlay, dz_lay, I_dz_int, &
+                     kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, do_col, &
+                     Idz, u_test, v_test, T_test, S_test, N2, S2, h_Int, dz_Int, dz_h_Int, kappa_src, &
+                     kappa_out, kappa_mid, tke_pred, kappa_pred, I_L2_bdry, K_Q, K_Q_tmp, local_src_avg, &
+                     tol_min, tol_max, tol_chg, dist_from_top, h_from_top, local_src, &
+                     aQ, dQdz, dK, dQ, cQ, cK, I_Ld2, TKE_decay, k_src, dQmdK, dKdQ, e1, c1, &
+                     dt_rem, dt_now, dt_test, dt_inc, dt_cps, Idtt, dt_wt, dist_from_bot, h_from_bot, &
+                     ks_kappa, ke_kappa, active, limit_dt, searching, valid_dt, refining, mixing, use_col, &
+                     a_b, d1, ks_c, ke_c, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+                     ks_src, ke_src, ks_kap, ke_kap, ks_kap_prev, ke_kap_prev, ke_tke, k_exit, &
+                     do_Newton, abort_Newton, within_tolerance, check_Newton, iterating, going, &
+                     CS, GV, US, nib, njb, is_seg, ie_seg, jj)
+    enddo
+  endif
+
+  !$omp target exit data map(delete: Idz, u_test, v_test, T_test, S_test, aQ, dQdz, N2, S2, h_Int, dz_Int, &
+  !$omp &                            dz_h_Int, kappa_src, kappa_out, kappa_mid, kappa_pred, tke_pred, I_L2_bdry, &
+  !$omp &                            K_Q, K_Q_tmp, local_src_avg, tol_min, tol_max, tol_chg, dist_from_top, &
+  !$omp &                            h_from_top, local_src, dK, dQ, cQ, cK, c1, I_Ld2, TKE_decay, k_src, &
+  !$omp &                            dQmdK, dKdQ, e1)
+  !$omp target exit data map(delete: dt_rem, dt_now, dt_test, dt_inc, dt_cps, Idtt, dt_wt, dist_from_bot, &
+  !$omp &                            h_from_bot, a_b, d1, Newton_err, Newton_test, cQcomp, cKcomp, eden2, ome, &
+  !$omp &                            ks_kappa, ke_kappa, ks_c, ke_c, ks_src, ke_src, ks_kap, ke_kap, &
+  !$omp &                            ks_kap_prev, ke_kap_prev, ke_tke, k_exit, active, limit_dt, searching, &
+  !$omp &                            valid_dt, refining, mixing, use_col, do_Newton, abort_Newton, &
+  !$omp &                            within_tolerance, check_Newton, iterating, going)
+
+end subroutine kappa_shear_block
 
 !> This subroutine calculates shear-driven diffusivity and TKE in the columns of a segment of a row
 !! of a block, as kappa_shear_column does for one column.  It steps through the levels and the
