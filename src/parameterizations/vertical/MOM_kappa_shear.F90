@@ -121,6 +121,8 @@ type, public :: Kappa_shear_CS ; private
                              !  layers, rather than the interfaces.
   integer :: niblock         !< The i block size used in the kappa shear calculations [nondim].
   integer :: njblock         !< The j block size used in the kappa shear calculations [nondim].
+  integer :: segment_width   !< The number of adjacent columns in a row of a block whose iterations
+                             !! are worked through together, or 0 for the whole row [nondim].
   logical :: debug = .false. !< If true, write verbose debugging messages.
   type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to
                              !! regulate the timing of diagnostic output.
@@ -4246,11 +4248,17 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
   ! independent task in one kernel launch.
   integer, parameter :: default_niblock = 0 !< Default i block size, 0 being the full domain [nondim].
   integer, parameter :: default_njblock = 0 !< Default j block size, 0 being the full domain [nondim].
+  !   Each segment of a row of a block is worked through by one thread on the device, so the default
+  ! segment is a single column.
+  integer, parameter :: default_segment_width = 1 !< Default segment width [nondim].
 #else
   !   A block size of 1 in both horizontal directions reduces the per-column working arrays to a
   ! single column, which is how this scheme is posed on the CPU.
   integer, parameter :: default_niblock = 0 !< Default i block size [nondim].
   integer, parameter :: default_njblock = 1 !< Default j block size [nondim].
+  !   On the CPU the iterations of a few adjacent columns are worked through together, so that they
+  ! can be vectorized while sharing cache lines.
+  integer, parameter :: default_segment_width = 16 !< Default segment width [nondim].
 #endif
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
@@ -4295,10 +4303,17 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
                  "shear-driven mixing calculations.  The default 0 setting dynamically uses the "//&
                  "full computational domain width.", &
                  default=default_njblock, layoutParam=.true.)
+  call get_param(param_file, mdl, "KAPPA_SHEAR_SEGMENT_WIDTH", CS%segment_width, &
+                 "The number of adjacent columns in a row of a block whose iterations in the "//&
+                 "shear-driven mixing calculations are worked through together.  0 uses the "//&
+                 "whole row of a block.  This does not change answers.", &
+                 default=default_segment_width, layoutParam=.true., do_not_log=just_read)
   if (CS%niblock < 0) call MOM_error(FATAL, "KAPPA_SHEAR_NIBLOCK must be nonnegative; "//&
                                             "use 0 to select the full computational domain.")
   if (CS%njblock < 0) call MOM_error(FATAL, "KAPPA_SHEAR_NJBLOCK must be nonnegative; "//&
                                             "use 0 to select the full computational domain.")
+  if (CS%segment_width < 0) call MOM_error(FATAL, "KAPPA_SHEAR_SEGMENT_WIDTH must be nonnegative; "//&
+                                                  "use 0 to select the whole row of a block.")
   !   The vertex scheme interpolates thicknesses to the u- and v-points and then reads the j+1 and
   ! i+1 neighbours of those arrays, so consecutive blocks have to overlap by one row and one
   ! column.  That leaves niblock-1 columns and njblock-1 rows actually written per block, which is
