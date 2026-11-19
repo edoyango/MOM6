@@ -251,7 +251,12 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
                 ! temperature is not a state variable, the density times thickness [R H ~> kg m-2 or kg2 m-5]
     S0xdz       ! The initial salinity times dz [S H ~> ppt m or ppt kg m-2].
 
-  real :: f2    ! The squared Coriolis parameter of each column [T-2 ~> s-2].
+  real, dimension(merge(G%iec-G%isc+1, CS%niblock, CS%niblock==0), &
+                  merge(G%jec-G%jsc+1, CS%njblock, CS%njblock==0)) :: &
+    f2_2d       ! The squared Coriolis parameter of each column [T-2 ~> s-2].
+  logical, dimension(merge(G%iec-G%isc+1, CS%niblock, CS%niblock==0), &
+                     merge(G%jec-G%jsc+1, CS%njblock, CS%njblock==0)) :: &
+    do_col      ! True for the ocean columns
   real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
   real :: b1            ! The inverse of the pivot in the tridiagonal equations [H-1 ~> m-1 or m2 kg-1].
   real :: d1            ! 1 - c1 in the tridiagonal equations [nondim]
@@ -302,7 +307,7 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
   !$omp &                            tke, kappa_avg, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
   !$omp &                            dbuoy_dT, dbuoy_dS, dSpV_dT, dSpV_dS, rho_int, T_int, Sal_int, &
   !$omp &                            pressure, I_dz_int, u, v, T, Sal, nzc_2d, a1_col, c1_col,&
-  !$omp &                            kappa_full, tke_full, dz_3d )
+  !$omp &                            kappa_full, tke_full, dz_3d, f2_2d, do_col )
 
   do jsb=js,je,njj ; do isb=is,ie,nii
     ieb = min(isb + nii - 1, ie)
@@ -516,17 +521,20 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
       !$omp target update to(dbuoy_dT, dbuoy_dS)
     endif
 
-    do concurrent( jj=1:jje, ii=1:iie ) DO_LOCALITY(local( f2, k, i, j ))
+    do concurrent( jj=1:jje, ii=1:iie ) DO_LOCALITY(local( i, j ))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      if (G%mask2dT(i,j) > 0.0) then
+      do_col(ii,jj) = (G%mask2dT(i,j) > 0.0)
+      f2_2d(ii,jj) = 0.25 * ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
+                             (G%Coriolis2Bu(I,J-1) + G%Coriolis2Bu(I-1,J)))
+    enddo
 
-      f2 = 0.25 * ((G%Coriolis2Bu(I,J) + G%Coriolis2Bu(I-1,J-1)) + &
-                    (G%Coriolis2Bu(I,J-1) + G%Coriolis2Bu(I-1,J)))
+    call kappa_shear_block(kappa, tke, dt, nzc_2d, f2_2d, do_col, dbuoy_dT, dbuoy_dS, h_lay, dz_lay, &
+                           I_dz_int, kappa_avg, u, v, T, Sal, tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
+                           CS, GV, US, nii, njj, iie, jje)
 
-      call kappa_shear_column(kappa, tke, dt, nzc_2d(ii,jj), f2, dbuoy_dT, dbuoy_dS, &
-                             h_lay, dz_lay, I_dz_int, kappa_avg, u, v, T, Sal, &
-                             tke_avg, N2_init, S2_init, N2_mean, S2_mean, &
-                             CS, GV, US, nii, njj, ii, jj)
+    do concurrent( jj=1:jje, ii=1:iie ) DO_LOCALITY(local( k, i, j ))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      if (do_col(ii,jj)) then
 
       ! call cpu_clock_begin(id_clock_setup)
       ! Extrapolate from the vertically reduced grid back to the original layers.
@@ -654,7 +662,7 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
   !$omp &                            diag_N2_init, diag_S2_init, diag_N2_mean, diag_S2_mean, &
   !$omp &                            dbuoy_dT, dbuoy_dS, dSpV_dT, dSpV_dS, rho_int, T_int, Sal_int, &
   !$omp &                            pressure, I_dz_int, u, v, T, Sal, a1_col, c1_col, nzc_2d, &
-  !$omp &                            kappa_full, tke_full )
+  !$omp &                            kappa_full, tke_full, f2_2d, do_col )
 
 end subroutine Calculate_kappa_shear
 
