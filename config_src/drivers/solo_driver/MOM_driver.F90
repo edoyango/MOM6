@@ -30,6 +30,7 @@ program MOM6
   use MOM_cpu_clock,       only : CLOCK_COMPONENT
   use MOM_data_override,   only : data_override_init
   use MOM_diag_mediator,   only : diag_mediator_end, diag_ctrl, diag_mediator_close_registration
+  use MOM_diag_mediator,   only : MOM_diag_send_complete
   use MOM_diag_manager_infra, only : diag_manager_set_time_end_infra
   use MOM,                 only : initialize_MOM, step_MOM, MOM_control_struct, MOM_end
   use MOM,                 only : extract_surface_state, finish_MOM_initialization
@@ -581,6 +582,10 @@ program MOM6
                "thermodynamic time steps that are longer than the coupling timestep.")
       endif
     endif
+
+    ! Let the diag manager finish its reductions and write any output that is due, after all of the
+    ! diagnostics for this forcing step have been posted.  Only the modern diag manager uses this.
+    call MOM_diag_send_complete()
 
 !  See if it is time to write out a restart file - timestamped or not.
     if ((permit_incr_restart) .and. (fluxes%fluxes_used) .and. &
