@@ -79,6 +79,9 @@ type field_restart
                                 !! is written to a restart file, usually to convert it to MKS or
                                 !! other standard units [a A-1 ~> 1].  When read, the restart field
                                 !! is multiplied by the reciprocal of this factor.
+  logical :: on_device = .false. !< If true, the copy of this field on the accelerator device is the
+                                !! current one while the model runs, so the host copy is refreshed
+                                !! from the device before the field is written to a restart file.
 end type field_restart
 
 !> A structure to store information about restart fields that are no longer used
@@ -207,7 +210,7 @@ subroutine register_restart_field_as_obsolete(field_name, replacement_name, CS)
 end subroutine register_restart_field_as_obsolete
 
 !> Register a 3-d field for restarts, providing the metadata in a structure
-subroutine register_restart_field_ptr3d(f_ptr, var_desc, mandatory, CS, conversion)
+subroutine register_restart_field_ptr3d(f_ptr, var_desc, mandatory, CS, conversion, on_device)
   real, dimension(:,:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -217,6 +220,9 @@ subroutine register_restart_field_ptr3d(f_ptr, var_desc, mandatory, CS, conversi
   type(MOM_restart_CS),       intent(inout) :: CS     !< MOM restart control struct
   real,             optional, intent(in) :: conversion !< A factor to multiply a restart field by
                                                       !! before it is written [a A-1 ~> 1], 1 by default.
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   if (.not.CS%initialized) call MOM_error(FATAL, "MOM_restart " // &
       "register_restart_field: Module must be initialized before it is used.")
@@ -232,6 +238,8 @@ subroutine register_restart_field_ptr3d(f_ptr, var_desc, mandatory, CS, conversi
   CS%restart_field(CS%novars)%initialized = .false.
   CS%restart_field(CS%novars)%conv = 1.0
   if (present(conversion)) CS%restart_field(CS%novars)%conv = conversion
+  CS%restart_field(CS%novars)%on_device = .false.
+  if (present(on_device)) CS%restart_field(CS%novars)%on_device = on_device
   call query_vardesc(CS%restart_field(CS%novars)%vars, &
                      name=CS%restart_field(CS%novars)%var_name, &
                      caller="register_restart_field_ptr3d")
@@ -245,7 +253,7 @@ subroutine register_restart_field_ptr3d(f_ptr, var_desc, mandatory, CS, conversi
 end subroutine register_restart_field_ptr3d
 
 !> Register a 4-d field for restarts, providing the metadata in a structure
-subroutine register_restart_field_ptr4d(f_ptr, var_desc, mandatory, CS, conversion)
+subroutine register_restart_field_ptr4d(f_ptr, var_desc, mandatory, CS, conversion, on_device)
   real, dimension(:,:,:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -255,6 +263,9 @@ subroutine register_restart_field_ptr4d(f_ptr, var_desc, mandatory, CS, conversi
   type(MOM_restart_CS),       intent(inout) :: CS     !< MOM restart control struct
   real,             optional, intent(in) :: conversion !< A factor to multiply a restart field by
                                                       !! before it is written [a A-1 ~> 1], 1 by default.
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   if (.not.CS%initialized) call MOM_error(FATAL, "MOM_restart " // &
       "register_restart_field: Module must be initialized before it is used.")
@@ -270,6 +281,8 @@ subroutine register_restart_field_ptr4d(f_ptr, var_desc, mandatory, CS, conversi
   CS%restart_field(CS%novars)%initialized = .false.
   CS%restart_field(CS%novars)%conv = 1.0
   if (present(conversion)) CS%restart_field(CS%novars)%conv = conversion
+  CS%restart_field(CS%novars)%on_device = .false.
+  if (present(on_device)) CS%restart_field(CS%novars)%on_device = on_device
   call query_vardesc(CS%restart_field(CS%novars)%vars, &
                      name=CS%restart_field(CS%novars)%var_name, &
                      caller="register_restart_field_ptr4d")
@@ -283,7 +296,7 @@ subroutine register_restart_field_ptr4d(f_ptr, var_desc, mandatory, CS, conversi
 end subroutine register_restart_field_ptr4d
 
 !> Register a 2-d field for restarts, providing the metadata in a structure
-subroutine register_restart_field_ptr2d(f_ptr, var_desc, mandatory, CS, conversion)
+subroutine register_restart_field_ptr2d(f_ptr, var_desc, mandatory, CS, conversion, on_device)
   real, dimension(:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -293,6 +306,9 @@ subroutine register_restart_field_ptr2d(f_ptr, var_desc, mandatory, CS, conversi
   type(MOM_restart_CS),       intent(inout) :: CS     !< MOM restart control struct
   real,             optional, intent(in) :: conversion !< A factor to multiply a restart field by
                                                       !! before it is written [a A-1 ~> 1], 1 by default.
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   if (.not.CS%initialized) call MOM_error(FATAL, "MOM_restart " // &
       "register_restart_field: Module must be initialized before it is used.")
@@ -308,6 +324,8 @@ subroutine register_restart_field_ptr2d(f_ptr, var_desc, mandatory, CS, conversi
   CS%restart_field(CS%novars)%initialized = .false.
   CS%restart_field(CS%novars)%conv = 1.0
   if (present(conversion)) CS%restart_field(CS%novars)%conv = conversion
+  CS%restart_field(CS%novars)%on_device = .false.
+  if (present(on_device)) CS%restart_field(CS%novars)%on_device = on_device
   call query_vardesc(CS%restart_field(CS%novars)%vars, &
                      name=CS%restart_field(CS%novars)%var_name, &
                      caller="register_restart_field_ptr2d")
@@ -397,7 +415,7 @@ end subroutine register_restart_field_ptr0d
 
 !> Register a pair of rotationally equivalent 2d restart fields
 subroutine register_restart_pair_ptr2d(a_ptr, b_ptr, a_desc, b_desc, &
-                mandatory, CS, conversion, scalar_pair)
+                mandatory, CS, conversion, scalar_pair, on_device)
   real, dimension(:,:), target, intent(in) :: a_ptr   !< First field pointer
                                                       !! in arbitrary rescaled units [A ~> a]
   real, dimension(:,:), target, intent(in) :: b_ptr   !< Second field pointer
@@ -411,6 +429,9 @@ subroutine register_restart_pair_ptr2d(a_ptr, b_ptr, a_desc, b_desc, &
   logical,            optional, intent(in) :: scalar_pair !< If true, the arrays describe a pair of
                                                       !! scalars, instead of vector components
                                                       !! whose signs change when rotated
+  logical,            optional, intent(in) :: on_device !< If true, the device copies of these fields
+                                                      !! are the current ones, so they are copied to the
+                                                      !! host before they are written.  False by default.
 
   ! Local variables
   real :: a_conv, b_conv  ! Factors to multipy the a- and b-components by before they are written,
@@ -420,18 +441,18 @@ subroutine register_restart_pair_ptr2d(a_ptr, b_ptr, a_desc, b_desc, &
   call set_conversion_pair(a_conv, b_conv, CS%turns, conversion, scalar_pair)
 
   if (modulo(CS%turns, 2) == 0) then  ! This is the usual case.
-    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   else
-    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   endif
 end subroutine register_restart_pair_ptr2d
 
 
 !> Register a pair of rotationally equivalent 3d restart fields
 subroutine register_restart_pair_ptr3d(a_ptr, b_ptr, a_desc, b_desc, &
-                mandatory, CS, conversion, scalar_pair)
+                mandatory, CS, conversion, scalar_pair, on_device)
   real, dimension(:,:,:), target, intent(in) :: a_ptr !< First field pointer
                                                       !! in arbitrary rescaled units [A ~> a]
   real, dimension(:,:,:), target, intent(in) :: b_ptr !< Second field pointer
@@ -445,6 +466,9 @@ subroutine register_restart_pair_ptr3d(a_ptr, b_ptr, a_desc, b_desc, &
   logical,            optional, intent(in) :: scalar_pair !< If true, the arrays describe a pair of
                                                       !! scalars, instead of vector components
                                                       !! whose signs change when rotated
+  logical,            optional, intent(in) :: on_device !< If true, the device copies of these fields
+                                                      !! are the current ones, so they are copied to the
+                                                      !! host before they are written.  False by default.
 
   ! Local variables
   real :: a_conv, b_conv  ! Factors to multipy the a- and b-components by before they are written,
@@ -454,18 +478,18 @@ subroutine register_restart_pair_ptr3d(a_ptr, b_ptr, a_desc, b_desc, &
   call set_conversion_pair(a_conv, b_conv, CS%turns, conversion, scalar_pair)
 
   if (modulo(CS%turns, 2) == 0) then  ! This is the usual case.
-    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   else
-    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   endif
 end subroutine register_restart_pair_ptr3d
 
 
 !> Register a pair of rotationally equivalent 2d restart fields
 subroutine register_restart_pair_ptr4d(a_ptr, b_ptr, a_desc, b_desc, &
-                mandatory, CS, conversion, scalar_pair)
+                mandatory, CS, conversion, scalar_pair, on_device)
   real, dimension(:,:,:,:), target, intent(in) :: a_ptr !< First field pointer
                                                       !! in arbitrary rescaled units [A ~> a]
   real, dimension(:,:,:,:), target, intent(in) :: b_ptr !< Second field pointer
@@ -479,6 +503,9 @@ subroutine register_restart_pair_ptr4d(a_ptr, b_ptr, a_desc, b_desc, &
   logical,            optional, intent(in) :: scalar_pair !< If true, the arrays describe a pair of
                                                       !! scalars, instead of vector components
                                                       !! whose signs change when rotated
+  logical,            optional, intent(in) :: on_device !< If true, the device copies of these fields
+                                                      !! are the current ones, so they are copied to the
+                                                      !! host before they are written.  False by default.
 
   ! Local variables
   real :: a_conv, b_conv  ! Factors to multipy the a- and b-components by before they are written,
@@ -488,11 +515,11 @@ subroutine register_restart_pair_ptr4d(a_ptr, b_ptr, a_desc, b_desc, &
   call set_conversion_pair(a_conv, b_conv, CS%turns, conversion, scalar_pair)
 
   if (modulo(CS%turns, 2) == 0) then  ! This is the usual case.
-    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(a_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(b_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   else
-    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv)
-    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv)
+    call register_restart_field(b_ptr, a_desc, mandatory, CS, conversion=a_conv, on_device=on_device)
+    call register_restart_field(a_ptr, b_desc, mandatory, CS, conversion=b_conv, on_device=on_device)
   endif
 end subroutine register_restart_pair_ptr4d
 
@@ -537,7 +564,7 @@ end subroutine set_conversion_pair
 
 !> Register a 4-d field for restarts, providing the metadata as individual arguments
 subroutine register_restart_field_4d(f_ptr, name, mandatory, CS, longname, units, conversion, &
-                                     hor_grid, z_grid, t_grid, extra_axes)
+                                     hor_grid, z_grid, t_grid, extra_axes, on_device)
   real, dimension(:,:,:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -554,6 +581,9 @@ subroutine register_restart_field_4d(f_ptr, name, mandatory, CS, longname, units
   character(len=*), optional, intent(in) :: t_grid    !< time description: s, p, or 1, 's' if absent
   type(axis_info),  dimension(:), &
                     optional, intent(in) :: extra_axes !< dimensions other than space-time
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   type(vardesc) :: vd
   character(len=32), dimension(:), allocatable :: dim_names
@@ -587,13 +617,13 @@ subroutine register_restart_field_4d(f_ptr, name, mandatory, CS, longname, units
                   z_grid=z_grid, t_grid=t_grid)
   endif
 
-  call register_restart_field_ptr4d(f_ptr, vd, mandatory, CS, conversion)
+  call register_restart_field_ptr4d(f_ptr, vd, mandatory, CS, conversion, on_device)
 
 end subroutine register_restart_field_4d
 
 !> Register a 3-d field for restarts, providing the metadata as individual arguments
 subroutine register_restart_field_3d(f_ptr, name, mandatory, CS, longname, units, conversion, &
-                                     hor_grid, z_grid, t_grid, extra_axes)
+                                     hor_grid, z_grid, t_grid, extra_axes, on_device)
   real, dimension(:,:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -610,6 +640,9 @@ subroutine register_restart_field_3d(f_ptr, name, mandatory, CS, longname, units
   character(len=*), optional, intent(in) :: t_grid    !< time description: s, p, or 1, 's' if absent
   type(axis_info),  dimension(:), &
                     optional, intent(in) :: extra_axes !< dimensions other than space-time
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   type(vardesc) :: vd
   character(len=32), dimension(:), allocatable :: dim_names
@@ -643,13 +676,13 @@ subroutine register_restart_field_3d(f_ptr, name, mandatory, CS, longname, units
                   z_grid=z_grid, t_grid=t_grid)
   endif
 
-  call register_restart_field_ptr3d(f_ptr, vd, mandatory, CS, conversion)
+  call register_restart_field_ptr3d(f_ptr, vd, mandatory, CS, conversion, on_device)
 
 end subroutine register_restart_field_3d
 
 !> Register a 2-d field for restarts, providing the metadata as individual arguments
 subroutine register_restart_field_2d(f_ptr, name, mandatory, CS, longname, units, conversion, &
-                                     hor_grid, z_grid, t_grid)
+                                     hor_grid, z_grid, t_grid, on_device)
   real, dimension(:,:), &
                       target, intent(in) :: f_ptr     !< A pointer to the field to be read or written
                                                       !! in arbitrary rescaled units [A ~> a]
@@ -664,6 +697,9 @@ subroutine register_restart_field_2d(f_ptr, name, mandatory, CS, longname, units
   character(len=*), optional, intent(in) :: hor_grid  !< variable horizontal staggering, 'h' if absent
   character(len=*), optional, intent(in) :: z_grid    !< variable vertical staggering, '1' if absent
   character(len=*), optional, intent(in) :: t_grid    !< time description: s, p, or 1, 's' if absent
+  logical,          optional, intent(in) :: on_device !< If true, the device copy of this field is the
+                                                      !! current one, so it is copied to the host before
+                                                      !! it is written.  False by default.
 
   type(vardesc) :: vd
   character(len=8) :: Zgrid
@@ -679,7 +715,7 @@ subroutine register_restart_field_2d(f_ptr, name, mandatory, CS, longname, units
   vd = var_desc(name, units=units, longname=longname, hor_grid=hor_grid, &
                 z_grid=zgrid, t_grid=t_grid)
 
-  call register_restart_field_ptr2d(f_ptr, vd, mandatory, CS, conversion)
+  call register_restart_field_ptr2d(f_ptr, vd, mandatory, CS, conversion, on_device)
 
 end subroutine register_restart_field_2d
 
@@ -1567,6 +1603,26 @@ logical function size_mismatch_3d(var_a, var_b, turns, size_msg)
                                                   size(var_b,1), size(var_b,2), size(var_b,3)
 end function size_mismatch_3d
 
+!> Copy a 2-d restart field from the device to the host.  This does nothing if the field is not
+!! present on the device.
+subroutine update_host_2d(field)
+  real, dimension(:,:), intent(inout) :: field !< The field to refresh in arbitrary units [A]
+  !$omp target update from(field)
+end subroutine update_host_2d
+
+!> Copy a 3-d restart field from the device to the host.  This does nothing if the field is not
+!! present on the device.
+subroutine update_host_3d(field)
+  real, dimension(:,:,:), intent(inout) :: field !< The field to refresh in arbitrary units [A]
+  !$omp target update from(field)
+end subroutine update_host_3d
+
+!> Copy a 4-d restart field from the device to the host.  This does nothing if the field is not
+!! present on the device.
+subroutine update_host_4d(field)
+  real, dimension(:,:,:,:), intent(inout) :: field !< The field to refresh in arbitrary units [A]
+  !$omp target update from(field)
+end subroutine update_host_4d
 
 !> save_restart saves all registered variables to restart files.
 subroutine save_restart(directory, time, G, CS, time_stamped, filename, GV, num_rest_files, write_IC)
@@ -1628,6 +1684,14 @@ subroutine save_restart(directory, time, G, CS, time_stamped, filename, GV, num_
 
   if (CS%novars > CS%max_fields) call restart_error(CS)
   verbose = (is_root_pe() .and. (MOM_get_verbosity() >= 7))
+
+  ! Copy the fields whose current values are on the device to the host before they are written.
+  do m=1,CS%novars
+    if (.not.CS%restart_field(m)%on_device) cycle
+    if (associated(CS%var_ptr2d(m)%p)) call update_host_2d(CS%var_ptr2d(m)%p)
+    if (associated(CS%var_ptr3d(m)%p)) call update_host_3d(CS%var_ptr3d(m)%p)
+    if (associated(CS%var_ptr4d(m)%p)) call update_host_4d(CS%var_ptr4d(m)%p)
+  enddo
 
   ! With parallel read & write, it is possible to disable the following...
   num_files = 0
