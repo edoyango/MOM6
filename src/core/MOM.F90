@@ -936,9 +936,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
                            end_time_thermo, .true., Waves=Waves)
 
       if ( CS%use_ALE_algorithm ) then
-        !$omp target update from(u, v, h)
         call ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, CS%tv, dtdia, Time_local)
-        !$omp target update to(u, v, h)
       endif
 
       call post_diabatic_halo_updates(CS, G, GV, US, u, v, h, CS%tv)
@@ -1057,9 +1055,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
                            Time_local, .false., Waves=Waves)
 
       if ( CS%use_ALE_algorithm ) then
-        !$omp target update from(u, v, h)
         call ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, CS%tv, dtdia, Time_local)
-        !$omp target update to(u, v, h)
       endif
 
       ! UMW NOTE: These transfers are needed to prevent excessive transfers in the group
@@ -2058,22 +2054,35 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   ! The routine 'ALE_regrid' can be found in 'MOM_ALE.F90'.
   call enable_averages(dtdia, Time_end_thermo, CS%diag)
 
+  call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
+
+  ! The regridding and remapping work on the device, where the tracers are copied once.
+  ntr = 0 ; if (associated(CS%tracer_Reg)) ntr = CS%tracer_Reg%ntr
+  !$omp target enter data map(alloc: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
+  do m=1,ntr
+    !$omp target enter data map(to: CS%tracer_Reg%Tr(m)%t)
+    !$omp target update to(CS%tracer_Reg%Tr(m)%t)
+  enddo
+
   call cpu_clock_begin(id_clock_pass)
   if (associated(tv%T)) &
     call create_group_pass(pass_T_S_h, tv%T, G%Domain, To_All+Omit_Corners, halo=1)
   if (associated(tv%S)) &
     call create_group_pass(pass_T_S_h, tv%S, G%Domain, To_All+Omit_Corners, halo=1)
   call create_group_pass(pass_T_S_h, h, G%Domain, To_All+Omit_Corners, halo=1)
-  call do_group_pass(pass_T_S_h, G%Domain)
+  call do_group_pass(pass_T_S_h, G%Domain, omp_offload=.true.)
   call cpu_clock_end(id_clock_pass)
 
-  call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
-
   if (CS%use_particles) then
+    !$omp target update from(h)
     call particles_to_z_space(CS%particles, h)
   endif
 
   if (CS%debug) then
+    !$omp target update from(u, v, h)
+    do m=1,ntr
+      !$omp target update from(CS%tracer_Reg%Tr(m)%t)
+    enddo
     call MOM_state_chksum("Pre-ALE ", u, v, h, CS%uh, CS%vh, G, GV, US, omit_corners=.true.)
     call hchksum(tv%T,"Pre-ALE T", G%HI, haloshift=1, omit_corners=.true., unscale=US%C_to_degC)
     call hchksum(tv%S,"Pre-ALE S", G%HI, haloshift=1, omit_corners=.true., unscale=US%S_to_ppt)
@@ -2085,20 +2094,11 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   call pre_ALE_diagnostics(G, GV, US, h, u, v, tv, CS%ALE_CSp)
   call ALE_update_regrid_weights(dtdia, CS%ALE_CSp)
   ! Do any necessary adjustments ot the state prior to remapping.
-  call pre_ALE_adjustments(G, GV, US, h, tv, CS%tracer_Reg, CS%ALE_CSp, u, v)
+  call pre_ALE_adjustments(G, GV, US, h, tv, CS%tracer_Reg, CS%ALE_CSp, u, v, state_on_device=.true.)
   ! Adjust the target grids for diagnostics, in case there have been thickness adjustments.
   call cpu_clock_begin(id_clock_ALE_diag_grids)
-  call diag_update_remap_grids(CS%diag)
+  call diag_update_remap_grids(CS%diag, state_on_device=.true.)
   call cpu_clock_end(id_clock_ALE_diag_grids)
-
-  ! The regridding and remapping work on the device, where the thicknesses and tracers are copied once.
-  ntr = 0 ; if (associated(CS%tracer_Reg)) ntr = CS%tracer_Reg%ntr
-  !$omp target enter data map(alloc: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
-  !$omp target update to(h)
-  do m=1,ntr
-    !$omp target enter data map(to: CS%tracer_Reg%Tr(m)%t)
-    !$omp target update to(CS%tracer_Reg%Tr(m)%t)
-  enddo
 
   call cpu_clock_begin(id_clock_ALE_regrid)
   if (use_ice_shelf) then
@@ -2140,7 +2140,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
     endif
 
     ! The rest of the auxiliary variables are remapped on the host.
-    !$omp target update from(h_new)
+    !$omp target update from(h, h_new)
     if (associated(CS%OBC) .or. associated(CS%visc%Kv_shear_Bu)) then
       call pass_var(h, G%Domain, complete=.false.)
       call pass_var(h_new, G%Domain, complete=.true.)
@@ -2161,7 +2161,6 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
     h(i,j,k) = h_new(i,j,k)
   enddo
 
-  !$omp target update from(u, v, h)
   do m=1,ntr
     !$omp target update from(CS%tracer_Reg%Tr(m)%t)
     !$omp target exit data map(release: CS%tracer_Reg%Tr(m)%t)
@@ -2173,6 +2172,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
 
   ! Update derived thermodynamic quantities.
   if (allocated(CS%tv%SpV_avg)) then
+    !$omp target update from(h)
     call calc_derived_thermo(CS%tv, CS%h, G, GV, US, halo=1, debug=CS%debug)
   endif
 
@@ -2181,12 +2181,13 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   ! calc_derived_thermo needs to be called before diag_update_remap_grids.
   ! This needs to happen after the H update and before the next post_data.
   call cpu_clock_begin(id_clock_ALE_diag_grids)
-  call diag_update_remap_grids(CS%diag)
+  call diag_update_remap_grids(CS%diag, state_on_device=.true.)
   call cpu_clock_end(id_clock_ALE_diag_grids)
 
   call postALE_tracer_diagnostics(CS%tracer_Reg, G, GV, CS%diag, dtdia)
 
   if (CS%debug .and. CS%use_ALE_algorithm) then
+    !$omp target update from(u, v, h)
     call MOM_state_chksum("Post-ALE ", u, v, h, CS%uh, CS%vh, G, GV, US)
     call hchksum(tv%T, "Post-ALE T", G%HI, haloshift=1, unscale=US%C_to_degC)
     call hchksum(tv%S, "Post-ALE S", G%HI, haloshift=1, unscale=US%S_to_ppt)
@@ -2194,6 +2195,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
       call check_redundant("Post-ALE ", u, v, G, unscale=US%L_T_to_m_s)
   endif
   if (CS%debug) then
+    !$omp target update from(u, v, h)
     call uvchksum("Post-ALE, Post-diabatic u", u, v, G%HI, haloshift=2, unscale=US%L_T_to_m_s)
     call hchksum(h, "Post-ALE, Post-diabatic h", G%HI, haloshift=1, unscale=GV%H_to_MKS)
     !$omp target update from(CS%uhtr, CS%vhtr)

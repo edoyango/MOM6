@@ -526,13 +526,28 @@ subroutine pre_ALE_diagnostics(G, GV, US, h, u, v, tv, CS)
   ! Local variables
   real :: eta_preale(SZI_(G),SZJ_(G),SZK_(GV)+1)  ! Interface heights before remapping [Z ~> m]
 
-  if (CS%id_u_preale > 0) call post_data(CS%id_u_preale, u,    CS%diag)
-  if (CS%id_v_preale > 0) call post_data(CS%id_v_preale, v,    CS%diag)
-  if (CS%id_h_preale > 0) call post_data(CS%id_h_preale, h,    CS%diag)
-  if (CS%id_T_preale > 0) call post_data(CS%id_T_preale, tv%T, CS%diag)
-  if (CS%id_S_preale > 0) call post_data(CS%id_S_preale, tv%S, CS%diag)
+  ! The state is current on the device.
+  if (CS%id_u_preale > 0) then
+    !$omp target update from(u)
+    call post_data(CS%id_u_preale, u,    CS%diag)
+  endif
+  if (CS%id_v_preale > 0) then
+    !$omp target update from(v)
+    call post_data(CS%id_v_preale, v,    CS%diag)
+  endif
+  if (CS%id_h_preale > 0) then
+    !$omp target update from(h)
+    call post_data(CS%id_h_preale, h,    CS%diag)
+  endif
+  if (CS%id_T_preale > 0) then
+    !$omp target update from(tv%T)
+    call post_data(CS%id_T_preale, tv%T, CS%diag)
+  endif
+  if (CS%id_S_preale > 0) then
+    !$omp target update from(tv%S)
+    call post_data(CS%id_S_preale, tv%S, CS%diag)
+  endif
   if (CS%id_e_preale > 0) then
-    !$omp target update to(h)
     !$omp target enter data map(alloc: eta_preale)
     call find_eta(h, tv, G, GV, US, eta_preale, dZref=G%Z_ref)
     !$omp target exit data map(from: eta_preale)
@@ -544,7 +559,7 @@ end subroutine pre_ALE_diagnostics
 
 !> Potentially do some preparatory work, such as convective adjustment, to clean up the model
 !! state before regridding.
-subroutine pre_ALE_adjustments(G, GV, US, h, tv, Reg, CS, u, v)
+subroutine pre_ALE_adjustments(G, GV, US, h, tv, Reg, CS, u, v, state_on_device)
   type(ocean_grid_type),                      intent(in)    :: G   !< Ocean grid informations
   type(verticalGrid_type),                    intent(in)    :: GV  !< Ocean vertical grid structure
   type(unit_scale_type),                      intent(in)    :: US  !< A dimensional unit scaling type
@@ -557,16 +572,34 @@ subroutine pre_ALE_adjustments(G, GV, US, h, tv, Reg, CS, u, v)
                                     optional, intent(inout) :: u   !< Zonal velocity field [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), &
                                     optional, intent(inout) :: v   !< Meridional velocity field [L T-1 ~> m s-1]
+  logical,                          optional, intent(in)    :: state_on_device !< If true, the device copies
+                                                                   !! of h and the tracers are current, but the
+                                                                   !! adjustments are done on the host.
+  integer :: ntr, m
+  logical :: on_device
 
-  integer :: ntr
+  on_device = .false. ; if (present(state_on_device)) on_device = state_on_device
+  ntr = 0 ; if (associated(Reg)) ntr = Reg%ntr
+  if (on_device .and. (CS%do_conv_adj .or. CS%use_hybgen_unmix)) then
+    !$omp target update from(h)
+    do m=1,ntr
+      !$omp target update from(Reg%Tr(m)%t)
+    enddo
+  endif
 
   ! Do column-wise convective adjustment.
   ! Tracers and velocities should probably also undergo consistent adjustments.
   if (CS%do_conv_adj) call convective_adjustment(G, GV, h, tv)
 
   if (CS%use_hybgen_unmix) then
-    ntr = 0 ; if (associated(Reg)) ntr = Reg%ntr
     call hybgen_unmix(G, GV, US, CS%hybgen_unmixCS, tv, Reg, ntr, h)
+  endif
+
+  if (on_device .and. (CS%do_conv_adj .or. CS%use_hybgen_unmix)) then
+    !$omp target update to(h)
+    do m=1,ntr
+      !$omp target update to(Reg%Tr(m)%t)
+    enddo
   endif
 
 end subroutine pre_ALE_adjustments
