@@ -1374,7 +1374,7 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
   real :: nom_depth_H(SZI_(G),SZJ_(G))  !< The nominal ocean depth at each point in thickness units [H ~> m or kg m-2]
   logical :: neg_h ! True if any input thickness is negative
   integer :: nii, njj ! The i and j block sizes
-  integer :: i, j, k, nki
+  integer :: i, j, k, nki, nk_new, nz
 
   ! Arrays that are already on the device are used there, while the others are copied.
   !$omp target enter data map(to: h, h_new, dzInterface) map(alloc: nom_depth_H)
@@ -1392,8 +1392,9 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
   call build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, njj, zScale=Z_to_H)
 
   ! This is calc_h_new_by_dz.
-  nki = min(CS%nk, GV%ke)
-  do concurrent (k=1:CS%nk, j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
+  nk_new = CS%nk ; nz = GV%ke
+  nki = min(nk_new, nz)
+  do concurrent (k=1:nk_new, j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
     if (G%mask2dT(i,j)>0.) then
       if (k <= nki) then
         h_new(i,j,k) = max( 0., h(i,j,k) + ( dzInterface(i,j,k) - dzInterface(i,j,k+1) ) )
@@ -1411,7 +1412,7 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
 
   neg_h = .false.
   do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec, G%mask2dT(i,j) > 0.) DO_LOCALITY(local(k) reduce(.or.:neg_h))
-    do k=1,GV%ke
+    do k=1,nz
       neg_h = neg_h .or. (h(i,j,k) < 0.0)
     enddo
   enddo

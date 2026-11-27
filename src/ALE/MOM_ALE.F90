@@ -1588,11 +1588,13 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
     nIIB = CS%niblock ; if (nIIB == 0) nIIB = G%IecB - G%IscB + 1
     njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 1
     ! Arrays that are already on the device are used there, while the others are copied.
-    !$omp target enter data map(to: h_old_u, h_new_u, u, du2h_tot)
+    !$omp target enter data map(to: h_old_u, h_new_u, u) map(alloc: du2h_tot)
+    !$omp target update to(du2h_tot) if(CS%id_remap_delta_integ_u2>0)
     call ALE_remap_vel_block(CS, GV, G%IsdB, G%IedB, G%jsd, G%jed, G%IscB, G%IecB, G%jsc, G%jec, nIIB, njj, &
                              G%mask2dCu, h_old_u, h_new_u, u, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_u2>0), I_dt, du2h_tot)
-    !$omp target exit data map(from: u, du2h_tot) map(release: h_old_u, h_new_u)
+    !$omp target update from(du2h_tot) if(CS%id_remap_delta_integ_u2>0)
+    !$omp target exit data map(from: u) map(release: h_old_u, h_new_u) map(delete: du2h_tot)
   else
     !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
     !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
@@ -1674,11 +1676,13 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
     nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 1
     nJJB = CS%njblock ; if (nJJB == 0) nJJB = G%JecB - G%JscB + 1
     ! Arrays that are already on the device are used there, while the others are copied.
-    !$omp target enter data map(to: h_old_v, h_new_v, v, dv2h_tot)
+    !$omp target enter data map(to: h_old_v, h_new_v, v) map(alloc: dv2h_tot)
+    !$omp target update to(dv2h_tot) if(CS%id_remap_delta_integ_v2>0)
     call ALE_remap_vel_block(CS, GV, G%isd, G%ied, G%JsdB, G%JedB, G%isc, G%iec, G%JscB, G%JecB, nii, nJJB, &
                              G%mask2dCv, h_old_v, h_new_v, v, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_v2>0), I_dt, dv2h_tot)
-    !$omp target exit data map(from: v, dv2h_tot) map(release: h_old_v, h_new_v)
+    !$omp target update from(dv2h_tot) if(CS%id_remap_delta_integ_v2>0)
+    !$omp target exit data map(from: v) map(release: h_old_v, h_new_v) map(delete: dv2h_tot)
   else
     !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
     !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &

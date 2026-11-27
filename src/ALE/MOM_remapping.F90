@@ -1328,8 +1328,10 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
   real :: duh ! The total amount of accumulated stuff (u*h) [A H]
   real :: dh0_eff(nib,njb) ! Running sum of source cell thickness [H]
   integer :: i0_last_thick_cell(nib,njb) ! The last source cell with a positive thickness
+  integer :: iMethod ! A copy of method
   integer :: ii, jj
 
+  iMethod = method
   !$omp target enter data map(alloc: xa, dh0_eff, i0_last_thick_cell)
 
   do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
@@ -1369,7 +1371,7 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
         if (h0_eff(ii,jj,i0)>0.) then
           xb = dh0_eff(ii,jj) / h0_eff(ii,jj,i0) ! This expression yields xa <= xb <= 1.0
           xb = min(1., xb) ! This is only needed when the total target column is wider than the source column
-          u_sub(ii,jj,i_sub) = average_value_PLM_PCM(method, u0(ii,jj,i0), ppoly0_E(ii,jj,i0,1), &
+          u_sub(ii,jj,i_sub) = average_value_PLM_PCM(iMethod, u0(ii,jj,i0), ppoly0_E(ii,jj,i0,1), &
                                    ppoly0_E(ii,jj,i0,2), ppoly0_coefs(ii,jj,i0,1), ppoly0_coefs(ii,jj,i0,2), &
                                    xa(ii,jj), xb)
         else ! Vanished cell

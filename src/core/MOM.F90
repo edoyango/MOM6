@@ -2061,7 +2061,6 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   !$omp target enter data map(alloc: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
   do m=1,ntr
     !$omp target enter data map(to: CS%tracer_Reg%Tr(m)%t)
-    !$omp target update to(CS%tracer_Reg%Tr(m)%t)
   enddo
 
   call cpu_clock_begin(id_clock_pass)
@@ -2162,8 +2161,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   enddo
 
   do m=1,ntr
-    !$omp target update from(CS%tracer_Reg%Tr(m)%t)
-    !$omp target exit data map(release: CS%tracer_Reg%Tr(m)%t)
+    !$omp target exit data map(from: CS%tracer_Reg%Tr(m)%t)
   enddo
   !$omp target exit data map(delete: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
 
