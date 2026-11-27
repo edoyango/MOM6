@@ -8,6 +8,7 @@ module PCM_functions
 implicit none ; private
 
 public PCM_reconstruction
+public PCM_reconstruction_block
 
 contains
 
@@ -38,6 +39,31 @@ subroutine PCM_reconstruction( N, u, edge_values, ppoly_coef )
   enddo
 
 end subroutine PCM_reconstruction
+
+!> Reconstruction by constant polynomials within each cell of a block of columns, as in
+!! PCM_reconstruction, with the cells in the last array index.
+subroutine PCM_reconstruction_block(nib, njb, iie, jje, N, do_col, u, edge_values, ppoly_coef)
+  integer, intent(in) :: nib  !< The first dimension of the block arrays
+  integer, intent(in) :: njb  !< The second dimension of the block arrays
+  integer, intent(in) :: iie  !< The number of columns of this block in the first dimension
+  integer, intent(in) :: jje  !< The number of columns of this block in the second dimension
+  integer, intent(in) :: N    !< Number of cells
+  logical, dimension(nib,njb),     intent(in)    :: do_col !< True for the columns to reconstruct
+  real,    dimension(nib,njb,N),   intent(in)    :: u    !< cell averages in arbitrary units [A]
+  real,    dimension(nib,njb,N,2), intent(inout) :: edge_values !< Edge value of polynomial,
+                                                         !! with the same units as u [A].
+  real,    dimension(nib,njb,N,2), intent(inout) :: ppoly_coef  !< Coefficients of polynomial,
+                                                         !! with the same units as u [A].
+  ! Local variables
+  integer :: ii, jj, k
+
+  do concurrent (k=1:N, jj=1:jje, ii=1:iie, do_col(ii,jj))
+    ppoly_coef(ii,jj,k,1) = u(ii,jj,k)
+    edge_values(ii,jj,k,1) = u(ii,jj,k)
+    edge_values(ii,jj,k,2) = u(ii,jj,k)
+  enddo
+
+end subroutine PCM_reconstruction_block
 
 !> \namespace PCM_functions
 !!

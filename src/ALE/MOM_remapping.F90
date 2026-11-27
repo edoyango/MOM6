@@ -14,8 +14,8 @@ use regrid_edge_values, only : edge_values_explicit_h4, edge_values_implicit_h4
 use regrid_edge_values, only : edge_values_explicit_h4cw
 use regrid_edge_values, only : edge_values_implicit_h4, edge_values_implicit_h6
 use regrid_edge_values, only : edge_slopes_implicit_h3, edge_slopes_implicit_h5
-use PCM_functions, only : PCM_reconstruction
-use PLM_functions, only : PLM_reconstruction, PLM_boundary_extrapolation
+use PCM_functions, only : PCM_reconstruction, PCM_reconstruction_block
+use PLM_functions, only : PLM_reconstruction, PLM_boundary_extrapolation, PLM_reconstruction_block
 use PPM_functions, only : PPM_reconstruction, PPM_boundary_extrapolation
 use PPM_functions, only : PPM_monotonicity
 use PQM_functions, only : PQM_reconstruction, PQM_boundary_extrapolation_v1
@@ -576,6 +576,68 @@ subroutine build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefs, &
   endif
 
 end subroutine build_reconstructions_1d
+
+!> Creates the PCM or PLM polynomial reconstructions of a block of columns, as in
+!! build_reconstructions_1d, with the cells in the last array index.
+subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u0, ppoly_r_coefs, &
+                                       ppoly_r_E, slp, mslp, iMethod, PCM_cell)
+  type(remapping_CS), intent(in) :: CS  !< Remapping control structure
+  integer,            intent(in) :: nib !< The first dimension of the block arrays
+  integer,            intent(in) :: njb !< The second dimension of the block arrays
+  integer,            intent(in) :: iie !< The number of columns of this block in the first dimension
+  integer,            intent(in) :: jje !< The number of columns of this block in the second dimension
+  integer,            intent(in) :: n0  !< Number of cells on source grid
+  logical, dimension(nib,njb),      intent(in)    :: do_col !< True for the columns to reconstruct
+  real,    dimension(nib,njb,n0),   intent(in)    :: h0 !< Cell widths on source grid [H]
+  real,    dimension(nib,njb,n0),   intent(in)    :: u0 !< Cell averages on source grid [A]
+  real,    dimension(nib,njb,n0,2), intent(inout) :: ppoly_r_coefs !< Coefficients of polynomial [A]
+  real,    dimension(nib,njb,n0,2), intent(inout) :: ppoly_r_E !< Edge value of polynomial [A]
+  real,    dimension(nib,njb,n0),   intent(inout) :: slp  !< Work array for the PLM slopes [A]
+  real,    dimension(nib,njb,n0),   intent(inout) :: mslp !< Work array for the monotonized PLM slopes [A]
+  integer,                          intent(out)   :: iMethod !< Integration method
+  logical, dimension(nib,njb,n0), optional, intent(in) :: PCM_cell !< If present, use PCM remapping for
+                                                       !! cells from the source grid where this is true.
+
+  ! Local variables
+  integer :: local_remapping_scheme
+  integer :: ii, jj, k
+
+  if (CS%boundary_extrapolation) call MOM_error(FATAL, 'MOM_remapping, build_reconstructions_block: '//&
+                                                'boundary extrapolation is not supported.')
+
+  iMethod = -999
+
+  local_remapping_scheme = CS%remapping_scheme
+  if (n0<=1) then
+    local_remapping_scheme = REMAPPING_PCM
+  elseif (n0<=3) then
+    local_remapping_scheme = min( local_remapping_scheme, REMAPPING_PLM )
+  endif
+
+  select case ( local_remapping_scheme )
+    case ( REMAPPING_PCM )
+      call PCM_reconstruction_block(nib, njb, iie, jje, n0, do_col, u0, ppoly_r_E, ppoly_r_coefs)
+      iMethod = INTEGRATION_PCM
+    case ( REMAPPING_PLM )
+      call PLM_reconstruction_block(nib, njb, iie, jje, n0, do_col, h0, u0, ppoly_r_E, ppoly_r_coefs, &
+                                    slp, mslp, CS%h_neglect)
+      iMethod = INTEGRATION_PLM
+    case default
+      call MOM_error( FATAL, 'MOM_remapping, build_reconstructions_block: '//&
+           'only the PCM and PLM schemes are supported.' )
+  end select
+
+  if (present(PCM_cell)) then
+    ! Change the coefficients to those for the piecewise constant method in indicated cells.
+    do concurrent (k=1:n0, jj=1:jje, ii=1:iie, do_col(ii,jj) .and. PCM_cell(ii,jj,k))
+      ppoly_r_coefs(ii,jj,k,1) = u0(ii,jj,k)
+      ppoly_r_E(ii,jj,k,1) = u0(ii,jj,k)
+      ppoly_r_E(ii,jj,k,2) = u0(ii,jj,k)
+      ppoly_r_coefs(ii,jj,k,2) = 0.0
+    enddo
+  endif
+
+end subroutine build_reconstructions_block
 
 !> Checks that edge values and reconstructions satisfy bounds
 subroutine check_reconstructions_1d(n0, h0, u0, deg, boundary_extrapolation, &
@@ -1927,6 +1989,76 @@ subroutine test_recon_consistency(test, scheme, n0, niter, h_neglect)
 
 end subroutine test_recon_consistency
 
+!> Test that the block reconstructions agree bitwise with build_reconstructions_1d on random columns
+subroutine test_recon_block(test, scheme, n0, niter, h_neglect, use_PCM_cell)
+  type(testing),    intent(inout) :: test    !< Unit testing convenience functions
+  character(len=*), intent(in)    :: scheme  !< Name of scheme to use
+  integer,          intent(in)    :: n0      !< Number of source cells
+  integer,          intent(in)    :: niter   !< Number of randomized blocks to try
+  real,             intent(in)    :: h_neglect !< A negligibly small width used in cell reconstructions [H]
+  logical,          intent(in)    :: use_PCM_cell !< If true, use PCM in randomly chosen cells
+  ! Local
+  integer, parameter :: nib = 5, njb = 3 ! Block array sizes; the last i column is not used
+  type(remapping_CS) :: CS ! Remapping control structure
+  real :: h0(nib,njb,n0)   ! Source grid [H]
+  real :: u0(nib,njb,n0)   ! Source values [A]
+  real :: rnd(nib,njb,n0)  ! Random numbers [nondim]
+  real :: rnd2(nib,njb)    ! Random numbers [nondim]
+  real :: E(nib,njb,n0,2)  ! Block edge values [A]
+  real :: coefs(nib,njb,n0,2) ! Block polynomial coefficients [A]
+  real :: slp(nib,njb,n0), mslp(nib,njb,n0) ! Block work arrays [A]
+  logical :: do_col(nib,njb) ! Columns to reconstruct
+  logical :: PCM(nib,njb,n0) ! Cells to reconstruct with PCM
+  real :: E1(n0,2)         ! Column edge values [A]
+  real :: S1(n0,2)         ! Column edge slopes [A H-1]
+  real, allocatable :: coefs1(:,:) ! Column polynomial coefficients [A]
+  integer :: iMethod, iMethod1 ! Integration methods
+  integer :: iter, ii, jj, k, nc
+  logical :: error ! Indicates a difference
+  character(len=64) :: label ! Generated label
+
+  call initialize_remapping(CS, scheme, boundary_extrapolation=.false., nk=n0, &
+                            h_neglect=h_neglect, h_neglect_edge=h_neglect)
+  nc = CS%degree + 1
+  allocate(coefs1(n0,nc))
+
+  error = .false.
+  do iter = 1, niter
+    call random_number(h0) ; h0(:,:,:) = max(0., h0(:,:,:) - 0.1) ! About 10% vanished cells
+    call random_number(u0)
+    if (mod(iter, 2) == 0) then ! Mostly monotonic profiles, so that not all slopes are limited to zero
+      do k=2,n0 ; u0(:,:,k) = u0(:,:,k-1) + (u0(:,:,k) - 0.2) ; enddo
+    endif
+    call random_number(rnd) ; PCM(:,:,:) = use_PCM_cell .and. (rnd(:,:,:) > 0.8)
+    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    if (use_PCM_cell) then
+      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_col, h0, u0, coefs, E, &
+                                       slp, mslp, iMethod, PCM)
+    else
+      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_col, h0, u0, coefs, E, &
+                                       slp, mslp, iMethod)
+    endif
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+      if (use_PCM_cell) then
+        call build_reconstructions_1d(CS, n0, h0(ii,jj,:), u0(ii,jj,:), coefs1, E1, S1, iMethod1, &
+                                      h_neglect, h_neglect, PCM_cell=PCM(ii,jj,:))
+      else
+        call build_reconstructions_1d(CS, n0, h0(ii,jj,:), u0(ii,jj,:), coefs1, E1, S1, iMethod1, &
+                                      h_neglect, h_neglect)
+      endif
+      if ((iMethod /= iMethod1) .or. any(E(ii,jj,:,:) /= E1(:,:)) .or. &
+          any(coefs(ii,jj,:,1:nc) /= coefs1(:,:))) error = .true.
+    endif ; enddo ; enddo
+  enddo
+
+  write(label, '(a,i0,a,l1)') 'block '//trim(scheme)//' reconstructions, n0=', n0, ', PCM_cell=', use_PCM_cell
+  call test%test(error, trim(label))
+
+  deallocate(coefs1)
+  call end_remapping(CS)
+
+end subroutine test_recon_block
+
 !> Test that remapping a uniform field remains uniform
 subroutine test_preserve_uniform(test, scheme, n0, niter, h_neglect)
   type(testing),      intent(inout) :: test    !< Unit testing convenience functions
@@ -2973,6 +3105,13 @@ logical function remapping_unit_tests(verbose, num_comp_samp)
 
   call end_remapping(CS)
   call end_remapping(CS2)
+
+  ! The block routines must agree bitwise with the column routines.
+  if (verbose) write(test%stdout,*) '  - - - - - block vs column tests - - - - -'
+  call test_recon_block(test, 'PLM', 9, ntests, h_neglect, .false.)
+  call test_recon_block(test, 'PLM', 9, ntests, h_neglect, .true.)
+  call test_recon_block(test, 'PCM', 9, ntests, h_neglect, .true.)
+  call test_recon_block(test, 'PLM', 2, ntests, h_neglect, .false.)
 
   remapping_unit_tests = test%summarize('remapping_unit_tests')
 

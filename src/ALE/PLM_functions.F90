@@ -1,6 +1,7 @@
 ! This file is part of MOM6, the Modular Ocean Model version 6.
 ! See the LICENSE file for licensing information.
 ! SPDX-License-Identifier: Apache-2.0
+#include "do_concurrent_compat.h"
 
 !> Piecewise linear reconstruction functions
 module PLM_functions
@@ -11,6 +12,7 @@ public PLM_boundary_extrapolation
 public PLM_extrapolate_slope
 public PLM_monotonized_slope
 public PLM_reconstruction
+public PLM_reconstruction_block
 public PLM_slope_wa
 public PLM_slope_cw
 
@@ -255,6 +257,88 @@ subroutine PLM_reconstruction( N, h, u, edge_values, ppoly_coef, h_neglect )
   ppoly_coef(N,2) = 0.
 
 end subroutine PLM_reconstruction
+
+!> Reconstruction by linear polynomials within each cell of a block of columns, as in
+!! PLM_reconstruction, with the cells in the last array index.
+subroutine PLM_reconstruction_block(nib, njb, iie, jje, N, do_col, h, u, edge_values, ppoly_coef, &
+                                    slp, mslp, h_neglect)
+  integer, intent(in) :: nib  !< The first dimension of the block arrays
+  integer, intent(in) :: njb  !< The second dimension of the block arrays
+  integer, intent(in) :: iie  !< The number of columns of this block in the first dimension
+  integer, intent(in) :: jje  !< The number of columns of this block in the second dimension
+  integer, intent(in) :: N    !< Number of cells
+  logical, dimension(nib,njb),     intent(in)    :: do_col !< True for the columns to reconstruct
+  real,    dimension(nib,njb,N),   intent(in)    :: h    !< cell widths [H]
+  real,    dimension(nib,njb,N),   intent(in)    :: u    !< cell averages in arbitrary units [A]
+  real,    dimension(nib,njb,N,2), intent(inout) :: edge_values !< edge values of piecewise polynomials,
+                                                         !! with the same units as u [A].
+  real,    dimension(nib,njb,N,2), intent(inout) :: ppoly_coef  !< coefficients of piecewise polynomials,
+                                                         !! mainly with the same units as u [A].
+  real,    dimension(nib,njb,N),   intent(inout) :: slp  !< Work array for the first guess at the
+                                                         !! normalized slopes [A]
+  real,    dimension(nib,njb,N),   intent(inout) :: mslp !< Work array for the monotonized
+                                                         !! normalized slopes [A]
+  real,                            intent(in)    :: h_neglect !< A negligibly small width for
+                                                         !! the purpose of cell reconstructions
+                                                         !! in the same units as h [H]
+
+  ! Local variables
+  real          :: u_l, u_r    ! left and right cell averages [A]
+  real          :: slope       ! retained PLM slope for a normalized cell width [A]
+  real          :: e_r         ! The edge value in the neighboring cell [A]
+  real          :: edge        ! The projected edge value in the cell [A]
+  real          :: almost_one  ! A value that is slightly smaller than 1 [nondim]
+  integer       :: ii, jj, k
+
+  almost_one = 1. - epsilon(slope)
+
+  ! The interior loops are skipped when they are empty because nvfortran's implicit copies of their
+  ! k-1:k+1 array sections then fail.
+  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj))
+    slp(ii,jj,k) = PLM_slope_wa(h(ii,jj,k-1), h(ii,jj,k), h(ii,jj,k+1), h_neglect, &
+                                u(ii,jj,k-1), u(ii,jj,k), u(ii,jj,k+1))
+  enddo ; endif
+
+  ! Boundary cells use PCM.
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+    slp(ii,jj,1) = 0. ; slp(ii,jj,N) = 0.
+    mslp(ii,jj,1) = 0. ; mslp(ii,jj,N) = 0.
+    edge_values(ii,jj,1,1) = u(ii,jj,1)
+    edge_values(ii,jj,1,2) = u(ii,jj,1)
+    ppoly_coef(ii,jj,1,1) = u(ii,jj,1)
+    ppoly_coef(ii,jj,1,2) = 0.
+    edge_values(ii,jj,N,1) = u(ii,jj,N)
+    edge_values(ii,jj,N,2) = u(ii,jj,N)
+    ppoly_coef(ii,jj,N,1) = u(ii,jj,N)
+    ppoly_coef(ii,jj,N,2) = 0.
+  enddo
+
+  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj))
+    mslp(ii,jj,k) = PLM_monotonized_slope( u(ii,jj,k-1), u(ii,jj,k), u(ii,jj,k+1), &
+                                           slp(ii,jj,k-1), slp(ii,jj,k), slp(ii,jj,k+1) )
+  enddo ; endif
+
+  if (N > 2) then
+    do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(slope, u_l, u_r, edge, e_r))
+      slope = mslp(ii,jj,k)
+      u_l = u(ii,jj,k) - 0.5 * slope ! Left edge value of cell k
+      u_r = u(ii,jj,k) + 0.5 * slope ! Right edge value of cell k
+
+      edge_values(ii,jj,k,1) = u_l
+      edge_values(ii,jj,k,2) = u_r
+      ppoly_coef(ii,jj,k,1) = u_l
+      ppoly_coef(ii,jj,k,2) = ( u_r - u_l )
+      ! Check to see if this evaluation of the polynomial at x=1 would be
+      ! monotonic w.r.t. the next cell's edge value. If not, scale back!
+      edge = ppoly_coef(ii,jj,k,2) + ppoly_coef(ii,jj,k,1)
+      e_r = u(ii,jj,k+1) - 0.5 * sign( mslp(ii,jj,k+1), slp(ii,jj,k+1) )
+      if ( (edge-u(ii,jj,k))*(e_r-edge)<0.) then
+        ppoly_coef(ii,jj,k,2) = ppoly_coef(ii,jj,k,2) * almost_one
+      endif
+    enddo
+  endif
+
+end subroutine PLM_reconstruction_block
 
 
 !> Reconstruction by linear polynomials within boundary cells
