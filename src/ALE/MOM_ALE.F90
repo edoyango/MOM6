@@ -1496,12 +1496,16 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   real :: u2h_tot, v2h_tot   ! The vertically integrated u**2 and v**2 [H L2 T-2 ~> m3 s-2 or kg s-2]
   real :: I_dt               ! 1 / dt [T-1 ~> s-1]
   logical :: variance_option ! Contains the value of allow_preserve_variance when present, else false
+  logical :: use_blocks      ! If true, use the block remapping routines
   logical :: show_call_tree
+  integer :: nIIB, njj       ! The i and j block sizes for u
   integer :: i, j, k, nz
 
   show_call_tree = .false.
   if (present(debug)) show_call_tree = debug
   if (show_call_tree) call callTree_enter("ALE_remap_velocities()")
+
+  use_blocks = remapping_block_supported(CS%vel_remapCS)
 
   ! Setup related to KE conservation
   variance_option = .false.
@@ -1518,73 +1522,86 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
 
   ! --- Remap u profiles from the source vertical grid onto the new target grid.
 
-  !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
-  !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
-  !$OMP                                     u2h_tot,v2h_tot)
-  do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
-    ! Make a 1-d copy of the start and final grids and the source velocity
-    do k=1,nz
-      h1(k) = h_old_u(I,j,k)
-      h2(k) = h_new_u(I,j,k)
-      u_src(k) = u(I,j,k)
-    enddo
-
-    if (CS%id_remap_delta_integ_u2>0) then
-      u2h_tot = 0.
+  if (use_blocks) then
+    nIIB = CS%niblock ; if (nIIB == 0) nIIB = G%IecB - G%IscB + 1
+    njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 1
+    ! The thicknesses and velocities are current on the host.
+    !$omp target enter data map(to: h_old_u, h_new_u, u, du2h_tot)
+    !$omp target update to(h_old_u, h_new_u, u, du2h_tot)
+    call ALE_remap_vel_block(CS, GV, G%IsdB, G%IedB, G%jsd, G%jed, G%IscB, G%IecB, G%jsc, G%jec, nIIB, njj, &
+                             G%mask2dCu, h_old_u, h_new_u, u, (variance_option .and. CS%conserve_ke), &
+                             (CS%id_remap_delta_integ_u2>0), I_dt, du2h_tot)
+    !$omp target update from(u, du2h_tot)
+    !$omp target exit data map(release: h_old_u, h_new_u, u, du2h_tot)
+  else
+    !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
+    !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
+    !$OMP                                     u2h_tot,v2h_tot)
+    do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
+      ! Make a 1-d copy of the start and final grids and the source velocity
       do k=1,nz
-        u2h_tot = u2h_tot - h1(k) * (u_src(k)**2)
+        h1(k) = h_old_u(I,j,k)
+        h2(k) = h_new_u(I,j,k)
+        u_src(k) = u(I,j,k)
       enddo
-    endif
 
-    call remapping_core_h(CS%vel_remapCS, nz, h1, u_src, nz, h2, u_tgt)
-
-    if (variance_option .and. CS%conserve_ke) then
-    ! Conserve ke_u by correcting baroclinic component.
-    ! Assumes total depth doesn't change during remap, and
-    ! that \int u(z) dz doesn't change during remap.
-      ! First get barotropic component
-      u_bt = 0.0
-      do k=1,nz
-        u_bt = u_bt + h2(k) * u_tgt(k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
-      enddo
-      u_bt = u_bt / (sum(h2(1:nz)) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
-      ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
-      ke_c_src = 0.0
-      ke_c_tgt = 0.0
-      do k=1,nz
-        ke_c_src = ke_c_src + h1(k) * (u_src(k) - u_bt)**2
-        ke_c_tgt = ke_c_tgt + h2(k) * (u_tgt(k) - u_bt)**2
-      enddo
-      ! Next rescale baroclinic component on target grid to conserve ke
-      ! The values 1.5625 = 1.25**2 and 1.25 below mean that the KE-conserving
-      ! correction cannot amplify the baroclinic part of velocity by more
-      ! than 25%. This threshold is somewhat arbitrary. It was added to
-      ! prevent unstable behavior when the amplification factor is large.
-      if (ke_c_src < 1.5625 * ke_c_tgt) then
-        rescale_coef = sqrt(ke_c_src / ke_c_tgt)
-      else
-        rescale_coef = 1.25
+      if (CS%id_remap_delta_integ_u2>0) then
+        u2h_tot = 0.
+        do k=1,nz
+          u2h_tot = u2h_tot - h1(k) * (u_src(k)**2)
+        enddo
       endif
+
+      call remapping_core_h(CS%vel_remapCS, nz, h1, u_src, nz, h2, u_tgt)
+
+      if (variance_option .and. CS%conserve_ke) then
+      ! Conserve ke_u by correcting baroclinic component.
+      ! Assumes total depth doesn't change during remap, and
+      ! that \int u(z) dz doesn't change during remap.
+        ! First get barotropic component
+        u_bt = 0.0
+        do k=1,nz
+          u_bt = u_bt + h2(k) * u_tgt(k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
+        enddo
+        u_bt = u_bt / (sum(h2(1:nz)) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
+        ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
+        ke_c_src = 0.0
+        ke_c_tgt = 0.0
+        do k=1,nz
+          ke_c_src = ke_c_src + h1(k) * (u_src(k) - u_bt)**2
+          ke_c_tgt = ke_c_tgt + h2(k) * (u_tgt(k) - u_bt)**2
+        enddo
+        ! Next rescale baroclinic component on target grid to conserve ke
+        ! The values 1.5625 = 1.25**2 and 1.25 below mean that the KE-conserving
+        ! correction cannot amplify the baroclinic part of velocity by more
+        ! than 25%. This threshold is somewhat arbitrary. It was added to
+        ! prevent unstable behavior when the amplification factor is large.
+        if (ke_c_src < 1.5625 * ke_c_tgt) then
+          rescale_coef = sqrt(ke_c_src / ke_c_tgt)
+        else
+          rescale_coef = 1.25
+        endif
+        do k=1,nz
+          u_tgt(k) = u_bt + rescale_coef * (u_tgt(k) - u_bt)
+        enddo
+      endif
+
+      if (CS%id_remap_delta_integ_u2>0) then
+        do k=1,nz
+          u2h_tot = u2h_tot + h2(k) * (u_tgt(k)**2)
+        enddo
+        du2h_tot(I,j) = u2h_tot * I_dt
+      endif
+
+      if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) &
+          call mask_near_bottom_vel(u_tgt, h2, CS%BBL_h_vel_mask, CS%h_vel_mask, nz)
+
+      ! Copy the column of new velocities back to the 3-d array
       do k=1,nz
-        u_tgt(k) = u_bt + rescale_coef * (u_tgt(k) - u_bt)
-      enddo
-    endif
-
-    if (CS%id_remap_delta_integ_u2>0) then
-      do k=1,nz
-        u2h_tot = u2h_tot + h2(k) * (u_tgt(k)**2)
-      enddo
-      du2h_tot(I,j) = u2h_tot * I_dt
-    endif
-
-    if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) &
-        call mask_near_bottom_vel(u_tgt, h2, CS%BBL_h_vel_mask, CS%h_vel_mask, nz)
-
-    ! Copy the column of new velocities back to the 3-d array
-    do k=1,nz
-      u(I,j,k) = u_tgt(k)
-    enddo !k
-  endif ; enddo ; enddo
+        u(I,j,k) = u_tgt(k)
+      enddo !k
+    endif ; enddo ; enddo
+  endif
 
   if (CS%id_remap_delta_integ_u2>0) call post_data(CS%id_remap_delta_integ_u2, du2h_tot, CS%diag)
 
@@ -1664,6 +1681,213 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   if (show_call_tree) call callTree_leave("ALE_remap_velocities()")
 
 end subroutine ALE_remap_velocities
+
+!> Remaps a velocity component between the old and new grids with the block remapping routines, as in
+!! the column loops of ALE_remap_velocities, working on blocks of nib by njb velocity points.  The array
+!! bounds are arguments so that this serves both velocity components.
+subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, njb, mask, h_old, h_new, &
+                               vel, conserve_ke, do_ke_diag, I_dt, du2h_tot)
+  type(ALE_CS),            intent(in) :: CS  !< ALE control structure
+  type(verticalGrid_type), intent(in) :: GV  !< Ocean vertical grid structure
+  integer,                 intent(in) :: isd !< The lower i memory bound of the velocity arrays
+  integer,                 intent(in) :: ied !< The upper i memory bound of the velocity arrays
+  integer,                 intent(in) :: jsd !< The lower j memory bound of the velocity arrays
+  integer,                 intent(in) :: jed !< The upper j memory bound of the velocity arrays
+  integer,                 intent(in) :: is  !< The first i index of the velocity points to remap
+  integer,                 intent(in) :: ie  !< The last i index of the velocity points to remap
+  integer,                 intent(in) :: js  !< The first j index of the velocity points to remap
+  integer,                 intent(in) :: je  !< The last j index of the velocity points to remap
+  integer,                 intent(in) :: nib !< The i block size
+  integer,                 intent(in) :: njb !< The j block size
+  real, dimension(isd:ied,jsd:jed),          intent(in)    :: mask  !< The land mask at velocity points [nondim]
+  real, dimension(isd:ied,jsd:jed,SZK_(GV)), intent(in)    :: h_old !< Source grid thickness at velocity
+                                                                    !! points [H ~> m or kg m-2]
+  real, dimension(isd:ied,jsd:jed,SZK_(GV)), intent(in)    :: h_new !< Destination grid thickness at velocity
+                                                                    !! points [H ~> m or kg m-2]
+  real, dimension(isd:ied,jsd:jed,SZK_(GV)), intent(inout) :: vel   !< A velocity component [L T-1 ~> m s-1]
+  logical,                 intent(in) :: conserve_ke !< If true, correct the baroclinic velocity to conserve KE
+  logical,                 intent(in) :: do_ke_diag  !< If true, find du2h_tot
+  real,                    intent(in) :: I_dt        !< 1 / dt [T-1 ~> s-1]
+  real, dimension(isd:ied,jsd:jed),          intent(inout) :: du2h_tot !< The rate of change of vertically
+                                                       !! integrated vel**2 [H L2 T-3 ~> m3 s-3 or kg s-3]
+
+  ! Local variables
+  real, dimension(nib,njb,SZK_(GV)) :: &
+    h0_b, &       ! Source grid thicknesses in the block [H ~> m or kg m-2]
+    h1_b, &       ! Target grid thicknesses in the block [H ~> m or kg m-2]
+    u0_b, &       ! Velocities on the source grid in the block [L T-1 ~> m s-1]
+    u1_b, &       ! Velocities on the target grid in the block [L T-1 ~> m s-1]
+    h0_eff_b, &   ! Effective thicknesses of the source cells [H ~> m or kg m-2]
+    slp_b, &      ! Work array for the PLM slopes [L T-1 ~> m s-1]
+    mslp_b        ! Work array for the monotonized PLM slopes [L T-1 ~> m s-1]
+  real, dimension(nib,njb,SZK_(GV),2) :: &
+    ppoly_E_b, &  ! Edge values of the reconstructions [L T-1 ~> m s-1]
+    ppoly_coefs_b ! Coefficients of the reconstructions [L T-1 ~> m s-1]
+  real, dimension(nib,njb,2*SZK_(GV)+1) :: &
+    h_sub_b, &    ! Sub-cell thicknesses [H ~> m or kg m-2]
+    u_sub_b, &    ! Sub-cell velocities [L T-1 ~> m s-1]
+    uh_sub_b      ! Sub-cell integrals [H L T-1 ~> m2 s-1 or kg m-1 s-1]
+  integer, dimension(nib,njb,SZK_(GV)) :: &
+    isrc_start_b, isrc_end_b, isrc_max_b, & ! First, last and thickest sub-cells of each source cell
+    itgt_start_b, itgt_end_b                ! First and last sub-cells of each target cell
+  integer, dimension(nib,njb,2*SZK_(GV)+1) :: isub_src_b ! Source cell of each sub-cell
+  logical, dimension(nib,njb) :: do_col  ! True for the ocean columns of the block
+  real, dimension(nib,njb) :: &
+    u2h_tot, &    ! The vertically integrated vel**2 [H L2 T-2 ~> m3 s-2 or kg s-2]
+    u_bt, &       ! Depth-averaged velocity [L T-1 ~> m s-1]
+    h2_tot, &     ! The total target thickness [H ~> m or kg m-2]
+    ke_c_src, &   ! \int [vel_c]^2 dz on the source grid [H L2 T-2 ~> m3 s-2]
+    ke_c_tgt, &   ! \int [vel_c]^2 dz on the target grid [H L2 T-2 ~> m3 s-2]
+    rescale_coef, & ! Factor that scales the baroclinic velocity to conserve ke [nondim]
+    h_from_bot    ! The distance between the top of a layer and the seafloor [H ~> m or kg m-2]
+  logical, dimension(nib,njb) :: near_bot ! True while a column is still within the near-bottom region
+  real :: h_BBL   ! The thickness of the near-bottom region in which to mask velocities [H ~> m or kg m-2]
+  real :: h_thin  ! A layer thickness below which near-bottom velocities are masked [H ~> m or kg m-2]
+  logical :: mask_bottom ! If true, zero out velocities in thin layers near the seafloor
+  logical :: bad  ! True if the grid intersection failed
+  integer :: i, j, k, nz, isb, ieb, jsb, jeb, iie, jje, ii, jj
+
+  nz = GV%ke
+  h_BBL = CS%BBL_h_vel_mask ; h_thin = CS%h_vel_mask
+  mask_bottom = (h_BBL > 0.0) .and. (h_thin > 0.0)
+
+  !$omp target enter data map(alloc: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, u2h_tot, u_bt, h2_tot, &
+  !$omp                              ke_c_src, ke_c_tgt, rescale_coef, h_from_bot, near_bot)
+
+  do jsb=js,je,njb ; do isb=is,ie,nib
+    ieb = min(isb + nib - 1, ie) ; jeb = min(jsb + njb - 1, je)
+    iie = ieb - isb + 1 ; jje = jeb - jsb + 1
+
+    ! Make a block copy of the start and final grids and the source velocity
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      do_col(ii,jj) = (mask(i,j) > 0.)
+    enddo
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      h0_b(ii,jj,k) = h_old(i,j,k)
+      h1_b(ii,jj,k) = h_new(i,j,k)
+      u0_b(ii,jj,k) = vel(i,j,k)
+    enddo
+
+    if (do_ke_diag) then
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+        u2h_tot(ii,jj) = 0.
+      enddo
+      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+        do k=1,nz
+          do concurrent (ii=1:iie, do_col(ii,jj))
+            u2h_tot(ii,jj) = u2h_tot(ii,jj) - h0_b(ii,jj,k) * (u0_b(ii,jj,k)**2)
+          enddo
+        enddo
+      enddo
+    endif
+
+    call intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
+                                       isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, itgt_end_b, &
+                                       isub_src_b, bad)
+    if (bad) call MOM_error(FATAL, "MOM_ALE, ALE_remap_velocities: intersect_src_tgt_grids: THIS SHOULD NEVER HAPPEN!")
+    call remapping_core_h_block(CS%vel_remapCS, nib, njb, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+                                h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
+                                itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
+                                u_sub_b, uh_sub_b)
+
+    if (conserve_ke) then
+      ! Conserve ke by correcting baroclinic component.
+      ! Assumes total depth doesn't change during remap, and
+      ! that \int u(z) dz doesn't change during remap.
+      ! First get barotropic component
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+        u_bt(ii,jj) = 0.0 ; h2_tot(ii,jj) = 0.0
+        ke_c_src(ii,jj) = 0.0 ; ke_c_tgt(ii,jj) = 0.0
+      enddo
+      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+        do k=1,nz
+          do concurrent (ii=1:iie, do_col(ii,jj))
+            u_bt(ii,jj) = u_bt(ii,jj) + h1_b(ii,jj,k) * u1_b(ii,jj,k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
+            h2_tot(ii,jj) = h2_tot(ii,jj) + h1_b(ii,jj,k)
+          enddo
+        enddo
+      enddo
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+        u_bt(ii,jj) = u_bt(ii,jj) / (h2_tot(ii,jj) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
+      enddo
+      ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
+      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+        do k=1,nz
+          do concurrent (ii=1:iie, do_col(ii,jj))
+            ke_c_src(ii,jj) = ke_c_src(ii,jj) + h0_b(ii,jj,k) * (u0_b(ii,jj,k) - u_bt(ii,jj))**2
+            ke_c_tgt(ii,jj) = ke_c_tgt(ii,jj) + h1_b(ii,jj,k) * (u1_b(ii,jj,k) - u_bt(ii,jj))**2
+          enddo
+        enddo
+      enddo
+      ! Next rescale baroclinic component on target grid to conserve ke
+      ! The values 1.5625 = 1.25**2 and 1.25 below mean that the KE-conserving
+      ! correction cannot amplify the baroclinic part of velocity by more
+      ! than 25%. This threshold is somewhat arbitrary. It was added to
+      ! prevent unstable behavior when the amplification factor is large.
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+        if (ke_c_src(ii,jj) < 1.5625 * ke_c_tgt(ii,jj)) then
+          rescale_coef(ii,jj) = sqrt(ke_c_src(ii,jj) / ke_c_tgt(ii,jj))
+        else
+          rescale_coef(ii,jj) = 1.25
+        endif
+      enddo
+      do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj))
+        u1_b(ii,jj,k) = u_bt(ii,jj) + rescale_coef(ii,jj) * (u1_b(ii,jj,k) - u_bt(ii,jj))
+      enddo
+    endif
+
+    if (do_ke_diag) then
+      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+        do k=1,nz
+          do concurrent (ii=1:iie, do_col(ii,jj))
+            u2h_tot(ii,jj) = u2h_tot(ii,jj) + h1_b(ii,jj,k) * (u1_b(ii,jj,k)**2)
+          enddo
+        enddo
+      enddo
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+        i = isb + ii - 1 ; j = jsb + jj - 1
+        du2h_tot(i,j) = u2h_tot(ii,jj) * I_dt
+      enddo
+    endif
+
+    if (mask_bottom) then
+      ! Zero out velocities in thin layers near the seafloor, as in mask_near_bottom_vel
+      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+        h_from_bot(ii,jj) = 0.0
+        near_bot(ii,jj) = .true.
+      enddo
+      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+        do k=nz,1,-1
+          do concurrent (ii=1:iie, do_col(ii,jj) .and. near_bot(ii,jj))
+            h_from_bot(ii,jj) = h_from_bot(ii,jj) + h1_b(ii,jj,k)
+            if (h_from_bot(ii,jj) > h_BBL) then
+              near_bot(ii,jj) = .false.
+            elseif (h1_b(ii,jj,k) <= h_thin) then
+              ! Set the velocity to zero in thin, near-bottom layers.
+              u1_b(ii,jj,k) = 0.0
+            endif
+          enddo
+        enddo
+      enddo
+    endif
+
+    ! Copy the new velocities back to the 3-d array
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      vel(i,j,k) = u1_b(ii,jj,k)
+    enddo
+  enddo ; enddo
+
+  !$omp target exit data map(delete: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, u2h_tot, u_bt, h2_tot, &
+  !$omp                              ke_c_src, ke_c_tgt, rescale_coef, h_from_bot, near_bot)
+
+end subroutine ALE_remap_vel_block
 
 !> Interpolate to find an updated array of values at interfaces after remapping.
 subroutine ALE_remap_interface_vals(CS, G, GV, h_old, h_new, int_val)
