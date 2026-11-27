@@ -371,6 +371,7 @@ subroutine ALE_init( param_file, G, GV, US, max_depth, CS)
                  default=default_njblock, layoutParam=.true.)
   if (CS%niblock < 0) call MOM_error(FATAL, "ALE_init: ALE_NIBLOCK must be nonnegative.")
   if (CS%njblock < 0) call MOM_error(FATAL, "ALE_init: ALE_NJBLOCK must be nonnegative.")
+  call set_regrid_params(CS%regridCS, niblock=CS%niblock, njblock=CS%njblock)
 
   ! Keep a record of values for subsequent queries
   CS%nk = GV%ke

@@ -127,6 +127,15 @@ type, public :: regridding_CS ; private
   !> Depth below which time-filtering of grid is applied at full effect [H ~> m or kg m-2]
   real :: depth_of_time_filter_deep = 0.
 
+  !> The i block size of the block regridding routines, or 0 for the full i extent [nondim]
+  integer :: niblock = 0
+  !> The j block size of the block regridding routines, or 0 for the full j extent [nondim]
+#ifdef __NVCOMPILER_OPENMP_GPU
+  integer :: njblock = 0
+#else
+  integer :: njblock = 1
+#endif
+
   !> Fraction (between 0 and 1) of compressibility to add to potential density
   !! profiles when interpolating for target grid positions [nondim]
   real :: compressibility_fraction = 0.
@@ -1261,6 +1270,16 @@ subroutine regridding_main( remapCS, CS, G, GV, US, h, tv, h_new, dzInterface, &
     call MOM_error(FATAL, "Regridding_main called in fully non-Boussinesq mode with "//trim(mesg))
   endif
 
+  ! The block routines only support the ZSTAR coordinate without an ice shelf.
+  if ((CS%regridding_scheme == REGRIDDING_ZSTAR) .and. .not.present(frac_shelf_h)) then
+    call regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
+    return
+  endif
+#ifdef __NVCOMPILER_OPENMP_GPU
+  if (CS%regridding_scheme == REGRIDDING_ZSTAR) call MOM_error(FATAL, "MOM_regridding, regridding_main: "//&
+      "GPU builds do not support an ice shelf with the ZSTAR coordinate.")
+#endif
+
   if (allocated(tv%SpV_avg)) then  ! This is the fully non-Boussinesq case
     do j=G%jsc-1,G%jec+1 ; do i=G%isc-1,G%iec+1
       tot_h(i,j) = 0.0 ; tot_dz(i,j) = 0.0
@@ -1330,6 +1349,115 @@ subroutine regridding_main( remapCS, CS, G, GV, US, h, tv, h_new, dzInterface, &
   endif ; enddo ; enddo
 
 end subroutine regridding_main
+
+!> Builds a new ZSTAR grid and the change in interface positions with the block routines, as in the
+!! ZSTAR branch of regridding_main without an ice shelf.
+subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
+  type(regridding_CS),                        intent(in)    :: CS     !< Regridding control structure
+  type(ocean_grid_type),                      intent(in)    :: G      !< Ocean grid structure
+  type(verticalGrid_type),                    intent(in)    :: GV     !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h      !< Current 3D grid obtained after
+                                                                      !! the last time step [H ~> m or kg m-2]
+  type(thermo_var_ptrs),                      intent(in)    :: tv     !< Thermodynamical variables (T, S, ...)
+  real, dimension(SZI_(G),SZJ_(G),CS%nk),     intent(inout) :: h_new  !< New 3D grid consistent with target
+                                                                      !! coordinate [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),CS%nk+1),   intent(inout) :: dzInterface !< The change in position of each
+                                                                      !! interface [H ~> m or kg m-2]
+  real,                                       intent(in)    :: Z_to_H !< A conversion factor from the
+                                                                      !! coordinate units to thickness
+                                                                      !! units [H Z-1 ~> nondim or kg m-3]
+  ! Local variables
+  real :: nom_depth_H(SZI_(G),SZJ_(G))  !< The nominal ocean depth at each point in thickness units [H ~> m or kg m-2]
+  logical :: neg_h ! True if any input thickness is negative
+  integer :: nii, njj ! The i and j block sizes
+  integer :: i, j, k, nki
+
+  ! The thicknesses and grids are current on the host.
+  !$omp target enter data map(to: h, h_new, dzInterface) map(alloc: nom_depth_H)
+  !$omp target update to(h, h_new, dzInterface)
+
+  if (allocated(tv%SpV_avg)) then  ! This is the fully non-Boussinesq case
+    call nominal_depth_nonBous(G, GV, h, tv%SpV_avg, nom_depth_H)
+  else
+    do concurrent (j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
+      nom_depth_H(i,j) = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * Z_to_H
+    enddo
+  endif
+
+  nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 3
+  njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 3
+  call build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, njj, zScale=Z_to_H)
+
+  ! This is calc_h_new_by_dz.
+  nki = min(CS%nk, GV%ke)
+  do concurrent (k=1:CS%nk, j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
+    if (G%mask2dT(i,j)>0.) then
+      if (k <= nki) then
+        h_new(i,j,k) = max( 0., h(i,j,k) + ( dzInterface(i,j,k) - dzInterface(i,j,k+1) ) )
+      else
+        h_new(i,j,k) = max( 0., dzInterface(i,j,k) - dzInterface(i,j,k+1) )
+      endif
+    else
+      if (k <= nki) then
+        h_new(i,j,k) = h(i,j,k)
+      else
+        h_new(i,j,k) = 0.
+      endif
+    endif
+  enddo
+
+  neg_h = .false.
+  do concurrent (j=G%jsc:G%jec, i=G%isc:G%iec, G%mask2dT(i,j) > 0.) DO_LOCALITY(local(k) reduce(.or.:neg_h))
+    do k=1,GV%ke
+      neg_h = neg_h .or. (h(i,j,k) < 0.0)
+    enddo
+  enddo
+
+  !$omp target update from(h_new, dzInterface)
+  !$omp target exit data map(release: h, h_new, dzInterface) map(delete: nom_depth_H)
+
+  if (neg_h) call MOM_error(FATAL, "regridding_main: negative thickness encountered.")
+
+end subroutine regridding_main_block
+
+!> Finds the nominal ocean depth in thickness units in the fully non-Boussinesq case, as in regridding_main.
+subroutine nominal_depth_nonBous(G, GV, h, SpV_avg, nom_depth_H)
+  type(ocean_grid_type),                     intent(in)  :: G       !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in)  :: GV      !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)  :: h       !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)  :: SpV_avg !< Layer specific volumes [R-1 ~> m3 kg-1]
+  real, dimension(SZI_(G),SZJ_(G)),          intent(out) :: nom_depth_H !< The nominal ocean depth at each
+                                                                   !! point in thickness units [H ~> m or kg m-2]
+  ! Local variables
+  real :: tot_h(SZI_(G),SZJ_(G))  !< The total thickness of the water column [H ~> m or kg m-2]
+  real :: tot_dz(SZI_(G),SZJ_(G)) !< The total distance between the top and bottom of the water column [Z ~> m]
+  integer :: i, j, k
+
+  !$omp target enter data map(to: SpV_avg) map(alloc: tot_h, tot_dz)
+  !$omp target update to(SpV_avg)
+
+  do concurrent (j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
+    tot_h(i,j) = 0.0 ; tot_dz(i,j) = 0.0
+  enddo
+  do concurrent (j=G%jsc-1:G%jec+1) DO_LOCALITY(local(k))
+    do k=1,GV%ke
+      do concurrent (i=G%isc-1:G%iec+1)
+        tot_h(i,j) = tot_h(i,j) + h(i,j,k)
+        tot_dz(i,j) = tot_dz(i,j) + GV%H_to_RZ * SpV_avg(i,j,k) * h(i,j,k)
+      enddo
+    enddo
+  enddo
+  do concurrent (j=G%jsc-1:G%jec+1, i=G%isc-1:G%iec+1)
+    if (tot_dz(i,j) > 0.0) then
+      nom_depth_H(i,j) = max(G%meanSL(i,j) + G%bathyT(i,j), 0.0) * (tot_h(i,j) / tot_dz(i,j))
+    else
+      nom_depth_H(i,j) = 0.0
+    endif
+  enddo
+
+  !$omp target exit data map(release: SpV_avg) map(delete: tot_h, tot_dz)
+
+end subroutine nominal_depth_nonBous
 
 !------------------------------------------------------------------------------
 !> This routine returns flags indicating which pre-remapping state adjustments
@@ -1864,6 +1992,111 @@ subroutine build_zstar_grid( CS, G, GV, h, nom_depth_H, dzInterface, frac_shelf_
   enddo
 
 end subroutine build_zstar_grid
+
+!> Builds a z* grid with a minimum layer thickness in blocks of nii by njb columns, as in build_zstar_grid
+!! without an ice shelf.
+subroutine build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, njj, zScale)
+  type(regridding_CS),                       intent(in)    :: CS !< Regridding control structure
+  type(ocean_grid_type),                     intent(in)    :: G  !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV !< ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h  !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G)),          intent(in)    :: nom_depth_H !< The bathymetric depth of this column
+                                                                 !! relative to mean sea level or another locally
+                                                                 !! valid reference height, converted to thickness
+                                                                 !! units [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),CS%nk+1),  intent(inout) :: dzInterface !< The change in interface depth
+                                                                 !! [H ~> m or kg m-2]
+  integer,                                   intent(in)    :: nii !< The i block size
+  integer,                                   intent(in)    :: njj !< The j block size
+  real,                            optional, intent(in)    :: zScale !< Scaling factor from the target coordinate
+                                                                 !! resolution in Z to desired units for zInterface,
+                                                                 !! usually Z_to_H in which case it is in
+                                                                 !! units of [H Z-1 ~> nondim or kg m-3]
+  ! Local variables
+  real, dimension(nii,njj,SZK_(GV)) :: h_b  ! Layer thicknesses in the block [H ~> m or kg m-2]
+  real, dimension(nii,njj,SZK_(GV)+1) :: zOld ! Previous coordinate interface heights [H ~> m or kg m-2]
+  real, dimension(nii,njj,CS%nk+1) :: zNew  ! New coordinate interface heights [H ~> m or kg m-2]
+  real, dimension(nii,njj,CS%nk+1) :: dz_b  ! The change in interface depth in the block [H ~> m or kg m-2]
+  real, dimension(nii,njj) :: nominalDepth  ! The depths of the columns [H ~> m or kg m-2]
+  real, dimension(nii,njj) :: totalThickness ! The total thicknesses of the columns [H ~> m or kg m-2]
+  logical, dimension(nii,njj) :: do_col     ! True for the ocean columns of the block
+  logical :: bad, bad_roundoff, bad_repeat  ! Error flags from the block routines
+  logical :: filter_motion ! If true, filter the grid motion
+  integer :: i, j, k, nz, nk_new, is, ie, js, je, isb, ieb, jsb, jeb, iie, jje, ii, jj
+
+  nz = GV%ke ; nk_new = CS%nk
+  is = G%isc-1 ; ie = G%iec+1 ; js = G%jsc-1 ; je = G%jec+1
+  filter_motion = CS%use_depth_based_time_filter .or. (CS%old_grid_weight > 0.)
+
+  !$omp target enter data map(alloc: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_col)
+
+  do jsb=js,je,njj ; do isb=is,ie,nii
+    ieb = min(isb + nii - 1, ie) ; jeb = min(jsb + njj - 1, je)
+    iie = ieb - isb + 1 ; jje = jeb - jsb + 1
+
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      do_col(ii,jj) = .not.(G%mask2dT(i,j)==0.)
+      nominalDepth(ii,jj) = nom_depth_H(i,j)
+      totalThickness(ii,jj) = 0.0
+    enddo
+    do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      if (do_col(ii,jj)) then
+        dz_b(ii,jj,k) = dzInterface(i,j,k)
+      else
+        dzInterface(i,j,k) = 0.
+      endif
+    enddo
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      h_b(ii,jj,k) = h(i,j,k)
+    enddo
+
+    do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do k = 1,nz
+        do concurrent (ii=1:iie, do_col(ii,jj))
+          totalThickness(ii,jj) = totalThickness(ii,jj) + h_b(ii,jj,k)
+        enddo
+      enddo
+    enddo
+
+    do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      zOld(ii,jj,nz+1) = - nominalDepth(ii,jj)
+    enddo
+    do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do k = nz,1,-1
+        do concurrent (ii=1:iie, do_col(ii,jj))
+          zOld(ii,jj,k) = zOld(ii,jj,k+1) + h_b(ii,jj,k)
+        enddo
+      enddo
+    enddo
+
+    call build_zstar_block(CS%zlike_CS, nii, njj, iie, jje, do_col, nominalDepth, totalThickness, zNew, &
+                           zScale=zScale)
+
+    if (filter_motion) then
+      call filtered_grid_motion_block(CS, nii, njj, iie, jje, do_col, nz, zOld, zNew, dz_b, bad)
+      if (bad) call MOM_error(FATAL, "filtered_grid_motion: z_old and z_new use different sign conventions.")
+    endif
+
+    if (CS%use_adjust_interface_motion) then
+      call adjust_interface_motion_block(CS, nii, njj, iie, jje, do_col, nz, h_b, dz_b, bad_roundoff, bad_repeat)
+      if (bad_roundoff) call MOM_error( FATAL, 'MOM_regridding: adjust_interface_motion() - '//&
+                                        'implied h<0 is larger than roundoff!')
+      if (bad_repeat) call MOM_error( FATAL, 'MOM_regridding: adjust_interface_motion() - '//&
+                                      'Repeated adjustment for roundoff h<0 failed!')
+    endif
+
+    do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      dzInterface(i,j,k) = dz_b(ii,jj,k)
+    enddo
+  enddo ; enddo
+
+  !$omp target exit data map(delete: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_col)
+
+end subroutine build_zstar_grid_block
 
 !------------------------------------------------------------------------------
 ! Build sigma grid
@@ -3026,7 +3259,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              interp_scheme, use_adjust_interface_motion, compress_fraction, ref_pressure, &
              integrate_downward_for_e, remap_answers_2018, remap_answer_date, regrid_answer_date, &
              adaptTimeRatio, adaptZoom, adaptZoomCoeff, adaptBuoyCoeff, &
-             adaptAlpha, adaptDoMin, adaptDrho0)
+             adaptAlpha, adaptDoMin, adaptDrho0, niblock, njblock)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness    !< Minimum thickness allowed when building the
@@ -3057,7 +3290,11 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
                                                     !! the depths specified by the regridding coordinate.
   real,    optional, intent(in) :: adaptDrho0       !< Reference density difference for stratification-dependent
                                                     !! diffusion. [R ~> kg m-3]
+  integer, optional, intent(in) :: niblock          !< The i block size of the block regridding routines
+  integer, optional, intent(in) :: njblock          !< The j block size of the block regridding routines
 
+  if (present(niblock)) CS%niblock = niblock
+  if (present(njblock)) CS%njblock = njblock
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
   if (present(regrid_answer_date)) call set_interp_answer_date(CS%interp_CS, regrid_answer_date)
