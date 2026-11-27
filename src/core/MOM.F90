@@ -525,6 +525,7 @@ integer :: id_clock_MOM_init
 integer :: id_clock_pass       ! also in dynamics d/r
 integer :: id_clock_pass_init  ! also in dynamics d/r
 integer :: id_clock_ALE
+integer :: id_clock_ALE_regrid, id_clock_ALE_tracers, id_clock_ALE_vel, id_clock_ALE_aux, id_clock_ALE_diag_grids
 integer :: id_clock_other
 integer :: id_clock_offline_tracer
 integer :: id_clock_save_restart
@@ -2086,19 +2087,26 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   ! Do any necessary adjustments ot the state prior to remapping.
   call pre_ALE_adjustments(G, GV, US, h, tv, CS%tracer_Reg, CS%ALE_CSp, u, v)
   ! Adjust the target grids for diagnostics, in case there have been thickness adjustments.
+  call cpu_clock_begin(id_clock_ALE_diag_grids)
   call diag_update_remap_grids(CS%diag)
+  call cpu_clock_end(id_clock_ALE_diag_grids)
 
+  call cpu_clock_begin(id_clock_ALE_regrid)
   if (use_ice_shelf) then
     call ALE_regrid(G, GV, US, h, h_new, dzRegrid, tv, CS%ALE_CSp, CS%frac_shelf_h, PCM_cell)
   else
     call ALE_regrid(G, GV, US, h, h_new, dzRegrid, tv, CS%ALE_CSp, PCM_cell=PCM_cell)
   endif
+  call cpu_clock_end(id_clock_ALE_regrid)
 
   if (showCallTree) call callTree_waypoint("new grid generated")
   ! Remap all variables from the old grid h onto the new grid h_new
+  call cpu_clock_begin(id_clock_ALE_tracers)
   call ALE_remap_tracers(CS%ALE_CSp, G, GV, h, h_new, CS%tracer_Reg, showCallTree, dtdia, PCM_cell)
+  call cpu_clock_end(id_clock_ALE_tracers)
 
   ! Determine the old and new grid thicknesses at velocity points.
+  call cpu_clock_begin(id_clock_ALE_vel)
   call ALE_remap_set_h_vel(CS%ALE_CSp, G, GV, h, h_old_u, h_old_v, CS%OBC, debug=showCallTree)
   if (CS%remap_uv_using_old_alg) then
     call ALE_remap_set_h_vel_via_dz(CS%ALE_CSp, G, GV, h_new, h_new_u, h_new_v, CS%OBC, h, dzRegrid, showCallTree)
@@ -2109,9 +2117,11 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   ! Remap the velocity components.
   call ALE_remap_velocities(CS%ALE_CSp, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u, v, showCallTree, &
                             dtdia, allow_preserve_variance=.true.)
+  call cpu_clock_end(id_clock_ALE_vel)
 
   if (allocated(tv%SpV_avg)) tv%valid_SpV_halo = -1   ! Record that SpV_avg is no longer valid.
 
+  call cpu_clock_begin(id_clock_ALE_aux)
   if (CS%remap_aux_vars) then
     if (CS%split .and. CS%use_alt_split) then
       call remap_dyn_split_RK2b_aux_vars(G, GV, CS%dyn_split_RK2b_CSp, h_old_u, h_old_v, &
@@ -2132,6 +2142,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
     if (associated(CS%visc%Kv_shear)) &
       call pass_var(CS%visc%Kv_shear, G%Domain, To_All+Omit_Corners, clock=id_clock_pass, halo=1)
   endif
+  call cpu_clock_end(id_clock_ALE_aux)
 
   ! Replace the old grid with new one.  All remapping must be done by this point in the code.
   !$OMP parallel do default(shared)
@@ -2151,7 +2162,9 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   ! for vertical remapping may need to be regenerated.  In non-Boussinesq mode,
   ! calc_derived_thermo needs to be called before diag_update_remap_grids.
   ! This needs to happen after the H update and before the next post_data.
+  call cpu_clock_begin(id_clock_ALE_diag_grids)
   call diag_update_remap_grids(CS%diag)
+  call cpu_clock_end(id_clock_ALE_diag_grids)
 
   call postALE_tracer_diagnostics(CS%tracer_Reg, G, GV, CS%diag, dtdia)
 
@@ -4245,6 +4258,11 @@ subroutine MOM_timing_init(CS)
   id_clock_diagnostics  = cpu_clock_id('(Ocean collective diagnostics)', grain=CLOCK_MODULE)
   id_clock_Z_diag       = cpu_clock_id('(Ocean Z-space diagnostics)', grain=CLOCK_MODULE)
   id_clock_ALE          = cpu_clock_id('(Ocean ALE)', grain=CLOCK_MODULE)
+  id_clock_ALE_regrid   = cpu_clock_id('(Ocean ALE regrid)', grain=CLOCK_ROUTINE)
+  id_clock_ALE_tracers  = cpu_clock_id('(Ocean ALE remap tracers)', grain=CLOCK_ROUTINE)
+  id_clock_ALE_vel      = cpu_clock_id('(Ocean ALE remap velocities)', grain=CLOCK_ROUTINE)
+  id_clock_ALE_aux      = cpu_clock_id('(Ocean ALE remap aux)', grain=CLOCK_ROUTINE)
+  id_clock_ALE_diag_grids = cpu_clock_id('(Ocean ALE diag grids)', grain=CLOCK_ROUTINE)
   if (CS%offline_tracer_mode) then
     id_clock_offline_tracer = cpu_clock_id('Ocean offline tracers', grain=CLOCK_SUBCOMPONENT)
   endif
