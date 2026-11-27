@@ -1499,6 +1499,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   logical :: use_blocks      ! If true, use the block remapping routines
   logical :: show_call_tree
   integer :: nIIB, njj       ! The i and j block sizes for u
+  integer :: nii, nJJB       ! The i and j block sizes for v
   integer :: i, j, k, nz
 
   show_call_tree = .false.
@@ -1610,70 +1611,83 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
 
   ! --- Remap v profiles from the source vertical grid onto the new target grid.
 
-  !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
-  !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &
-  !$OMP                                     u2h_tot,v2h_tot)
-  do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
+  if (use_blocks) then
+    nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 1
+    nJJB = CS%njblock ; if (nJJB == 0) nJJB = G%JecB - G%JscB + 1
+    ! The thicknesses and velocities are current on the host.
+    !$omp target enter data map(to: h_old_v, h_new_v, v, dv2h_tot)
+    !$omp target update to(h_old_v, h_new_v, v, dv2h_tot)
+    call ALE_remap_vel_block(CS, GV, G%isd, G%ied, G%JsdB, G%JedB, G%isc, G%iec, G%JscB, G%JecB, nii, nJJB, &
+                             G%mask2dCv, h_old_v, h_new_v, v, (variance_option .and. CS%conserve_ke), &
+                             (CS%id_remap_delta_integ_v2>0), I_dt, dv2h_tot)
+    !$omp target update from(v, dv2h_tot)
+    !$omp target exit data map(release: h_old_v, h_new_v, v, dv2h_tot)
+  else
+    !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
+    !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &
+    !$OMP                                     u2h_tot,v2h_tot)
+    do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
 
-    do k=1,nz
-      h1(k) = h_old_v(i,J,k)
-      h2(k) = h_new_v(i,J,k)
-      v_src(k) = v(i,J,k)
-    enddo
-
-    if (CS%id_remap_delta_integ_v2>0) then
-      v2h_tot = 0.
       do k=1,nz
-        v2h_tot = v2h_tot - h1(k) * (v_src(k)**2)
+        h1(k) = h_old_v(i,J,k)
+        h2(k) = h_new_v(i,J,k)
+        v_src(k) = v(i,J,k)
       enddo
-    endif
 
-    call remapping_core_h(CS%vel_remapCS, nz, h1, v_src, nz, h2, v_tgt)
-
-    if (variance_option .and. CS%conserve_ke) then
-    ! Conserve ke_v by correcting baroclinic component.
-    ! Assumes total depth doesn't change during remap, and
-    ! that \int v(z) dz doesn't change during remap.
-      ! First get barotropic component
-      v_bt = 0.0
-      do k=1,nz
-        v_bt = v_bt + h2(k) * v_tgt(k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
-      enddo
-      v_bt = v_bt / (sum(h2(1:nz)) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
-      ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
-      ke_c_src = 0.0
-      ke_c_tgt = 0.0
-      do k=1,nz
-        ke_c_src = ke_c_src + h1(k) * (v_src(k) - v_bt)**2
-        ke_c_tgt = ke_c_tgt + h2(k) * (v_tgt(k) - v_bt)**2
-      enddo
-      ! Next rescale baroclinic component on target grid to conserve ke
-      if (ke_c_src < 1.5625 * ke_c_tgt) then
-        rescale_coef = sqrt(ke_c_src / ke_c_tgt)
-      else
-        rescale_coef = 1.25
+      if (CS%id_remap_delta_integ_v2>0) then
+        v2h_tot = 0.
+        do k=1,nz
+          v2h_tot = v2h_tot - h1(k) * (v_src(k)**2)
+        enddo
       endif
+
+      call remapping_core_h(CS%vel_remapCS, nz, h1, v_src, nz, h2, v_tgt)
+
+      if (variance_option .and. CS%conserve_ke) then
+      ! Conserve ke_v by correcting baroclinic component.
+      ! Assumes total depth doesn't change during remap, and
+      ! that \int v(z) dz doesn't change during remap.
+        ! First get barotropic component
+        v_bt = 0.0
+        do k=1,nz
+          v_bt = v_bt + h2(k) * v_tgt(k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
+        enddo
+        v_bt = v_bt / (sum(h2(1:nz)) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
+        ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
+        ke_c_src = 0.0
+        ke_c_tgt = 0.0
+        do k=1,nz
+          ke_c_src = ke_c_src + h1(k) * (v_src(k) - v_bt)**2
+          ke_c_tgt = ke_c_tgt + h2(k) * (v_tgt(k) - v_bt)**2
+        enddo
+        ! Next rescale baroclinic component on target grid to conserve ke
+        if (ke_c_src < 1.5625 * ke_c_tgt) then
+          rescale_coef = sqrt(ke_c_src / ke_c_tgt)
+        else
+          rescale_coef = 1.25
+        endif
+        do k=1,nz
+          v_tgt(k) = v_bt + rescale_coef * (v_tgt(k) - v_bt)
+        enddo
+      endif
+
+      if (CS%id_remap_delta_integ_v2>0) then
+        do k=1,nz
+          v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
+        enddo
+        dv2h_tot(I,j) = v2h_tot * I_dt
+      endif
+
+      if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) then
+        call mask_near_bottom_vel(v_tgt, h2, CS%BBL_h_vel_mask, CS%h_vel_mask, nz)
+      endif
+
+      ! Copy the column of new velocities back to the 3-d array
       do k=1,nz
-        v_tgt(k) = v_bt + rescale_coef * (v_tgt(k) - v_bt)
-      enddo
-    endif
-
-    if (CS%id_remap_delta_integ_v2>0) then
-      do k=1,nz
-        v2h_tot = v2h_tot + h2(k) * (v_tgt(k)**2)
-      enddo
-      dv2h_tot(I,j) = v2h_tot * I_dt
-    endif
-
-    if ((CS%BBL_h_vel_mask > 0.0) .and. (CS%h_vel_mask > 0.0)) then
-      call mask_near_bottom_vel(v_tgt, h2, CS%BBL_h_vel_mask, CS%h_vel_mask, nz)
-    endif
-
-    ! Copy the column of new velocities back to the 3-d array
-    do k=1,nz
-      v(i,J,k) = v_tgt(k)
-    enddo !k
-  endif ; enddo ; enddo
+        v(i,J,k) = v_tgt(k)
+      enddo !k
+    endif ; enddo ; enddo
+  endif
 
   if (CS%id_remap_delta_integ_v2>0) call post_data(CS%id_remap_delta_integ_v2, dv2h_tot, CS%diag)
 
