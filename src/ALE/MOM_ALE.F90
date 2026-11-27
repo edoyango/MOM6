@@ -1221,19 +1221,24 @@ subroutine ALE_remap_set_h_vel(CS, G, GV, h_new, h_u, h_v, OBC, debug)
   if (present(debug)) show_call_tree = debug
   if (show_call_tree) call callTree_enter("ALE_remap_set_h_vel()")
 
+  ! The thicknesses are current on the host.
+  !$omp target enter data map(to: h_new, h_u, h_v)
+  !$omp target update to(h_new, h_u, h_v)
+
   ! Build the u- and v-velocity grid thicknesses for remapping.
 
-  !$OMP parallel do default(shared)
-  do k=1,GV%ke ; do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
+  do concurrent (k=1:GV%ke, j=G%jsc:G%jec, I=G%IscB:G%IecB, G%mask2dCu(I,j)>0.)
     h_u(I,j,k) = 0.5*(h_new(i,j,k) + h_new(i+1,j,k))
-  endif ; enddo ; enddo ; enddo
-  !$OMP parallel do default(shared)
-  do k=1,GV%ke ; do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
+  enddo
+  do concurrent (k=1:GV%ke, J=G%JscB:G%JecB, i=G%isc:G%iec, G%mask2dCv(i,J)>0.)
     h_v(i,J,k) = 0.5*(h_new(i,j,k) + h_new(i,j+1,k))
-  endif ; enddo ; enddo ; enddo
+  enddo
 
   ! Mask out blocked portions of velocity cells.
   if (CS%partial_cell_vel_remap) call ALE_remap_set_h_vel_partial(CS, G, GV, h_new, h_u, h_v)
+
+  !$omp target update from(h_u, h_v)
+  !$omp target exit data map(release: h_new, h_u, h_v)
 
   ! Take open boundary conditions into account.
   if (associated(OBC)) call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
@@ -1275,24 +1280,29 @@ subroutine ALE_remap_set_h_vel_via_dz(CS, G, GV, h_new, h_u, h_v, OBC, h_old, dz
   if (present(debug)) show_call_tree = debug
   if (show_call_tree) call callTree_enter("ALE_remap_set_h_vel()")
 
+  ! The thicknesses and interface movements are current on the host.
+  !$omp target enter data map(to: h_old, dzInterface, h_u, h_v)
+  !$omp target update to(h_old, dzInterface, h_u, h_v)
+
   ! Build the u- and v-velocity grid thicknesses for remapping using the old grid and interface movement.
 
-  !$OMP parallel do default(shared)
-  do k=1,GV%ke ; do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
+  do concurrent (k=1:GV%ke, j=G%jsc:G%jec, I=G%IscB:G%IecB, G%mask2dCu(I,j)>0.)
     h_u(I,j,k) = max( 0., 0.5*(h_old(i,j,k) + h_old(i+1,j,k)) + &
             0.5 * (( dzInterface(i,j,k) + dzInterface(i+1,j,k) ) - &
                    ( dzInterface(i,j,k+1) + dzInterface(i+1,j,k+1) )) )
-  endif ; enddo ; enddo ; enddo
+  enddo
 
-  !$OMP parallel do default(shared)
-  do k=1,GV%ke ; do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
+  do concurrent (k=1:GV%ke, J=G%JscB:G%JecB, i=G%isc:G%iec, G%mask2dCv(i,J)>0.)
     h_v(i,J,k) = max( 0., 0.5*(h_old(i,j,k) + h_old(i,j+1,k)) + &
             0.5 * (( dzInterface(i,j,k) + dzInterface(i,j+1,k) ) - &
                    ( dzInterface(i,j,k+1) + dzInterface(i,j+1,k+1) )) )
-  endif ; enddo ; enddo ; enddo
+  enddo
 
   ! Mask out blocked portions of velocity cells.
   if (CS%partial_cell_vel_remap) call ALE_remap_set_h_vel_partial(CS, G, GV, h_old, h_u, h_v)
+
+  !$omp target update from(h_u, h_v)
+  !$omp target exit data map(release: h_old, dzInterface, h_u, h_v)
 
   ! Take open boundary conditions into account.
   if (associated(OBC)) call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
@@ -1318,25 +1328,63 @@ subroutine ALE_remap_set_h_vel_partial(CS, G, GV, h_mask, h_u, h_v)
                                                                            !! points [H ~> m or kg m-2]
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G)) :: h_tot  ! The vertically summed thicknesses [H ~> m or kg m-2]
+  real, dimension(SZIB_(G),SZJ_(G)) :: h_rsum_u ! The running sums of h_u from the top [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJB_(G)) :: h_rsum_v ! The running sums of h_v from the top [H ~> m or kg m-2]
   real :: h_mask_vel ! A depth below which the thicknesses at a velocity point are masked out [H ~> m or kg m-2]
   integer :: i, j, k
 
-  h_tot(:,:) = 0.0
-  do k=1,GV%ke ; do j=G%jsc-1,G%jec+1 ; do i=G%isc-1,G%iec+1
-    h_tot(i,j) = h_tot(i,j) + h_mask(i,j,k)
-  enddo ; enddo ; enddo
+  ! The thicknesses are current on the device.
+  !$omp target enter data map(alloc: h_tot, h_rsum_u, h_rsum_v)
 
-  !$OMP parallel do default(shared) private(h_mask_vel)
-  do j=G%jsc,G%jec ; do I=G%IscB,G%IecB ; if (G%mask2dCu(I,j)>0.) then
-    h_mask_vel = min(h_tot(i,j), h_tot(i+1,j))
-    call apply_partial_cell_mask(h_u(I,j,:), h_mask_vel)
-  endif ; enddo ; enddo
+  do concurrent (j=G%jsd:G%jed, i=G%isd:G%ied)
+    h_tot(i,j) = 0.0
+  enddo
+  do concurrent (j=G%jsc-1:G%jec+1) DO_LOCALITY(local(k))
+    do k=1,GV%ke
+      do concurrent (i=G%isc-1:G%iec+1)
+        h_tot(i,j) = h_tot(i,j) + h_mask(i,j,k)
+      enddo
+    enddo
+  enddo
 
-  !$OMP parallel do default(shared) private(h_mask_vel)
-  do J=G%JscB,G%JecB ; do i=G%isc,G%iec ; if (G%mask2dCv(i,J)>0.) then
-    h_mask_vel = min(h_tot(i,j), h_tot(i,j+1))
-    call apply_partial_cell_mask(h_v(i,J,:), h_mask_vel)
-  endif ; enddo ; enddo
+  ! Mask out thicknesses to 0 when their running sum exceeds h_mask_vel.
+  do concurrent (j=G%jsc:G%jec, I=G%IscB:G%IecB)
+    h_rsum_u(I,j) = 0.0
+  enddo
+  do concurrent (j=G%jsc:G%jec) DO_LOCALITY(local(k))
+    do k=1,GV%ke
+      do concurrent (I=G%IscB:G%IecB, G%mask2dCu(I,j)>0.) DO_LOCALITY(local(h_mask_vel))
+        h_mask_vel = min(h_tot(i,j), h_tot(i+1,j))
+        if (h_u(I,j,k) > h_mask_vel - h_rsum_u(I,j)) then
+          ! This thickness is reduced because it extends below the shallower neighboring bathymetry.
+          h_u(I,j,k) = max(h_mask_vel - h_rsum_u(I,j), 0.0)
+          h_rsum_u(I,j) = h_mask_vel
+        else
+          h_rsum_u(I,j) = h_rsum_u(I,j) + h_u(I,j,k)
+        endif
+      enddo
+    enddo
+  enddo
+
+  do concurrent (J=G%JscB:G%JecB, i=G%isc:G%iec)
+    h_rsum_v(i,J) = 0.0
+  enddo
+  do concurrent (J=G%JscB:G%JecB) DO_LOCALITY(local(k))
+    do k=1,GV%ke
+      do concurrent (i=G%isc:G%iec, G%mask2dCv(i,J)>0.) DO_LOCALITY(local(h_mask_vel))
+        h_mask_vel = min(h_tot(i,j), h_tot(i,j+1))
+        if (h_v(i,J,k) > h_mask_vel - h_rsum_v(i,J)) then
+          ! This thickness is reduced because it extends below the shallower neighboring bathymetry.
+          h_v(i,J,k) = max(h_mask_vel - h_rsum_v(i,J), 0.0)
+          h_rsum_v(i,J) = h_mask_vel
+        else
+          h_rsum_v(i,J) = h_rsum_v(i,J) + h_v(i,J,k)
+        endif
+      enddo
+    enddo
+  enddo
+
+  !$omp target exit data map(delete: h_tot, h_rsum_u, h_rsum_v)
 
 end subroutine ALE_remap_set_h_vel_partial
 
@@ -1701,28 +1749,6 @@ subroutine ALE_remap_vertex_vals(CS, G, GV, h_old, h_new, vert_val)
   endif ; enddo ; enddo
 
 end subroutine ALE_remap_vertex_vals
-
-!> Mask out thicknesses to 0 when their running sum exceeds a specified value.
-subroutine apply_partial_cell_mask(h1, h_mask)
-  real, dimension(:), intent(inout) :: h1 !< A column of thicknesses to be masked out after their
-                                          !! running vertical sum exceeds h_mask [H ~> m or kg m-2]
-  real,               intent(in)    :: h_mask !< The depth after which the thicknesses in h1 are
-                                          !! masked out [H ~> m or kg m-2]
-  ! Local variables
-  real :: h1_rsum  ! The running sum of h1 [H ~> m or kg m-2]
-  integer :: k
-
-  h1_rsum = 0.0
-  do k=1,size(h1)
-    if (h1(k) > h_mask - h1_rsum) then
-      ! This thickness is reduced because it extends below the shallower neighboring bathymetry.
-      h1(k) = max(h_mask - h1_rsum, 0.0)
-      h1_rsum = h_mask
-    else
-      h1_rsum = h1_rsum + h1(k)
-    endif
-  enddo
-end subroutine apply_partial_cell_mask
 
 
 !> Zero out velocities in a column in very thin layers near the seafloor
