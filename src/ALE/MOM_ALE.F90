@@ -42,6 +42,7 @@ use MOM_regridding,       only : getStaticThickness, regridding_block_supported
 use MOM_remapping,        only : initialize_remapping, end_remapping, remapping_block_supported
 use MOM_remapping,        only : remapping_core_h, remapping_core_w
 use MOM_remapping,        only : remapping_core_h_block, intersect_src_tgt_grids_block
+use MOM_remapping,        only : interpolate_column_block
 use MOM_remapping,        only : remappingSchemesDoc, remappingDefaultScheme
 use MOM_remapping,        only : interpolate_column, reintegrate_column
 use MOM_remapping,        only : remapping_CS, dzFromH1H2, remapping_set_param
@@ -1976,32 +1977,73 @@ subroutine ALE_remap_interface_vals(CS, G, GV, h_old, h_new, int_val)
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
                                              intent(inout) :: int_val  !< The interface values to interpolate [A]
 
-  real :: val_src(GV%ke+1)  ! A column of interface values on the source grid [A]
-  real :: val_tgt(GV%ke+1)  ! A column of interface values on the target grid [A]
-  real :: h_src(GV%ke)      ! A column of source grid layer thicknesses [H ~> m or kg m-2]
-  real :: h_tgt(GV%ke)      ! A column of target grid layer thicknesses [H ~> m or kg m-2]
-  integer :: i, j, k, nz
+  integer :: nii, njj ! The i and j block sizes
 
-  nz = GV%ke
+  nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 1
+  njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 1
 
-  do j=G%jsc,G%jec ; do i=G%isc,G%iec ; if (G%mask2dT(i,j)>0.) then
-    do k=1,nz
-      h_src(k) = h_old(i,j,k)
-      h_tgt(k) = h_new(i,j,k)
-    enddo
-
-    do K=1,nz+1
-      val_src(K) = int_val(i,j,K)
-    enddo
-
-    call interpolate_column(nz, h_src, val_src, nz, h_tgt, val_tgt, .false.)
-
-    do K=1,nz+1
-      int_val(i,j,K) = val_tgt(K)
-    enddo
-  endif ; enddo ; enddo
+  ! Arrays that are already on the device are used there, while the others are copied.
+  !$omp target enter data map(to: h_old, h_new, int_val)
+  call ALE_remap_interface_vals_block(G, GV, h_old, h_new, int_val, nii, njj)
+  !$omp target exit data map(from: int_val) map(release: h_old, h_new)
 
 end subroutine ALE_remap_interface_vals
+
+!> Interpolate to find updated values at interfaces after remapping in blocks of nii by njj columns,
+!! as in ALE_remap_interface_vals.
+subroutine ALE_remap_interface_vals_block(G, GV, h_old, h_new, int_val, nii, njj)
+  type(ocean_grid_type),                     intent(in)    :: G        !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV       !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_old    !< Thickness of source grid
+                                                                       !! [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_new    !< Thickness of destination grid
+                                                                       !! [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), &
+                                             intent(inout) :: int_val  !< The interface values to interpolate [A]
+  integer,                                   intent(in)    :: nii      !< The i block size
+  integer,                                   intent(in)    :: njj      !< The j block size
+
+  real :: val_src(nii,njj,SZK_(GV)+1)  ! Columns of interface values on the source grid [A]
+  real :: val_tgt(nii,njj,SZK_(GV)+1)  ! Columns of interface values on the target grid [A]
+  real :: h_src(nii,njj,SZK_(GV))      ! Columns of source grid layer thicknesses [H ~> m or kg m-2]
+  real :: h_tgt(nii,njj,SZK_(GV))      ! Columns of target grid layer thicknesses [H ~> m or kg m-2]
+  logical :: do_col(nii,njj)           ! True for the ocean columns of the block
+  integer :: i, j, k, nz, is, ie, js, je, isb, ieb, jsb, jeb, iie, jje, ii, jj
+
+  nz = GV%ke
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
+
+  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, do_col)
+
+  do jsb=js,je,njj ; do isb=is,ie,nii
+    ieb = min(isb + nii - 1, ie) ; jeb = min(jsb + njj - 1, je)
+    iie = ieb - isb + 1 ; jje = jeb - jsb + 1
+
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      do_col(ii,jj) = (G%mask2dT(i,j)>0.)
+    enddo
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      h_src(ii,jj,k) = h_old(i,j,k)
+      h_tgt(ii,jj,k) = h_new(i,j,k)
+    enddo
+    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      val_src(ii,jj,K) = int_val(i,j,K)
+    enddo
+
+    call interpolate_column_block(nii, njj, iie, jje, do_col, nz, h_src, val_src, nz, h_tgt, val_tgt)
+
+    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      int_val(i,j,K) = val_tgt(ii,jj,K)
+    enddo
+  enddo ; enddo
+
+  !$omp target exit data map(delete: val_src, val_tgt, h_src, h_tgt, do_col)
+
+end subroutine ALE_remap_interface_vals_block
 
 !> Interpolate to find an updated array of values at vertices of tracer cells after remapping.
 subroutine ALE_remap_vertex_vals(CS, G, GV, h_old, h_new, vert_val)
@@ -2015,39 +2057,79 @@ subroutine ALE_remap_vertex_vals(CS, G, GV, h_old, h_new, vert_val)
   real, dimension(SZIB_(G),SZJB_(G),SZK_(GV)+1), &
                                              intent(inout) :: vert_val  !< The interface values to interpolate [A]
 
-  real :: val_src(GV%ke+1)  ! A column of interface values on the source grid [A]
-  real :: val_tgt(GV%ke+1)  ! A column of interface values on the target grid [A]
-  real :: h_src(GV%ke)      ! A column of source grid layer thicknesses [H ~> m or kg m-2]
-  real :: h_tgt(GV%ke)      ! A column of target grid layer thicknesses [H ~> m or kg m-2]
-  real :: I_mask_sum        ! The inverse of the tracer point masks surrounding a corner [nondim]
-  integer :: i, j, k, nz
+  integer :: nIIB, nJJB ! The i and j block sizes
+
+  nIIB = CS%niblock ; if (nIIB == 0) nIIB = G%IecB - G%IscB + 1
+  nJJB = CS%njblock ; if (nJJB == 0) nJJB = G%JecB - G%JscB + 1
+
+  ! Arrays that are already on the device are used there, while the others are copied.
+  !$omp target enter data map(to: h_old, h_new, vert_val)
+  call ALE_remap_vertex_vals_block(G, GV, h_old, h_new, vert_val, nIIB, nJJB)
+  !$omp target exit data map(from: vert_val) map(release: h_old, h_new)
+
+end subroutine ALE_remap_vertex_vals
+
+!> Interpolate to find updated values at the vertices of tracer cells after remapping in blocks of
+!! nIIB by nJJB vertices, as in ALE_remap_vertex_vals.
+subroutine ALE_remap_vertex_vals_block(G, GV, h_old, h_new, vert_val, nIIB, nJJB)
+  type(ocean_grid_type),                     intent(in)    :: G        !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in)    :: GV       !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_old    !< Thickness of source grid
+                                                                       !! [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: h_new    !< Thickness of destination grid
+                                                                       !! [H ~> m or kg m-2]
+  real, dimension(SZIB_(G),SZJB_(G),SZK_(GV)+1), &
+                                             intent(inout) :: vert_val  !< The interface values to interpolate [A]
+  integer,                                   intent(in)    :: nIIB     !< The i block size
+  integer,                                   intent(in)    :: nJJB     !< The j block size
+
+  real :: val_src(nIIB,nJJB,SZK_(GV)+1)  ! Columns of interface values on the source grid [A]
+  real :: val_tgt(nIIB,nJJB,SZK_(GV)+1)  ! Columns of interface values on the target grid [A]
+  real :: h_src(nIIB,nJJB,SZK_(GV))      ! Columns of source grid layer thicknesses [H ~> m or kg m-2]
+  real :: h_tgt(nIIB,nJJB,SZK_(GV))      ! Columns of target grid layer thicknesses [H ~> m or kg m-2]
+  real :: I_mask_sum(nIIB,nJJB)          ! The inverse of the tracer point masks surrounding a corner [nondim]
+  logical :: do_col(nIIB,nJJB)           ! True for the vertices with an adjacent ocean point
+  integer :: I, J, k, nz, IsbB, IebB, JsbB, JebB, IIe, JJe, II, JJ
 
   nz = GV%ke
 
-  do J=G%JscB,G%JecB ; do I=G%IscB,G%IecB
-    if ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) > 0.0 ) then
-      I_mask_sum = 1.0 / ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
-                          (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)))
+  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_col)
 
-    do k=1,nz
-      h_src(k) = ((G%mask2dT(i,j) * h_old(i,j,k) + G%mask2dT(i+1,j+1) * h_old(i+1,j+1,k)) + &
-          (G%mask2dT(i+1,j) * h_old(i+1,j,k) + G%mask2dT(i,j+1) * h_old(i,j+1,k)) ) * I_mask_sum
-      h_tgt(k) = ((G%mask2dT(i,j) * h_new(i,j,k) + G%mask2dT(i+1,j+1) * h_new(i+1,j+1,k)) + &
-          (G%mask2dT(i+1,j) * h_new(i+1,j,k) + G%mask2dT(i,j+1) * h_new(i,j+1,k)) ) * I_mask_sum
+  do JsbB=G%JscB,G%JecB,nJJB ; do IsbB=G%IscB,G%IecB,nIIB
+    IebB = min(IsbB + nIIB - 1, G%IecB) ; JebB = min(JsbB + nJJB - 1, G%JecB)
+    IIe = IebB - IsbB + 1 ; JJe = JebB - JsbB + 1
+
+    do concurrent (JJ=1:JJe, II=1:IIe) DO_LOCALITY(local(I, J))
+      I = IsbB + II - 1 ; J = JsbB + JJ - 1
+      do_col(II,JJ) = ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) > 0.0 )
+      I_mask_sum(II,JJ) = 0.0
+      if (do_col(II,JJ)) &
+        I_mask_sum(II,JJ) = 1.0 / ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
+                                   (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)))
+    enddo
+    do concurrent (k=1:nz, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+      I = IsbB + II - 1 ; J = JsbB + JJ - 1
+      h_src(II,JJ,k) = ((G%mask2dT(i,j) * h_old(i,j,k) + G%mask2dT(i+1,j+1) * h_old(i+1,j+1,k)) + &
+          (G%mask2dT(i+1,j) * h_old(i+1,j,k) + G%mask2dT(i,j+1) * h_old(i,j+1,k)) ) * I_mask_sum(II,JJ)
+      h_tgt(II,JJ,k) = ((G%mask2dT(i,j) * h_new(i,j,k) + G%mask2dT(i+1,j+1) * h_new(i+1,j+1,k)) + &
+          (G%mask2dT(i+1,j) * h_new(i+1,j,k) + G%mask2dT(i,j+1) * h_new(i,j+1,k)) ) * I_mask_sum(II,JJ)
+    enddo
+    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+      I = IsbB + II - 1 ; J = JsbB + JJ - 1
+      val_src(II,JJ,K) = vert_val(I,J,K)
     enddo
 
-    do K=1,nz+1
-      val_src(K) = vert_val(I,J,K)
+    call interpolate_column_block(nIIB, nJJB, IIe, JJe, do_col, nz, h_src, val_src, nz, h_tgt, val_tgt)
+
+    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+      I = IsbB + II - 1 ; J = JsbB + JJ - 1
+      vert_val(I,J,K) = val_tgt(II,JJ,K)
     enddo
+  enddo ; enddo
 
-    call interpolate_column(nz, h_src, val_src, nz, h_tgt, val_tgt, .false.)
+  !$omp target exit data map(delete: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_col)
 
-    do K=1,nz+1
-      vert_val(I,J,K) = val_tgt(K)
-    enddo
-  endif ; enddo ; enddo
-
-end subroutine ALE_remap_vertex_vals
+end subroutine ALE_remap_vertex_vals_block
 
 
 !> Zero out velocities in a column in very thin layers near the seafloor

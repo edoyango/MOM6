@@ -3266,16 +3266,23 @@ subroutine remap_vertvisc_aux_vars(G, GV, visc, h_old, h_new, ALE_CSp, OBC)
   type(ALE_CS),                     pointer       :: ALE_CSp  !< ALE control structure to use when remapping
   type(ocean_OBC_type),             pointer       :: OBC      !< Open boundary structure
 
+  ! These viscosities are current on the host, but they are remapped on the device.
   if (associated(visc%Kd_shear)) then
+    !$omp target update to(visc%Kd_shear)
     call ALE_remap_interface_vals(ALE_CSp, G, GV, h_old, h_new, visc%Kd_shear)
+    !$omp target update from(visc%Kd_shear)
   endif
 
   if (associated(visc%Kv_shear)) then
+    !$omp target update to(visc%Kv_shear)
     call ALE_remap_interface_vals(ALE_CSp, G, GV, h_old, h_new, visc%Kv_shear)
+    !$omp target update from(visc%Kv_shear)
   endif
 
   if (associated(visc%Kv_shear_Bu)) then
+    !$omp target update to(visc%Kv_shear_Bu)
     call ALE_remap_vertex_vals(ALE_CSp, G, GV, h_old, h_new, visc%Kv_shear_Bu)
+    !$omp target update from(visc%Kv_shear_Bu)
   endif
 
 end subroutine remap_vertvisc_aux_vars

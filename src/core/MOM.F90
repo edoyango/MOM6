@@ -2038,6 +2038,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   logical :: debug_redundant ! If true, check redundant values on PE boundaries when debugging.
   logical :: showCallTree
   type(group_pass_type) :: pass_T_S_h
+  type(group_pass_type) :: pass_h_new ! A group halo pass for the old and new thicknesses
   integer :: i, j, k, m, ntr, is, ie, js, je, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -2138,16 +2139,17 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
       call remap_dyn_split_RK2_aux_vars(G, GV, CS%dyn_split_RK2_CSp, h_old_u, h_old_v, h_new_u, h_new_v, CS%ALE_CSp)
     endif
 
-    ! The rest of the auxiliary variables are remapped on the host.
-    !$omp target update from(h, h_new)
     if (associated(CS%OBC) .or. associated(CS%visc%Kv_shear_Bu)) then
-      call pass_var(h, G%Domain, complete=.false.)
-      call pass_var(h_new, G%Domain, complete=.true.)
-      !$omp target update to(h, h_new)
+      call create_group_pass(pass_h_new, h, G%Domain)
+      call create_group_pass(pass_h_new, h_new, G%Domain)
+      call do_group_pass(pass_h_new, G%Domain, omp_offload=.true.)
     endif
 
-    if (associated(CS%OBC)) &
+    if (associated(CS%OBC)) then
+      ! The open boundary fields are remapped on the host.
+      !$omp target update from(h, h_new, PCM_cell)
       call remap_OBC_fields(G, GV, h, h_new, CS%OBC, PCM_cell=PCM_cell)
+    endif
 
     call remap_vertvisc_aux_vars(G, GV, CS%visc, h, h_new, CS%ALE_CSp, CS%OBC)
     if (associated(CS%visc%Kv_shear)) &
