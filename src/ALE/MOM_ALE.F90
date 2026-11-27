@@ -1,6 +1,7 @@
 ! This file is part of MOM6, the Modular Ocean Model version 6.
 ! See the LICENSE file for licensing information.
 ! SPDX-License-Identifier: Apache-2.0
+#include "do_concurrent_compat.h"
 
 !> This module contains the main regridding routines.
 !!
@@ -40,6 +41,7 @@ use MOM_regridding,       only : getCoordinateUnits, getCoordinateShortName
 use MOM_regridding,       only : getStaticThickness, regridding_block_supported
 use MOM_remapping,        only : initialize_remapping, end_remapping, remapping_block_supported
 use MOM_remapping,        only : remapping_core_h, remapping_core_w
+use MOM_remapping,        only : remapping_core_h_block, intersect_src_tgt_grids_block
 use MOM_remapping,        only : remappingSchemesDoc, remappingDefaultScheme
 use MOM_remapping,        only : interpolate_column, reintegrate_column
 use MOM_remapping,        only : remapping_CS, dzFromH1H2, remapping_set_param
@@ -842,7 +844,9 @@ subroutine ALE_remap_tracers(CS, G, GV, h_old, h_new, Reg, debug, dt, PCM_cell)
   real :: h1(GV%ke)     ! A column of source grid layer thicknesses [H ~> m or kg m-2]
   real :: h2(GV%ke)     ! A column of target grid layer thicknesses [H ~> m or kg m-2]
   logical :: show_call_tree
+  logical :: use_blocks ! If true, use the block remapping routines
   type(tracer_type), pointer :: Tr => NULL()
+  integer :: nii, njj   ! The i and j block sizes
   integer :: i, j, k, m, nz, ntr
 
   show_call_tree = .false.
@@ -861,7 +865,14 @@ subroutine ALE_remap_tracers(CS, G, GV, h_old, h_new, Reg, debug, dt, PCM_cell)
   endif
 
   ! Remap all registered tracers, including temperature and salinity.
-  if (ntr>0) then
+  use_blocks = remapping_block_supported(CS%remapCS)
+  if ((ntr>0) .and. use_blocks) then
+    if (show_call_tree) call callTree_waypoint("remapping tracers (ALE_remap_tracers)")
+    nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 1
+    njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 1
+    call ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, PCM_cell)
+  endif
+  if ((ntr>0) .and. .not.use_blocks) then
     if (show_call_tree) call callTree_waypoint("remapping tracers (ALE_remap_tracers)")
     !$OMP parallel do default(shared) private(h1,h2,tr_column,Tr,PCM,work_conc,work_cont,work_2d)
     do m=1,ntr ! For each tracer
@@ -935,6 +946,255 @@ subroutine ALE_remap_tracers(CS, G, GV, h_old, h_new, Reg, debug, dt, PCM_cell)
   if (show_call_tree) call callTree_leave("ALE_remap_tracers(), MOM_ALE.F90")
 
 end subroutine ALE_remap_tracers
+
+!> Remaps all the registered tracers from h_old to h_new with the block remapping routines, working
+!! on blocks of nii by njj columns, as in the column loop of ALE_remap_tracers.
+subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, PCM_cell)
+  type(ALE_CS),                              intent(in) :: CS    !< ALE control structure
+  type(ocean_grid_type),                     intent(in) :: G     !< Ocean grid structure
+  type(verticalGrid_type),                   intent(in) :: GV    !< Ocean vertical grid structure
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_old !< Thickness of source grid
+                                                                 !! [H ~> m or kg m-2]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h_new !< Thickness of destination grid
+                                                                 !! [H ~> m or kg m-2]
+  type(tracer_registry_type),                pointer    :: Reg   !< Tracer registry structure
+  integer,                                   intent(in) :: nii   !< The i block size
+  integer,                                   intent(in) :: njj   !< The j block size
+  real,                            optional, intent(in) :: dt    !< time step for diagnostics [T ~> s]
+  logical, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
+                                   optional, intent(in) :: PCM_cell !< Use PCM remapping in cells where true
+
+  ! Local variables
+  real, dimension(nii,njj,SZK_(GV)) :: &
+    h0_b, &       ! Source grid thicknesses in the block [H ~> m or kg m-2]
+    h1_b, &       ! Target grid thicknesses in the block [H ~> m or kg m-2]
+    u0_b, &       ! Tracer concentrations on the source grid in the block [CU ~> Conc]
+    u1_b, &       ! Tracer concentrations on the target grid in the block [CU ~> Conc]
+    h0_eff_b, &   ! Effective thicknesses of the source cells [H ~> m or kg m-2]
+    slp_b, &      ! Work array for the PLM slopes [CU ~> Conc]
+    mslp_b        ! Work array for the monotonized PLM slopes [CU ~> Conc]
+  real, dimension(nii,njj,SZK_(GV),2) :: &
+    ppoly_E_b, &  ! Edge values of the reconstructions [CU ~> Conc]
+    ppoly_coefs_b ! Coefficients of the reconstructions [CU ~> Conc]
+  real, dimension(nii,njj,2*SZK_(GV)+1) :: &
+    h_sub_b, &    ! Sub-cell thicknesses [H ~> m or kg m-2]
+    u_sub_b, &    ! Sub-cell concentrations [CU ~> Conc]
+    uh_sub_b      ! Sub-cell integrals [CU H ~> Conc m or Conc kg m-2]
+  integer, dimension(nii,njj,SZK_(GV)) :: &
+    isrc_start_b, isrc_end_b, isrc_max_b, & ! First, last and thickest sub-cells of each source cell
+    itgt_start_b, itgt_end_b                ! First and last sub-cells of each target cell
+  integer, dimension(nii,njj,2*SZK_(GV)+1) :: isub_src_b ! Source cell of each sub-cell
+  logical, dimension(nii,njj) :: do_col  ! True for the ocean columns of the block
+  logical, dimension(nii,njj,SZK_(GV)) :: PCM_b ! If true, use PCM remapping in a cell
+  real, allocatable :: work_conc(:,:,:,:) ! The rate of change of concentrations [Conc T-1 ~> Conc s-1]
+  real, allocatable :: work_cont(:,:,:,:) ! The rate of change of cell-integrated tracer
+                                          ! content [Conc H T-1 ~> Conc m s-1 or Conc kg m-2 s-1]
+  real, dimension(SZI_(G),SZJ_(G)) :: work_2d ! The rate of change of column-integrated tracer
+                                              ! content [Conc H T-1 ~> Conc m s-1 or Conc kg m-2 s-1]
+  integer, allocatable :: iconc(:), icont(:) ! The index of each tracer in work_conc and work_cont, or 0
+  real :: Idt     ! The inverse of the timestep [T-1 ~> s-1]
+  logical :: bad  ! True if the grid intersection failed
+  integer :: nconc, ncont ! The numbers of tracers with concentration and content tendency diagnostics
+  integer :: i, j, k, m, n, nz, ntr, is, ie, js, je
+  integer :: isb, ieb, jsb, jeb, iie, jje, ii, jj
+
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
+  ntr = Reg%ntr
+
+  Idt = 0.0 ; if (present(dt)) Idt = 1.0/dt
+  allocate(iconc(ntr), icont(ntr))
+  nconc = 0 ; ncont = 0
+  do m=1,ntr
+    iconc(m) = 0 ; icont(m) = 0
+    if (present(dt)) then
+      if (Reg%Tr(m)%id_remap_conc > 0) then
+        nconc = nconc + 1 ; iconc(m) = nconc
+      endif
+      if (Reg%Tr(m)%id_remap_cont > 0 .or. Reg%Tr(m)%id_remap_cont_2d > 0) then
+        ncont = ncont + 1 ; icont(m) = ncont
+      endif
+    endif
+  enddo
+  ! The work arrays always have a slot, so that they can be passed to finish_tracer_block.
+  allocate(work_conc(SZI_(G),SZJ_(G),SZK_(GV),max(nconc,1)))
+  allocate(work_cont(SZI_(G),SZJ_(G),SZK_(GV),max(ncont,1)))
+
+  !$omp target enter data map(alloc: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, PCM_b, work_conc, work_cont)
+  ! The grids and tracers are current on the host.
+  !$omp target enter data map(to: h_old, h_new)
+  !$omp target update to(h_old, h_new)
+  if (present(PCM_cell)) then
+    !$omp target enter data map(to: PCM_cell)
+    !$omp target update to(PCM_cell)
+  endif
+  do m=1,ntr
+    !$omp target enter data map(to: Reg%Tr(m)%t)
+    !$omp target update to(Reg%Tr(m)%t)
+  enddo
+
+  if (nconc > 0) then ; do concurrent (n=1:nconc, k=1:nz, j=G%jsd:G%jed, i=G%isd:G%ied)
+    work_conc(i,j,k,n) = 0.0
+  enddo ; endif
+  if (ncont > 0) then ; do concurrent (n=1:ncont, k=1:nz, j=G%jsd:G%jed, i=G%isd:G%ied)
+    work_cont(i,j,k,n) = 0.0
+  enddo ; endif
+
+  do jsb=js,je,njj ; do isb=is,ie,nii
+    ieb = min(isb + nii - 1, ie) ; jeb = min(jsb + njj - 1, je)
+    iie = ieb - isb + 1 ; jje = jeb - jsb + 1
+
+    ! Build the start and final grids
+    do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      do_col(ii,jj) = (G%mask2dT(i,j) > 0.)
+    enddo
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+      i = isb + ii - 1 ; j = jsb + jj - 1
+      h0_b(ii,jj,k) = h_old(i,j,k)
+      h1_b(ii,jj,k) = h_new(i,j,k)
+    enddo
+    if (present(PCM_cell)) then
+      do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+        i = isb + ii - 1 ; j = jsb + jj - 1
+        PCM_b(ii,jj,k) = PCM_cell(i,j,k)
+      enddo
+    endif
+
+    call intersect_src_tgt_grids_block(nii, njj, iie, jje, do_col, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
+                                       isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, itgt_end_b, &
+                                       isub_src_b, bad)
+    if (bad) call MOM_error(FATAL, "MOM_ALE, ALE_remap_tracers: intersect_src_tgt_grids: THIS SHOULD NEVER HAPPEN!")
+
+    do m=1,ntr ! For each tracer
+      call gather_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, Reg%Tr(m)%t, u0_b)
+      if (present(PCM_cell)) then
+        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+                                    h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
+                                    itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
+                                    u_sub_b, uh_sub_b, PCM_cell=PCM_b)
+      else
+        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+                                    h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
+                                    itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
+                                    u_sub_b, uh_sub_b)
+      endif
+      call finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b, h1_b, u0_b, u1_b, &
+                               Reg%Tr(m)%conc_underflow, Idt, (iconc(m) > 0), (icont(m) > 0), Reg%Tr(m)%t, &
+                               work_conc(:,:,:,max(iconc(m),1)), work_cont(:,:,:,max(icont(m),1)))
+    enddo
+  enddo ; enddo
+
+  do m=1,ntr
+    !$omp target update from(Reg%Tr(m)%t)
+    !$omp target exit data map(release: Reg%Tr(m)%t)
+  enddo
+  if (present(PCM_cell)) then
+    !$omp target exit data map(release: PCM_cell)
+  endif
+  !$omp target exit data map(release: h_old, h_new)
+
+  ! tendency diagnostics.
+  do m=1,ntr
+    if (iconc(m) > 0) then
+      !$omp target update from(work_conc(:,:,:,iconc(m)))
+      call post_data(Reg%Tr(m)%id_remap_conc, work_conc(:,:,:,iconc(m)), CS%diag)
+    endif
+    if (icont(m) > 0) then
+      !$omp target update from(work_cont(:,:,:,icont(m)))
+      if (Reg%Tr(m)%id_remap_cont > 0) then
+        call post_data(Reg%Tr(m)%id_remap_cont, work_cont(:,:,:,icont(m)), CS%diag)
+      endif
+      if (Reg%Tr(m)%id_remap_cont_2d > 0) then
+        do j = G%jsc,G%jec ; do i = G%isc,G%iec
+          work_2d(i,j) = 0.0
+          do k = 1,GV%ke
+            work_2d(i,j) = work_2d(i,j) + work_cont(i,j,k,icont(m))
+          enddo
+        enddo ; enddo
+        call post_data(Reg%Tr(m)%id_remap_cont_2d, work_2d, CS%diag)
+      endif
+    endif
+  enddo
+
+  !$omp target exit data map(delete: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, PCM_b, work_conc, work_cont)
+  deallocate(work_conc, work_cont, iconc, icont)
+
+end subroutine ALE_remap_tracers_block
+
+!> Copies the columns of a block of a tracer into a block array.
+subroutine gather_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, tr, tr_b)
+  type(ocean_grid_type),   intent(in) :: G   !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV  !< Ocean vertical grid structure
+  integer,                 intent(in) :: isb !< The starting i index of the block
+  integer,                 intent(in) :: jsb !< The starting j index of the block
+  integer,                 intent(in) :: nii !< The i block size
+  integer,                 intent(in) :: njj !< The j block size
+  integer,                 intent(in) :: iie !< The number of columns of this block in the i direction
+  integer,                 intent(in) :: jje !< The number of columns of this block in the j direction
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in)    :: tr   !< A tracer concentration [CU ~> Conc]
+  real, dimension(nii,njj,SZK_(GV)),         intent(inout) :: tr_b !< The tracer in the block [CU ~> Conc]
+  ! Local variables
+  integer :: i, j, k, ii, jj
+
+  do concurrent (k=1:GV%ke, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
+    i = isb + ii - 1 ; j = jsb + jj - 1
+    tr_b(ii,jj,k) = tr(i,j,k)
+  enddo
+
+end subroutine gather_tracer_block
+
+!> Underflows tiny concentrations, stores the tendency diagnostics and copies the remapped concentrations
+!! of a block of columns back into a tracer, as in the column loop of ALE_remap_tracers.
+subroutine finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b, h1_b, u0_b, u1_b, &
+                               conc_underflow, Idt, do_conc, do_cont, tr, work_conc, work_cont)
+  type(ocean_grid_type),   intent(in) :: G   !< Ocean grid structure
+  type(verticalGrid_type), intent(in) :: GV  !< Ocean vertical grid structure
+  integer,                 intent(in) :: isb !< The starting i index of the block
+  integer,                 intent(in) :: jsb !< The starting j index of the block
+  integer,                 intent(in) :: nii !< The i block size
+  integer,                 intent(in) :: njj !< The j block size
+  integer,                 intent(in) :: iie !< The number of columns of this block in the i direction
+  integer,                 intent(in) :: jje !< The number of columns of this block in the j direction
+  logical, dimension(nii,njj),       intent(in)    :: do_col !< True for the ocean columns of the block
+  real, dimension(nii,njj,SZK_(GV)), intent(in)    :: h0_b   !< Source grid thicknesses [H ~> m or kg m-2]
+  real, dimension(nii,njj,SZK_(GV)), intent(in)    :: h1_b   !< Target grid thicknesses [H ~> m or kg m-2]
+  real, dimension(nii,njj,SZK_(GV)), intent(in)    :: u0_b   !< Concentrations on the source grid [CU ~> Conc]
+  real, dimension(nii,njj,SZK_(GV)), intent(inout) :: u1_b   !< Concentrations on the target grid [CU ~> Conc]
+  real,                    intent(in) :: conc_underflow !< The magnitude below which concentrations
+                                                        !! are set to 0 [CU ~> Conc]
+  real,                    intent(in) :: Idt     !< The inverse of the timestep [T-1 ~> s-1]
+  logical,                 intent(in) :: do_conc !< If true, store the concentration tendency
+  logical,                 intent(in) :: do_cont !< If true, store the content tendency
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: tr !< A tracer concentration [CU ~> Conc]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: work_conc !< The rate of change of
+                                                        !! concentrations [Conc T-1 ~> Conc s-1]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: work_cont !< The rate of change of
+                                                        !! cell-integrated tracer content
+                                                        !! [Conc H T-1 ~> Conc m s-1 or Conc kg m-2 s-1]
+  ! Local variables
+  integer :: i, j, k, ii, jj
+
+  do concurrent (k=1:GV%ke, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    i = isb + ii - 1 ; j = jsb + jj - 1
+
+    ! Possibly underflow any very tiny tracer concentrations to 0.  Note that this is not conservative!
+    if (conc_underflow > 0.0) then
+      if (abs(u1_b(ii,jj,k)) < conc_underflow) u1_b(ii,jj,k) = 0.0
+    endif
+
+    ! Intermediate steps for tendency of tracer concentration and tracer content.
+    if (do_conc) work_conc(i,j,k) = (u1_b(ii,jj,k) - u0_b(ii,jj,k)) * Idt
+    if (do_cont) work_cont(i,j,k) = (u1_b(ii,jj,k)*h1_b(ii,jj,k) - u0_b(ii,jj,k)*h0_b(ii,jj,k)) * Idt
+
+    ! update tracer concentration
+    tr(i,j,k) = u1_b(ii,jj,k)
+  enddo
+
+end subroutine finish_tracer_block
 
 !> This routine sets the thicknesses at velocity points used for vertical remapping.
 subroutine ALE_remap_set_h_vel(CS, G, GV, h_new, h_u, h_v, OBC, debug)
