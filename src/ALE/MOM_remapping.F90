@@ -1007,6 +1007,8 @@ subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, n0, h0, n1,
   ! Loop over each sub-cell to calculate intersections with source and target grids
   do concurrent (jj=1:jje) DO_LOCALITY(local(i_sub))
     do i_sub = 2, n0+n1+1
+      ! ifx vectorizes this loop with masked scatters, which made it twice as slow on the CPU.
+      !DIR$ NOVECTOR
       do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(dh))
 
         ! This is the width of the sub-cell, determined by which ever column has the least
