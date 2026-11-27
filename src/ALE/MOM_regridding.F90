@@ -1257,7 +1257,11 @@ subroutine regridding_main( remapCS, CS, G, GV, US, h, tv, h_new, dzInterface, &
   character(len=128) :: mesg    ! A string for error messages
   integer :: i, j, k
 
-  if (present(PCM_cell)) PCM_cell(:,:,:) = .false.
+  if (present(PCM_cell)) then
+    do concurrent (k=1:GV%ke, j=G%jsd:G%jed, i=G%isd:G%ied)
+      PCM_cell(i,j,k) = .false.
+    enddo
+  endif
 
   Z_to_H = US%Z_to_m * GV%m_to_H  ! Often this is equivalent to GV%Z_to_H.
 
@@ -1372,9 +1376,8 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
   integer :: nii, njj ! The i and j block sizes
   integer :: i, j, k, nki
 
-  ! The thicknesses and grids are current on the host.
+  ! Arrays that are already on the device are used there, while the others are copied.
   !$omp target enter data map(to: h, h_new, dzInterface) map(alloc: nom_depth_H)
-  !$omp target update to(h, h_new, dzInterface)
 
   if (allocated(tv%SpV_avg)) then  ! This is the fully non-Boussinesq case
     call nominal_depth_nonBous(G, GV, h, tv%SpV_avg, nom_depth_H)
@@ -1413,8 +1416,7 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
     enddo
   enddo
 
-  !$omp target update from(h_new, dzInterface)
-  !$omp target exit data map(release: h, h_new, dzInterface) map(delete: nom_depth_H)
+  !$omp target exit data map(from: h_new, dzInterface) map(release: h) map(delete: nom_depth_H)
 
   if (neg_h) call MOM_error(FATAL, "regridding_main: negative thickness encountered.")
 
@@ -1433,6 +1435,7 @@ subroutine nominal_depth_nonBous(G, GV, h, SpV_avg, nom_depth_H)
   real :: tot_dz(SZI_(G),SZJ_(G)) !< The total distance between the top and bottom of the water column [Z ~> m]
   integer :: i, j, k
 
+  ! The specific volumes are current on the host.
   !$omp target enter data map(to: SpV_avg) map(alloc: tot_h, tot_dz)
   !$omp target update to(SpV_avg)
 

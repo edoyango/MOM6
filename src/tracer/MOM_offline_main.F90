@@ -239,7 +239,7 @@ subroutine offline_advection_ale(fluxes, Time_start, time_interval, G, GV, US, C
   integer :: niter, iter
   real    :: Inum_iter    ! The inverse of the number of iterations [nondim]
   character(len=256) :: mesg  ! The text of an error message
-  integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed, nz
+  integer :: i, j, k, m, is, ie, js, je, isd, ied, jsd, jed, nz
   integer :: IsdB, IedB, JsdB, JedB
   logical :: x_before_y
   real :: evap_CFL_limit  ! Limit on the fraction of the water that can be fluxed out of the
@@ -361,11 +361,18 @@ subroutine offline_advection_ale(fluxes, Time_start, time_interval, G, GV, US, C
       ! that would be needed to support remapping its output.
       ! call diag_update_remap_grids(CS%diag, alt_h=h_new)
 
+      ! The tracers are current on the host, but the remapping uses their device copies if they are mapped.
+      do m=1,CS%tracer_Reg%ntr
+        !$omp target update to(CS%tracer_Reg%Tr(m)%t)
+      enddo
       call ALE_regrid(G, GV, US, h_new, h_post_remap, dzRegrid, CS%tv, CS%ALE_CSp)
 
       ! Remap all variables from the old grid h_new onto the new grid h_post_remap
       call ALE_remap_tracers(CS%ALE_CSp, G, GV, h_new, h_post_remap, CS%tracer_Reg, &
                              CS%debug, dt=CS%dt_offline)
+      do m=1,CS%tracer_Reg%ntr
+        !$omp target update from(CS%tracer_Reg%Tr(m)%t)
+      enddo
       if (allocated(CS%tv%SpV_avg)) CS%tv%valid_SpV_halo = -1   ! Record that SpV_avg is no longer valid.
 
       do k=1,nz ; do j=js-1,je+1 ; do i=is-1,ie+1

@@ -2042,7 +2042,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   logical :: debug_redundant ! If true, check redundant values on PE boundaries when debugging.
   logical :: showCallTree
   type(group_pass_type) :: pass_T_S_h
-  integer :: i, j, k, is, ie, js, je, nz
+  integer :: i, j, k, m, ntr, is, ie, js, je, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
   use_ice_shelf = .false.
@@ -2091,6 +2091,15 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   call diag_update_remap_grids(CS%diag)
   call cpu_clock_end(id_clock_ALE_diag_grids)
 
+  ! The regridding and remapping work on the device, where the thicknesses and tracers are copied once.
+  ntr = 0 ; if (associated(CS%tracer_Reg)) ntr = CS%tracer_Reg%ntr
+  !$omp target enter data map(alloc: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
+  !$omp target update to(h)
+  do m=1,ntr
+    !$omp target enter data map(to: CS%tracer_Reg%Tr(m)%t)
+    !$omp target update to(CS%tracer_Reg%Tr(m)%t)
+  enddo
+
   call cpu_clock_begin(id_clock_ALE_regrid)
   if (use_ice_shelf) then
     call ALE_regrid(G, GV, US, h, h_new, dzRegrid, tv, CS%ALE_CSp, CS%frac_shelf_h, PCM_cell)
@@ -2130,9 +2139,12 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
       call remap_dyn_split_RK2_aux_vars(G, GV, CS%dyn_split_RK2_CSp, h_old_u, h_old_v, h_new_u, h_new_v, CS%ALE_CSp)
     endif
 
+    ! The rest of the auxiliary variables are remapped on the host.
+    !$omp target update from(h_new)
     if (associated(CS%OBC) .or. associated(CS%visc%Kv_shear_Bu)) then
       call pass_var(h, G%Domain, complete=.false.)
       call pass_var(h_new, G%Domain, complete=.true.)
+      !$omp target update to(h, h_new)
     endif
 
     if (associated(CS%OBC)) &
@@ -2145,10 +2157,16 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   call cpu_clock_end(id_clock_ALE_aux)
 
   ! Replace the old grid with new one.  All remapping must be done by this point in the code.
-  !$OMP parallel do default(shared)
-  do k=1,nz ; do j=js-1,je+1 ; do i=is-1,ie+1
+  do concurrent (k=1:nz, j=js-1:je+1, i=is-1:ie+1)
     h(i,j,k) = h_new(i,j,k)
-  enddo ; enddo ; enddo
+  enddo
+
+  !$omp target update from(u, v, h)
+  do m=1,ntr
+    !$omp target update from(CS%tracer_Reg%Tr(m)%t)
+    !$omp target exit data map(release: CS%tracer_Reg%Tr(m)%t)
+  enddo
+  !$omp target exit data map(delete: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
 
   if (showCallTree) call callTree_waypoint("finished ALE_regrid (ALE_regridding_and_remapping)")
   call cpu_clock_end(id_clock_ALE)
@@ -2542,7 +2560,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
 
-  integer :: i, j, k, m, is, ie, js, je, isd, ied, jsd, jed, nz
+  integer :: i, j, k, m, ntr, is, ie, js, je, isd, ied, jsd, jed, nz
   integer :: IsdB, IedB, JsdB, JedB
   real    :: dtbt              ! If negative, this specifies the barotropic timestep as a fraction
                                ! of the maximum stable value [nondim].
@@ -3711,6 +3729,12 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call pre_ALE_adjustments(G, GV, US, CS%h, CS%tv, CS%tracer_Reg, CS%ALE_CSp, CS%u, CS%v)
 
     call callTree_waypoint("Calling ALE_regrid() to remap initial conditions (initialize_MOM)")
+    ! The initial state is on the host, but the ALE routines use the device copies of mapped arrays.
+    !$omp target update to(CS%u, CS%v, CS%h)
+    ntr = 0 ; if (associated(CS%tracer_Reg)) ntr = CS%tracer_Reg%ntr
+    do m=1,ntr
+      !$omp target update to(CS%tracer_Reg%Tr(m)%t)
+    enddo
     allocate(h_new(isd:ied, jsd:jed, nz), source=0.0)
     allocate(dzRegrid(isd:ied, jsd:jed, nz+1), source=0.0)
     allocate(PCM_cell(isd:ied, jsd:jed, nz), source=.false.)
@@ -3738,6 +3762,10 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
     ! Remap the velocity components.
     call ALE_remap_velocities(CS%ALE_CSp, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, CS%u, CS%v, CS%debug)
+    !$omp target update from(CS%u, CS%v)
+    do m=1,ntr
+      !$omp target update from(CS%tracer_Reg%Tr(m)%t)
+    enddo
 
     if (allocated(CS%tv%SpV_avg)) CS%tv%valid_SpV_halo = -1   ! Record that SpV_avg is no longer valid.
 

@@ -592,6 +592,7 @@ subroutine ALE_regrid( G, GV, US, h, h_new, dzRegrid, tv, CS, frac_shelf_h, PCM_
 
   ! Local variables
   logical :: showCallTree
+  integer :: i, j, K
 
   showCallTree = callTree_showQuery()
 
@@ -599,11 +600,14 @@ subroutine ALE_regrid( G, GV, US, h, h_new, dzRegrid, tv, CS, frac_shelf_h, PCM_
 
   ! Build the new grid and store it in h_new. The old grid is retained as h.
   ! Both are needed for the subsequent remapping of variables.
-  dzRegrid(:,:,:) = 0.0
+  do concurrent (K=1:GV%ke+1, j=G%jsd:G%jed, i=G%isd:G%ied)
+    dzRegrid(i,j,K) = 0.0
+  enddo
   call regridding_main( CS%remapCS, CS%regridCS, G, GV, US, h, tv, h_new, dzRegrid, &
                         frac_shelf_h=frac_shelf_h, PCM_cell=PCM_cell)
 
   if (CS%id_dzRegrid>0) then ; if (query_averaging_enabled(CS%diag)) then
+    !$omp target update from(dzRegrid, h_new)
     call post_data(CS%id_dzRegrid, dzRegrid, CS%diag, alt_h=h_new)
   endif ; endif
 
@@ -629,7 +633,7 @@ subroutine ALE_offline_inputs(CS, G, GV, US, h, tv, Reg, uhtr, vhtr, Kd, debug, 
   logical,                                      intent(in   ) :: debug !< If true, then turn checksums
   type(ocean_OBC_type),                         pointer       :: OBC   !< Open boundary structure
   ! Local variables
-  integer :: nk, i, j, k, isc, iec, jsc, jec
+  integer :: nk, i, j, k, m, isc, iec, jsc, jec
   real, dimension(SZI_(G), SZJ_(G), SZK_(GV))   :: h_new    ! Layer thicknesses after regridding [H ~> m or kg m-2]
   real, dimension(SZI_(G), SZJ_(G), SZK_(GV)+1) :: dzRegrid ! The change in grid interface positions [H ~> m or kg m-2]
   real, dimension(SZK_(GV)) :: h_src   ! Source grid thicknesses at velocity points [H ~> m or kg m-2]
@@ -645,11 +649,19 @@ subroutine ALE_offline_inputs(CS, G, GV, US, h, tv, Reg, uhtr, vhtr, Kd, debug, 
   ! Build new grid from the Zstar state onto the requested vertical coordinate. The new grid is stored
   ! in h_new. The old grid is h. Both are needed for the subsequent remapping of variables. Convective
   ! adjustment right now is not used because it is unclear what to do with vanished layers
+  ! The state is current on the host, but the ALE routines use the device copies of arrays that are mapped.
+  !$omp target update to(h)
+  do m=1,Reg%ntr
+    !$omp target update to(Reg%Tr(m)%t)
+  enddo
   call regridding_main( CS%remapCS, CS%regridCS, G, GV, US, h, tv, h_new, dzRegrid)
   if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_offline_inputs)")
 
   ! Remap all variables from old grid h onto new grid h_new
   call ALE_remap_tracers(CS, G, GV, h, h_new, Reg, debug=CS%show_call_tree)
+  do m=1,Reg%ntr
+    !$omp target update from(Reg%Tr(m)%t)
+  enddo
   if (allocated(tv%SpV_avg)) tv%valid_SpV_halo = -1   ! Record that SpV_avg is no longer valid.
   if (CS%show_call_tree) call callTree_waypoint("state remapped (ALE_inputs)")
 
@@ -722,7 +734,7 @@ subroutine ALE_regrid_accelerated(CS, G, GV, US, h, tv, n_itt, u, v, OBC, Reg, d
                                                     !! routine (and expect diagnostics to work)
 
   ! Local variables
-  integer :: i, j, itt, nz
+  integer :: i, j, itt, m, nz
   type(thermo_var_ptrs) :: tv_local ! local/intermediate temp/salt
   type(group_pass_type) :: pass_T_S_h ! group pass if the coordinate has a stencil
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV))         :: h_loc  ! A working copy of layer thicknesses [H ~> m or kg m-2]
@@ -765,6 +777,12 @@ subroutine ALE_regrid_accelerated(CS, G, GV, US, h, tv, n_itt, u, v, OBC, Reg, d
   h_loc(:,:,:) = h(:,:,:)
   h_orig(:,:,:) = h(:,:,:)
 
+  ! The state is current on the host, but the ALE routines use the device copies of arrays that are mapped.
+  !$omp target update to(h, u, v)
+  if (present(Reg)) then ; if (associated(Reg)) then ; do m=1,Reg%ntr
+    !$omp target update to(Reg%Tr(m)%t)
+  enddo ; endif ; endif
+
   ! Apply timescale to regridding (for e.g. filtered_grid_motion)
   if (present(dt)) &
       call ALE_update_regrid_weights(dt, CS)
@@ -780,6 +798,7 @@ subroutine ALE_regrid_accelerated(CS, G, GV, US, h, tv, n_itt, u, v, OBC, Reg, d
     if (allocated(tv_local%SpV_avg)) call calc_derived_thermo(tv_local, h, G, GV, US, halo=1)
 
     call regridding_main(CS%remapCS, CS%regridCS, G, GV, US, h_loc, tv_local, h, dzInterface)
+    !$omp target update from(h)
     if (CS%remap_uv_using_old_alg) &
         dzIntTotal(:,:,:) = dzIntTotal(:,:,:) + dzInterface(:,:,:)
 
@@ -797,6 +816,9 @@ subroutine ALE_regrid_accelerated(CS, G, GV, US, h, tv, n_itt, u, v, OBC, Reg, d
 
   ! remap all state variables (including those that weren't needed for regridding)
   call ALE_remap_tracers(CS, G, GV, h_orig, h, Reg)
+  if (present(Reg)) then ; if (associated(Reg)) then ; do m=1,Reg%ntr
+    !$omp target update from(Reg%Tr(m)%t)
+  enddo ; endif ; endif
 
   call ALE_remap_set_h_vel(CS, G, GV, h_orig, h_old_u, h_old_v, OBC)
   if (CS%remap_uv_using_old_alg) then
@@ -806,6 +828,7 @@ subroutine ALE_regrid_accelerated(CS, G, GV, US, h, tv, n_itt, u, v, OBC, Reg, d
   endif
 
   call ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u, v)
+  !$omp target update from(u, v)
 
   ! save total dzregrid for diags if needed?
   if (present(dzRegrid)) dzRegrid(:,:,:) = dzIntTotal(:,:,:)
@@ -936,8 +959,12 @@ subroutine ALE_remap_tracers(CS, G, GV, h_old, h_new, Reg, debug, dt, PCM_cell)
   endif  ! endif for ntr > 0
 
 
-  if (CS%id_vert_remap_h > 0) call post_data(CS%id_vert_remap_h, h_old, CS%diag)
+  if (CS%id_vert_remap_h > 0) then
+    !$omp target update from(h_old)
+    call post_data(CS%id_vert_remap_h, h_old, CS%diag)
+  endif
   if ((CS%id_vert_remap_h_tendency > 0) .and. present(dt)) then
+    !$omp target update from(h_old, h_new)
     do k = 1, nz ; do j = G%jsc,G%jec ; do i = G%isc,G%iec
       work_cont(i,j,k) = (h_new(i,j,k) - h_old(i,j,k))*Idt
     enddo ; enddo ; enddo
@@ -1023,16 +1050,13 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
   !$omp target enter data map(alloc: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
   !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
   !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, PCM_b, work_conc, work_cont)
-  ! The grids and tracers are current on the host.
+  ! Arrays that are already on the device are used there, while the others are copied.
   !$omp target enter data map(to: h_old, h_new)
-  !$omp target update to(h_old, h_new)
   if (present(PCM_cell)) then
     !$omp target enter data map(to: PCM_cell)
-    !$omp target update to(PCM_cell)
   endif
   do m=1,ntr
     !$omp target enter data map(to: Reg%Tr(m)%t)
-    !$omp target update to(Reg%Tr(m)%t)
   enddo
 
   if (nconc > 0) then ; do concurrent (n=1:nconc, k=1:nz, j=G%jsd:G%jed, i=G%isd:G%ied)
@@ -1088,8 +1112,7 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
   enddo ; enddo
 
   do m=1,ntr
-    !$omp target update from(Reg%Tr(m)%t)
-    !$omp target exit data map(release: Reg%Tr(m)%t)
+    !$omp target exit data map(from: Reg%Tr(m)%t)
   enddo
   if (present(PCM_cell)) then
     !$omp target exit data map(release: PCM_cell)
@@ -1222,9 +1245,8 @@ subroutine ALE_remap_set_h_vel(CS, G, GV, h_new, h_u, h_v, OBC, debug)
   if (present(debug)) show_call_tree = debug
   if (show_call_tree) call callTree_enter("ALE_remap_set_h_vel()")
 
-  ! The thicknesses are current on the host.
+  ! Arrays that are already on the device are used there, while the others are copied.
   !$omp target enter data map(to: h_new, h_u, h_v)
-  !$omp target update to(h_new, h_u, h_v)
 
   ! Build the u- and v-velocity grid thicknesses for remapping.
 
@@ -1238,11 +1260,14 @@ subroutine ALE_remap_set_h_vel(CS, G, GV, h_new, h_u, h_v, OBC, debug)
   ! Mask out blocked portions of velocity cells.
   if (CS%partial_cell_vel_remap) call ALE_remap_set_h_vel_partial(CS, G, GV, h_new, h_u, h_v)
 
-  !$omp target update from(h_u, h_v)
-  !$omp target exit data map(release: h_new, h_u, h_v)
-
   ! Take open boundary conditions into account.
-  if (associated(OBC)) call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
+  if (associated(OBC)) then
+    !$omp target update from(h_new, h_u, h_v)
+    call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
+    !$omp target update to(h_u, h_v)
+  endif
+
+  !$omp target exit data map(from: h_u, h_v) map(release: h_new)
 
   if (show_call_tree) call callTree_leave("ALE_remap_set_h_vel()")
 
@@ -1281,9 +1306,8 @@ subroutine ALE_remap_set_h_vel_via_dz(CS, G, GV, h_new, h_u, h_v, OBC, h_old, dz
   if (present(debug)) show_call_tree = debug
   if (show_call_tree) call callTree_enter("ALE_remap_set_h_vel()")
 
-  ! The thicknesses and interface movements are current on the host.
-  !$omp target enter data map(to: h_old, dzInterface, h_u, h_v)
-  !$omp target update to(h_old, dzInterface, h_u, h_v)
+  ! Arrays that are already on the device are used there, while the others are copied.
+  !$omp target enter data map(to: h_new, h_old, dzInterface, h_u, h_v)
 
   ! Build the u- and v-velocity grid thicknesses for remapping using the old grid and interface movement.
 
@@ -1302,11 +1326,14 @@ subroutine ALE_remap_set_h_vel_via_dz(CS, G, GV, h_new, h_u, h_v, OBC, h_old, dz
   ! Mask out blocked portions of velocity cells.
   if (CS%partial_cell_vel_remap) call ALE_remap_set_h_vel_partial(CS, G, GV, h_old, h_u, h_v)
 
-  !$omp target update from(h_u, h_v)
-  !$omp target exit data map(release: h_old, dzInterface, h_u, h_v)
-
   ! Take open boundary conditions into account.
-  if (associated(OBC)) call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
+  if (associated(OBC)) then
+    !$omp target update from(h_new, h_u, h_v)
+    call ALE_remap_set_h_vel_OBC(G, GV, h_new, h_u, h_v, OBC)
+    !$omp target update to(h_u, h_v)
+  endif
+
+  !$omp target exit data map(from: h_u, h_v) map(release: h_new, h_old, dzInterface)
 
   if (show_call_tree) call callTree_leave("ALE_remap_set_h_vel()")
 
@@ -1527,14 +1554,12 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   if (use_blocks) then
     nIIB = CS%niblock ; if (nIIB == 0) nIIB = G%IecB - G%IscB + 1
     njj = CS%njblock ; if (njj == 0) njj = G%jec - G%jsc + 1
-    ! The thicknesses and velocities are current on the host.
+    ! Arrays that are already on the device are used there, while the others are copied.
     !$omp target enter data map(to: h_old_u, h_new_u, u, du2h_tot)
-    !$omp target update to(h_old_u, h_new_u, u, du2h_tot)
     call ALE_remap_vel_block(CS, GV, G%IsdB, G%IedB, G%jsd, G%jed, G%IscB, G%IecB, G%jsc, G%jec, nIIB, njj, &
                              G%mask2dCu, h_old_u, h_new_u, u, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_u2>0), I_dt, du2h_tot)
-    !$omp target update from(u, du2h_tot)
-    !$omp target exit data map(release: h_old_u, h_new_u, u, du2h_tot)
+    !$omp target exit data map(from: u, du2h_tot) map(release: h_old_u, h_new_u)
   else
     !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
     !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
@@ -1615,14 +1640,12 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
   if (use_blocks) then
     nii = CS%niblock ; if (nii == 0) nii = G%iec - G%isc + 1
     nJJB = CS%njblock ; if (nJJB == 0) nJJB = G%JecB - G%JscB + 1
-    ! The thicknesses and velocities are current on the host.
+    ! Arrays that are already on the device are used there, while the others are copied.
     !$omp target enter data map(to: h_old_v, h_new_v, v, dv2h_tot)
-    !$omp target update to(h_old_v, h_new_v, v, dv2h_tot)
     call ALE_remap_vel_block(CS, GV, G%isd, G%ied, G%JsdB, G%JedB, G%isc, G%iec, G%JscB, G%JecB, nii, nJJB, &
                              G%mask2dCv, h_old_v, h_new_v, v, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_v2>0), I_dt, dv2h_tot)
-    !$omp target update from(v, dv2h_tot)
-    !$omp target exit data map(release: h_old_v, h_new_v, v, dv2h_tot)
+    !$omp target exit data map(from: v, dv2h_tot) map(release: h_old_v, h_new_v)
   else
     !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
     !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &
