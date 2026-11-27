@@ -90,6 +90,7 @@ public initialize_remapping, end_remapping, remapping_set_param, extract_member_
 public remapping_unit_tests, build_reconstructions_1d, average_value_ppoly
 public interpolate_column, reintegrate_column, dzFromH1H2
 public remapping_block_supported, remapping_core_h_block, intersect_src_tgt_grids_block
+public interpolate_column_block
 
 ! The following are private parameter constants
 integer, parameter  :: REMAPPING_PCM        = 0 !< O(h^1) remapping scheme
@@ -1840,6 +1841,70 @@ subroutine interpolate_column(nsrc, h_src, u_src, ndest, h_dest, u_dest, mask_ed
 
 end subroutine interpolate_column
 
+!> Linearly interpolate interface data, u_src, from a block of columns with thicknesses h_src onto
+!! grids with thicknesses h_dest, as in interpolate_column without masking the edges, with the
+!! interfaces in the last array index.
+subroutine interpolate_column_block(nib, njb, iie, jje, do_col, nsrc, h_src, u_src, ndest, h_dest, u_dest)
+  integer, intent(in)    :: nib  !< The first dimension of the block arrays
+  integer, intent(in)    :: njb  !< The second dimension of the block arrays
+  integer, intent(in)    :: iie  !< The number of columns of this block in the first dimension
+  integer, intent(in)    :: jje  !< The number of columns of this block in the second dimension
+  logical, intent(in)    :: do_col(nib,njb)           !< True for the columns to work on
+  integer, intent(in)    :: nsrc                      !< Number of source cells
+  real,    intent(in)    :: h_src(nib,njb,nsrc)       !< Thickness of source cells [H]
+  real,    intent(in)    :: u_src(nib,njb,nsrc+1)     !< Values at source cell interfaces [A]
+  integer, intent(in)    :: ndest                     !< Number of destination cells
+  real,    intent(in)    :: h_dest(nib,njb,ndest)     !< Thickness of destination cells [H]
+  real,    intent(inout) :: u_dest(nib,njb,ndest+1)   !< Interpolated value at destination cell interfaces [A]
+
+  ! Local variables
+  real :: x_dest(nib,njb)            ! Relative position of target interface [H]
+  real :: dh(nib,njb)                ! Source cell thickness [H]
+  real :: frac_pos(nib,njb,ndest+1)  ! Fractional position of the destination interface
+  integer :: k_src(nib,njb,ndest+1)  ! Source grid layer index of destination interface, 1 <= k_src <= ndest.
+  integer :: ks(nib,njb)             ! Index of cell in src columns
+  integer :: ksl, k_dest             ! Index of cell in src and dest columns
+  integer :: ii, jj
+
+  !$omp target enter data map(alloc: x_dest, dh, frac_pos, k_src, ks)
+
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+    ks(ii,jj) = 0
+    dh(ii,jj) = 0.
+    x_dest(ii,jj) = 0.
+  enddo
+  do concurrent (jj=1:jje) DO_LOCALITY(local(k_dest))
+    do k_dest=1,ndest+1
+      do concurrent (ii=1:iie, do_col(ii,jj))
+        do while (dh(ii,jj)<=x_dest(ii,jj) .and. ks(ii,jj)<nsrc)
+          ! Move positions pointers forward until the interface that is being sought has been passed.
+          x_dest(ii,jj) = x_dest(ii,jj) - dh(ii,jj)
+          ks(ii,jj) = ks(ii,jj) + 1
+          dh(ii,jj) = h_src(ii,jj,ks(ii,jj)) ! Thickness of layer ks
+        enddo
+        k_src(ii,jj,k_dest) = ks(ii,jj)
+        if (dh(ii,jj)>0.) then
+          frac_pos(ii,jj,k_dest) = max(0., min(1., x_dest(ii,jj) / dh(ii,jj))) ! Weight of u2
+        else  ! For a vanished source layer we need to do something reasonable...
+          frac_pos(ii,jj,k_dest) = 0.5
+        endif
+        if (k_dest <= ndest) then
+          x_dest(ii,jj) = x_dest(ii,jj) + h_dest(ii,jj,k_dest) ! Position of interface k_dest+1
+        endif
+      enddo
+    enddo
+  enddo
+
+  do concurrent (k_dest=1:ndest+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(ksl))
+    ksl = k_src(ii,jj,k_dest)
+    u_dest(ii,jj,k_dest) = (1.0 - frac_pos(ii,jj,k_dest)) * u_src(ii,jj,ksl) + &
+                           frac_pos(ii,jj,k_dest) * u_src(ii,jj,ksl+1)
+  enddo
+
+  !$omp target exit data map(delete: x_dest, dh, frac_pos, k_src, ks)
+
+end subroutine interpolate_column_block
+
 !> Conservatively calculate integrated data, uh_dest, on grid h_dest, from layer-integrated data, uh_src, on grid h_src
 subroutine reintegrate_column(nsrc, h_src, uh_src, ndest, h_dest, uh_dest)
   integer,                intent(in)    :: nsrc    !< Number of source cells
@@ -2634,6 +2699,54 @@ subroutine test_remap_block(test, scheme, n0, n1, niter, h_neglect, use_PCM_cell
   call end_remapping(CS)
 
 end subroutine test_remap_block
+
+!> Test that interpolate_column_block agrees bitwise with interpolate_column on random columns
+subroutine test_interp_block(test, nsrc, ndest, niter, same_total)
+  type(testing), intent(inout) :: test   !< Unit testing convenience functions
+  integer,       intent(in)    :: nsrc   !< Number of source cells
+  integer,       intent(in)    :: ndest  !< Number of destination cells
+  integer,       intent(in)    :: niter  !< Number of randomized blocks to try
+  logical,       intent(in)    :: same_total !< If true, the source and destination columns have the
+                                         !! same total thickness, up to roundoff
+  ! Local
+  integer, parameter :: nib = 5, njb = 3 ! Block array sizes; the last i column is not used
+  real :: h_src(nib,njb,nsrc), h_dest(nib,njb,ndest) ! Source and destination thicknesses [H]
+  real :: u_src(nib,njb,nsrc+1)   ! Source interface values [A]
+  real :: u_dest(nib,njb,ndest+1) ! Block interpolated values [A]
+  real :: u1(ndest+1)        ! Column interpolated values [A]
+  real :: rnd2(nib,njb)      ! Random numbers [nondim]
+  real :: tot0, tot1         ! Column total thicknesses [H]
+  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: error           ! Indicates a difference
+  integer :: iter, ii, jj, k
+  character(len=80) :: label ! Generated label
+
+  error = .false.
+  do iter = 1, niter
+    call random_number(h_src) ; h_src(:,:,:) = max(0., h_src(:,:,:) - 0.1) ! About 10% vanished cells
+    call random_number(h_dest) ; h_dest(:,:,:) = max(0., h_dest(:,:,:) - 0.1)
+    if (same_total) then
+      do jj=1,njb ; do ii=1,nib
+        tot0 = 0. ; do k=1,nsrc ; tot0 = tot0 + h_src(ii,jj,k) ; enddo
+        tot1 = 0. ; do k=1,ndest ; tot1 = tot1 + h_dest(ii,jj,k) ; enddo
+        if (tot1 > 0.) then ; do k=1,ndest ; h_dest(ii,jj,k) = h_dest(ii,jj,k) * (tot0 / tot1) ; enddo ; endif
+      enddo ; enddo
+    endif
+    call random_number(u_src)
+    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+
+    call interpolate_column_block(nib, njb, nib-1, njb, do_col, nsrc, h_src, u_src, ndest, h_dest, u_dest)
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+      call interpolate_column(nsrc, h_src(ii,jj,:), u_src(ii,jj,:), ndest, h_dest(ii,jj,:), u1, .false.)
+      if (any(u_dest(ii,jj,:) /= u1(:))) error = .true.
+    endif ; enddo ; enddo
+  enddo
+
+  write(label, '(a,2(i0,a),l1)') 'interpolate_column_block, nsrc=', nsrc, ', ndest=', ndest, ', same_total=', &
+      same_total
+  call test%test(error, trim(label))
+
+end subroutine test_interp_block
 
 !> Test that remapping a uniform field remains uniform
 subroutine test_preserve_uniform(test, scheme, n0, niter, h_neglect)
@@ -3693,6 +3806,9 @@ logical function remapping_unit_tests(verbose, num_comp_samp)
   call test_remap_block(test, 'PCM', 9, 9, ntests, h_neglect, .false., .true., .false., .true.)
   call test_remap_block(test, 'PLM', 9, 6, ntests, h_neglect, .false., .false., .false., .true.)
   call test_remap_block(test, 'PLM', 6, 9, ntests, h_neglect, .false., .false., .true., .false.)
+  call test_interp_block(test, 9, 9, ntests, .true.)
+  call test_interp_block(test, 9, 6, ntests, .false.)
+  call test_interp_block(test, 6, 9, ntests, .false.)
 
   remapping_unit_tests = test%summarize('remapping_unit_tests')
 
