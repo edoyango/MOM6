@@ -88,6 +88,7 @@ public remapping_core_h, remapping_core_w
 public initialize_remapping, end_remapping, remapping_set_param, extract_member_remapping_CS
 public remapping_unit_tests, build_reconstructions_1d, average_value_ppoly
 public interpolate_column, reintegrate_column, dzFromH1H2
+public remapping_block_supported
 
 ! The following are private parameter constants
 integer, parameter  :: REMAPPING_PCM        = 0 !< O(h^1) remapping scheme
@@ -229,6 +230,29 @@ subroutine extract_member_remapping_CS(CS, remapping_scheme, degree, boundary_ex
   if (present(offset_tgt_summation)) offset_tgt_summation = CS%offset_tgt_summation
 
 end subroutine extract_member_remapping_CS
+
+!> Returns true if the block remapping routines support the settings in CS: the PCM or PLM schemes
+!! with the OM4 sub-cells, no boundary extrapolation, and no checks of the reconstructions or remapping.
+logical function remapping_block_supported(CS, reason)
+  type(remapping_CS),         intent(in)  :: CS     !< Remapping control structure
+  character(len=*), optional, intent(out) :: reason !< The first unsupported setting, or blank
+
+  character(len=120) :: mesg
+
+  mesg = ""
+  if ((CS%remapping_scheme /= REMAPPING_PCM) .and. (CS%remapping_scheme /= REMAPPING_PLM)) then
+    mesg = "only the PCM and PLM remapping schemes are supported."
+  elseif (.not.CS%om4_remap_via_sub_cells) then
+    mesg = "REMAPPING_USE_OM4_SUBCELLS must be true."
+  elseif (CS%boundary_extrapolation) then
+    mesg = "boundary extrapolation is not supported."
+  elseif (CS%check_reconstruction .or. CS%check_remapping) then
+    mesg = "FATAL_CHECK_RECONSTRUCTIONS and FATAL_CHECK_REMAPPING are not supported."
+  endif
+  remapping_block_supported = (len_trim(mesg) == 0)
+  if (present(reason)) reason = mesg
+
+end function remapping_block_supported
 
 !> Remaps column of values u0 on grid h0 to grid h1 assuming the top edge is aligned and using the OM4
 !! reconstruction methods

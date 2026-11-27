@@ -165,6 +165,7 @@ public getCoordinateUnits, getCoordinateShortName, getStaticThickness
 public DEFAULT_COORDINATE_MODE
 public set_h_neglect, set_dz_neglect
 public get_zlike_CS, get_sigma_CS, get_rho_CS
+public regridding_block_supported
 
 !> Documentation for coordinate options
 character(len=*), parameter, public :: regriddingCoordinateModeDoc = &
@@ -2781,6 +2782,21 @@ function getCoordinateShortName( CS )
   end select ! type of grid
 
 end function getCoordinateShortName
+
+!> Returns true if the block regridding routines support the settings in CS, which is only the
+!! ZSTAR coordinate.
+logical function regridding_block_supported(CS, reason)
+  type(regridding_CS),        intent(in)  :: CS     !< Regridding control structure
+  character(len=*), optional, intent(out) :: reason !< The first unsupported setting, or blank
+
+  character(len=120) :: mesg
+
+  mesg = ""
+  if (CS%regridding_scheme /= REGRIDDING_ZSTAR) mesg = "only the ZSTAR coordinate is supported."
+  regridding_block_supported = (len_trim(mesg) == 0)
+  if (present(reason)) reason = mesg
+
+end function regridding_block_supported
 
 !> Can be used to set any of the parameters for MOM_regridding.
 subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_grid_weight, &

@@ -37,8 +37,8 @@ use MOM_regridding,       only : regriddingDefaultMinThickness
 use MOM_regridding,       only : regridding_CS, set_regrid_params, write_regrid_file
 use MOM_regridding,       only : getCoordinateInterfaces
 use MOM_regridding,       only : getCoordinateUnits, getCoordinateShortName
-use MOM_regridding,       only : getStaticThickness
-use MOM_remapping,        only : initialize_remapping, end_remapping
+use MOM_regridding,       only : getStaticThickness, regridding_block_supported
+use MOM_remapping,        only : initialize_remapping, end_remapping, remapping_block_supported
 use MOM_remapping,        only : remapping_core_h, remapping_core_w
 use MOM_remapping,        only : remappingSchemesDoc, remappingDefaultScheme
 use MOM_remapping,        only : interpolate_column, reintegrate_column
@@ -102,6 +102,9 @@ type, public :: ALE_CS ; private
 
   logical :: conserve_ke    !< Apply a correction to the baroclinic velocity after remapping to
                             !! conserve KE.
+
+  integer :: niblock        !< The i block size used in the regridding and remapping calculations [nondim]
+  integer :: njblock        !< The j block size used in the regridding and remapping calculations [nondim]
 
   logical :: debug   !< If true, write verbose checksums for debugging purposes.
   logical :: show_call_tree !< For debugging
@@ -192,6 +195,13 @@ subroutine ALE_init( param_file, G, GV, US, max_depth, CS)
   type(hybgen_regrid_CS), pointer :: hybgen_regridCS => NULL() ! Control structure for hybgen regridding
                                                          ! for sharing parameters.
   real :: h_neglect, h_neglect_edge ! small thicknesses [H ~> m or kg m-2]
+#ifdef __NVCOMPILER_OPENMP_GPU
+  integer, parameter :: default_niblock = 0  ! Default i block size for the block calculations
+  integer, parameter :: default_njblock = 0  ! Default j block size for the block calculations
+#else
+  integer, parameter :: default_niblock = 0  ! Default i block size for the block calculations
+  integer, parameter :: default_njblock = 1  ! Default j block size for the block calculations
+#endif
 
   if (associated(CS)) then
     call MOM_error(WARNING, "ALE_init called with an associated "// &
@@ -349,12 +359,40 @@ subroutine ALE_init( param_file, G, GV, US, max_depth, CS)
   call get_param(param_file, "MOM", "DEBUG", CS%debug, &
                  "If true, write out verbose debugging data.", &
                  default=.false., debuggingParam=.true.)
+  call get_param(param_file, mdl, "ALE_NIBLOCK", CS%niblock, &
+                 "The i-direction block size used in the regridding and remapping "//&
+                 "calculations. A value of 0 uses the full computational i-domain extent.", &
+                 default=default_niblock, layoutParam=.true.)
+  call get_param(param_file, mdl, "ALE_NJBLOCK", CS%njblock, &
+                 "The j-direction block size used in the regridding and remapping "//&
+                 "calculations. A value of 0 uses the full computational j-domain extent.", &
+                 default=default_njblock, layoutParam=.true.)
+  if (CS%niblock < 0) call MOM_error(FATAL, "ALE_init: ALE_NIBLOCK must be nonnegative.")
+  if (CS%njblock < 0) call MOM_error(FATAL, "ALE_init: ALE_NJBLOCK must be nonnegative.")
 
   ! Keep a record of values for subsequent queries
   CS%nk = GV%ke
 
+  call ALE_check_GPU_support(CS)
+
   if (CS%show_call_tree) call callTree_leave("ALE_init()")
 end subroutine ALE_init
+
+!> Stops with a fatal error in GPU builds if the regridding or remapping settings need code that
+!! only runs on the host.
+subroutine ALE_check_GPU_support(CS)
+  type(ALE_CS), intent(in) :: CS !< Module control structure
+#ifdef __NVCOMPILER_OPENMP_GPU
+  character(len=120) :: reason ! The first unsupported setting
+
+  if (.not.regridding_block_supported(CS%regridCS, reason)) call MOM_error(FATAL, &
+    "MOM_ALE, ALE_check_GPU_support: GPU builds cannot regrid with these settings: "//trim(reason))
+  if (.not.remapping_block_supported(CS%remapCS, reason)) call MOM_error(FATAL, &
+    "MOM_ALE, ALE_check_GPU_support: GPU builds cannot remap tracers with these settings: "//trim(reason))
+  if (.not.remapping_block_supported(CS%vel_remapCS, reason)) call MOM_error(FATAL, &
+    "MOM_ALE, ALE_check_GPU_support: GPU builds cannot remap velocities with these settings: "//trim(reason))
+#endif
+end subroutine ALE_check_GPU_support
 
 !> Sets the boundary extrapolation set for the remapping type.
 subroutine ALE_set_extrap_boundaries( param_file, CS)
@@ -366,6 +404,7 @@ subroutine ALE_set_extrap_boundaries( param_file, CS)
                  "If true, values at the interfaces of boundary cells are "//&
                  "extrapolated instead of piecewise constant", default=.false.)
   call remapping_set_param(CS%remapCS, boundary_extrapolation=remap_boundary_extrap)
+  call ALE_check_GPU_support(CS)
 end subroutine ALE_set_extrap_boundaries
 
 !> Sets the remapping algorithm to that of OM4
