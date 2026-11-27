@@ -1650,18 +1650,9 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_tr_adv, &
   call enable_averages(dt, Time_local, CS%diag)
 
   ! These diagnostics are available after every time dynamics step.
-  if (IDs%id_u > 0) then
-    !$omp target update from(u)
-    call post_data(IDs%id_u, u, CS%diag)
-  endif
-  if (IDs%id_v > 0) then
-    !$omp target update from(v)
-    call post_data(IDs%id_v, v, CS%diag)
-  endif
-  if (IDs%id_h > 0) then
-    !$omp target update from(h)
-    call post_data(IDs%id_h, h, CS%diag)
-  endif
+  if (IDs%id_u > 0) call post_data(IDs%id_u, u, CS%diag, on_device=.true.)
+  if (IDs%id_v > 0) call post_data(IDs%id_v, v, CS%diag, on_device=.true.)
+  if (IDs%id_h > 0) call post_data(IDs%id_h, h, CS%diag, on_device=.true.)
 
   if (CS%use_stochastic_EOS) call post_stoch_EOS_diags(CS%stoch_eos_CS, CS%tv, CS%diag)
 
@@ -4158,6 +4149,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     endif
     !$omp target update from(CS%ave_ssh_ibc)
     call set_initialized(CS%ave_ssh_ibc, "ave_ssh", restart_CSp)
+  else
+    ! The host copy was read from a restart file.
+    !$omp target update to(CS%ave_ssh_ibc)
   endif
   if (CS%split) deallocate(eta)
 
@@ -4354,7 +4348,8 @@ subroutine set_restart_fields(GV, US, param_file, CS, restart_CSp)
                                 "Ocean surface pressure used in EoS", "Pa", conversion=US%RL2_T2_to_Pa)
 
   call register_restart_field(CS%ave_ssh_ibc, "ave_ssh", .false., restart_CSp, &
-                              "Time average sea surface height", "meter", conversion=US%Z_to_m)
+                              "Time average sea surface height", "meter", conversion=US%Z_to_m, &
+                              on_device=.true.)
 
   ! hML is needed when using the ice shelf module
   call get_param(param_file, '', "ICE_SHELF", use_ice_shelf, default=.false., &

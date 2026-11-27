@@ -981,11 +981,11 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
   ! Offer diagnostic fields for averaging.
   if (query_averaging_enabled(CS%diag)) then
     if (CS%id_du_dt_visc > 0) &
-      call post_data(CS%id_du_dt_visc, ADp%du_dt_visc, CS%diag)
+      call post_data(CS%id_du_dt_visc, ADp%du_dt_visc, CS%diag, on_device=.true.)
     if (CS%id_du_dt_visc_gl90 > 0) &
       call post_data(CS%id_du_dt_visc_gl90, ADp%du_dt_visc_gl90, CS%diag)
     if (CS%id_dv_dt_visc > 0) &
-      call post_data(CS%id_dv_dt_visc, ADp%dv_dt_visc, CS%diag)
+      call post_data(CS%id_dv_dt_visc, ADp%dv_dt_visc, CS%diag, on_device=.true.)
     if (CS%id_dv_dt_visc_gl90 > 0) &
       call post_data(CS%id_dv_dt_visc_gl90, ADp%dv_dt_visc_gl90, CS%diag)
     if (present(taux_bot) .and. (CS%id_taux_bot > 0)) &
@@ -998,6 +998,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, US, CS, &
       call post_data(CS%id_dv_dt_str, ADp%dv_dt_str, CS%diag)
 
     if (associated(ADp%du_dt_visc) .and. associated(ADp%dv_dt_visc)) then
+      ! The products below are formed on the host from the device-resident accelerations.
+      if ((CS%id_hf_du_dt_visc_2d > 0) .or. (CS%id_h_du_dt_visc > 0)) then
+        !$omp target update from(ADp%du_dt_visc)
+      endif
+      if ((CS%id_hf_dv_dt_visc_2d > 0) .or. (CS%id_h_dv_dt_visc > 0)) then
+        !$omp target update from(ADp%dv_dt_visc)
+      endif
       ! Diagnostics of the fractional thicknesses times momentum budget terms
       ! 3D diagnostics of hf_du(dv)_dt_visc are commented because there is no clarity on proper remapping grid option.
       ! The code is retained for debugging purposes in the future.
@@ -1962,8 +1969,8 @@ subroutine vertvisc_coef(u, v, h, dz, forces, visc, tv, dt, G, GV, US, CS, OBC, 
     if (CS%id_Kv_v > 0) call post_data(CS%id_Kv_v, Kv_v, CS%diag)
     if (CS%id_Kv_gl90_u > 0) call post_data(CS%id_Kv_gl90_u, Kv_gl90_u, CS%diag)
     if (CS%id_Kv_gl90_v > 0) call post_data(CS%id_Kv_gl90_v, Kv_gl90_v, CS%diag)
-    if (CS%id_au_vv > 0) call post_data(CS%id_au_vv, CS%a_u, CS%diag)
-    if (CS%id_av_vv > 0) call post_data(CS%id_av_vv, CS%a_v, CS%diag)
+    if (CS%id_au_vv > 0) call post_data(CS%id_au_vv, CS%a_u, CS%diag, on_device=.true.)
+    if (CS%id_av_vv > 0) call post_data(CS%id_av_vv, CS%a_v, CS%diag, on_device=.true.)
     if (CS%id_au_gl90_vv > 0) call post_data(CS%id_au_gl90_vv, CS%a_u_gl90, CS%diag)
     if (CS%id_av_gl90_vv > 0) call post_data(CS%id_av_gl90_vv, CS%a_v_gl90, CS%diag)
     if (CS%id_h_u > 0) call post_data(CS%id_h_u, CS%h_u, CS%diag)

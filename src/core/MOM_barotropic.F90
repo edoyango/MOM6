@@ -1868,9 +1868,9 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
 
   if (query_averaging_enabled(CS%diag)) then
-    if (CS%id_eta_st > 0) call post_data(CS%id_eta_st, eta(isd:ied,jsd:jed), CS%diag)
-    if (CS%id_ubt_st > 0) call post_data(CS%id_ubt_st, ubt(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_vbt_st > 0) call post_data(CS%id_vbt_st, vbt(isd:ied,JsdB:JedB), CS%diag)
+    if (CS%id_eta_st > 0) call post_data(CS%id_eta_st, eta(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_ubt_st > 0) call post_data(CS%id_ubt_st, ubt(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_vbt_st > 0) call post_data(CS%id_vbt_st, vbt(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
   endif
 
   if (id_clock_calc_pre > 0) call cpu_clock_end(id_clock_calc_pre)
@@ -2120,10 +2120,10 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
     ! Calculate various time-averaged barotropic diagnostics.
     if (CS%answer_date >= 20190101) then
-      if (CS%id_PFu_bt > 0) call post_data(CS%id_PFu_bt, PFu_avg, CS%diag)
-      if (CS%id_PFv_bt > 0) call post_data(CS%id_PFv_bt, PFv_avg, CS%diag)
-      if (CS%id_Coru_bt > 0) call post_data(CS%id_Coru_bt, Coru_avg, CS%diag)
-      if (CS%id_Corv_bt > 0) call post_data(CS%id_Corv_bt, Corv_avg, CS%diag)
+      if (CS%id_PFu_bt > 0) call post_data(CS%id_PFu_bt, PFu_avg, CS%diag, on_device=.true.)
+      if (CS%id_PFv_bt > 0) call post_data(CS%id_PFv_bt, PFv_avg, CS%diag, on_device=.true.)
+      if (CS%id_Coru_bt > 0) call post_data(CS%id_Coru_bt, Coru_avg, CS%diag, on_device=.true.)
+      if (CS%id_Corv_bt > 0) call post_data(CS%id_Corv_bt, Corv_avg, CS%diag, on_device=.true.)
       if (CS%id_LDu_bt > 0) call post_data(CS%id_LDu_bt, LDu_avg, CS%diag)
       if (CS%id_LDv_bt > 0) call post_data(CS%id_LDv_bt, LDv_avg, CS%diag)
     else ! if (CS%answer_date < 20190101) then
@@ -2203,45 +2203,45 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       ADp%bt_lwd_v(i,J) = LDv_avg(i,J)
     enddo ; endif
 
-    if (CS%id_ubtforce > 0) call post_data(CS%id_ubtforce, BT_force_u(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_vbtforce > 0) call post_data(CS%id_vbtforce, BT_force_v(isd:ied,JsdB:JedB), CS%diag)
-    if (CS%id_uaccel > 0) call post_data(CS%id_uaccel, u_accel_bt(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_vaccel > 0) call post_data(CS%id_vaccel, v_accel_bt(isd:ied,JsdB:JedB), CS%diag)
+    if (CS%id_ubtforce > 0) call post_data(CS%id_ubtforce, BT_force_u(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_vbtforce > 0) call post_data(CS%id_vbtforce, BT_force_v(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
+    if (CS%id_uaccel > 0) call post_data(CS%id_uaccel, u_accel_bt(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_vaccel > 0) call post_data(CS%id_vaccel, v_accel_bt(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
 
-    if (CS%id_eta_cor > 0) call post_data(CS%id_eta_cor, CS%eta_cor, CS%diag)
-    if (CS%id_eta_bt > 0) call post_data(CS%id_eta_bt, eta_out, CS%diag) ! - G%Z_ref?
-    if (CS%id_gtotn > 0) call post_data(CS%id_gtotn, gtot_N(isd:ied,jsd:jed), CS%diag)
-    if (CS%id_gtots > 0) call post_data(CS%id_gtots, gtot_S(isd:ied,jsd:jed), CS%diag)
-    if (CS%id_gtote > 0) call post_data(CS%id_gtote, gtot_E(isd:ied,jsd:jed), CS%diag)
-    if (CS%id_gtotw > 0) call post_data(CS%id_gtotw, gtot_W(isd:ied,jsd:jed), CS%diag)
-    if (CS%id_ubt > 0) call post_data(CS%id_ubt, ubt_wtd(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_vbt > 0) call post_data(CS%id_vbt, vbt_wtd(isd:ied,JsdB:JedB), CS%diag)
-    if (CS%id_ubtav > 0) call post_data(CS%id_ubtav, CS%ubtav, CS%diag)
-    if (CS%id_vbtav > 0) call post_data(CS%id_vbtav, CS%vbtav, CS%diag)
-    if (CS%id_visc_rem_u > 0) call post_data(CS%id_visc_rem_u, visc_rem_u, CS%diag)
-    if (CS%id_visc_rem_v > 0) call post_data(CS%id_visc_rem_v, visc_rem_v, CS%diag)
+    if (CS%id_eta_cor > 0) call post_data(CS%id_eta_cor, CS%eta_cor, CS%diag, on_device=.true.)
+    if (CS%id_eta_bt > 0) call post_data(CS%id_eta_bt, eta_out, CS%diag, on_device=.true.) ! - G%Z_ref?
+    if (CS%id_gtotn > 0) call post_data(CS%id_gtotn, gtot_N(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_gtots > 0) call post_data(CS%id_gtots, gtot_S(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_gtote > 0) call post_data(CS%id_gtote, gtot_E(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_gtotw > 0) call post_data(CS%id_gtotw, gtot_W(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_ubt > 0) call post_data(CS%id_ubt, ubt_wtd(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_vbt > 0) call post_data(CS%id_vbt, vbt_wtd(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
+    if (CS%id_ubtav > 0) call post_data(CS%id_ubtav, CS%ubtav, CS%diag, on_device=.true.)
+    if (CS%id_vbtav > 0) call post_data(CS%id_vbtav, CS%vbtav, CS%diag, on_device=.true.)
+    if (CS%id_visc_rem_u > 0) call post_data(CS%id_visc_rem_u, visc_rem_u, CS%diag, on_device=.true.)
+    if (CS%id_visc_rem_v > 0) call post_data(CS%id_visc_rem_v, visc_rem_v, CS%diag, on_device=.true.)
 
-    if (CS%id_frhatu > 0) call post_data(CS%id_frhatu, CS%frhatu, CS%diag)
-    if (CS%id_uhbt > 0) call post_data(CS%id_uhbt, uhbtav, CS%diag)
-    if (CS%id_frhatv > 0) call post_data(CS%id_frhatv, CS%frhatv, CS%diag)
-    if (CS%id_vhbt > 0) call post_data(CS%id_vhbt, vhbtav, CS%diag)
-    if (CS%id_uhbt0 > 0) call post_data(CS%id_uhbt0, uhbt0(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_vhbt0 > 0) call post_data(CS%id_vhbt0, vhbt0(isd:ied,JsdB:JedB), CS%diag)
+    if (CS%id_frhatu > 0) call post_data(CS%id_frhatu, CS%frhatu, CS%diag, on_device=.true.)
+    if (CS%id_uhbt > 0) call post_data(CS%id_uhbt, uhbtav, CS%diag, on_device=.true.)
+    if (CS%id_frhatv > 0) call post_data(CS%id_frhatv, CS%frhatv, CS%diag, on_device=.true.)
+    if (CS%id_vhbt > 0) call post_data(CS%id_vhbt, vhbtav, CS%diag, on_device=.true.)
+    if (CS%id_uhbt0 > 0) call post_data(CS%id_uhbt0, uhbt0(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_vhbt0 > 0) call post_data(CS%id_vhbt0, vhbt0(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
 
     if (CS%id_frhatu1 > 0) call post_data(CS%id_frhatu1, CS%frhatu1, CS%diag)
     if (CS%id_frhatv1 > 0) call post_data(CS%id_frhatv1, CS%frhatv1, CS%diag)
 
-    if (CS%id_bt_rem_u > 0) call post_data(CS%id_bt_rem_u, bt_rem_u(IsdB:IedB,jsd:jed), CS%diag)
-    if (CS%id_bt_rem_v > 0) call post_data(CS%id_bt_rem_v, bt_rem_v(isd:ied,JsdB:JedB), CS%diag)
-    if (CS%id_etaPF_anom > 0) call post_data(CS%id_etaPF_anom, e_anom(isd:ied,jsd:jed), CS%diag)
+    if (CS%id_bt_rem_u > 0) call post_data(CS%id_bt_rem_u, bt_rem_u(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+    if (CS%id_bt_rem_v > 0) call post_data(CS%id_bt_rem_v, bt_rem_v(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
+    if (CS%id_etaPF_anom > 0) call post_data(CS%id_etaPF_anom, e_anom(isd:ied,jsd:jed), CS%diag, on_device=.true.)
 
     if (use_BT_cont) then
-      if (CS%id_BTC_FA_u_EE > 0) call post_data(CS%id_BTC_FA_u_EE, BT_cont%FA_u_EE, CS%diag)
-      if (CS%id_BTC_FA_u_E0 > 0) call post_data(CS%id_BTC_FA_u_E0, BT_cont%FA_u_E0, CS%diag)
-      if (CS%id_BTC_FA_u_W0 > 0) call post_data(CS%id_BTC_FA_u_W0, BT_cont%FA_u_W0, CS%diag)
-      if (CS%id_BTC_FA_u_WW > 0) call post_data(CS%id_BTC_FA_u_WW, BT_cont%FA_u_WW, CS%diag)
-      if (CS%id_BTC_uBT_EE > 0) call post_data(CS%id_BTC_uBT_EE, BT_cont%uBT_EE, CS%diag)
-      if (CS%id_BTC_uBT_WW > 0) call post_data(CS%id_BTC_uBT_WW, BT_cont%uBT_WW, CS%diag)
+      if (CS%id_BTC_FA_u_EE > 0) call post_data(CS%id_BTC_FA_u_EE, BT_cont%FA_u_EE, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_u_E0 > 0) call post_data(CS%id_BTC_FA_u_E0, BT_cont%FA_u_E0, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_u_W0 > 0) call post_data(CS%id_BTC_FA_u_W0, BT_cont%FA_u_W0, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_u_WW > 0) call post_data(CS%id_BTC_FA_u_WW, BT_cont%FA_u_WW, CS%diag, on_device=.true.)
+      if (CS%id_BTC_uBT_EE > 0) call post_data(CS%id_BTC_uBT_EE, BT_cont%uBT_EE, CS%diag, on_device=.true.)
+      if (CS%id_BTC_uBT_WW > 0) call post_data(CS%id_BTC_uBT_WW, BT_cont%uBT_WW, CS%diag, on_device=.true.)
       if (CS%id_BTC_FA_u_rat0 > 0) then
         tmp_u(:,:) = 0.0
         do j=js,je ; do I=is-1,ie
@@ -2253,12 +2253,12 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         enddo ; enddo
         call post_data(CS%id_BTC_FA_u_rat0, tmp_u, CS%diag)
       endif
-      if (CS%id_BTC_FA_v_NN > 0) call post_data(CS%id_BTC_FA_v_NN, BT_cont%FA_v_NN, CS%diag)
-      if (CS%id_BTC_FA_v_N0 > 0) call post_data(CS%id_BTC_FA_v_N0, BT_cont%FA_v_N0, CS%diag)
-      if (CS%id_BTC_FA_v_S0 > 0) call post_data(CS%id_BTC_FA_v_S0, BT_cont%FA_v_S0, CS%diag)
-      if (CS%id_BTC_FA_v_SS > 0) call post_data(CS%id_BTC_FA_v_SS, BT_cont%FA_v_SS, CS%diag)
-      if (CS%id_BTC_vBT_NN > 0) call post_data(CS%id_BTC_vBT_NN, BT_cont%vBT_NN, CS%diag)
-      if (CS%id_BTC_vBT_SS > 0) call post_data(CS%id_BTC_vBT_SS, BT_cont%vBT_SS, CS%diag)
+      if (CS%id_BTC_FA_v_NN > 0) call post_data(CS%id_BTC_FA_v_NN, BT_cont%FA_v_NN, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_v_N0 > 0) call post_data(CS%id_BTC_FA_v_N0, BT_cont%FA_v_N0, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_v_S0 > 0) call post_data(CS%id_BTC_FA_v_S0, BT_cont%FA_v_S0, CS%diag, on_device=.true.)
+      if (CS%id_BTC_FA_v_SS > 0) call post_data(CS%id_BTC_FA_v_SS, BT_cont%FA_v_SS, CS%diag, on_device=.true.)
+      if (CS%id_BTC_vBT_NN > 0) call post_data(CS%id_BTC_vBT_NN, BT_cont%vBT_NN, CS%diag, on_device=.true.)
+      if (CS%id_BTC_vBT_SS > 0) call post_data(CS%id_BTC_vBT_SS, BT_cont%vBT_SS, CS%diag, on_device=.true.)
       if (CS%id_BTC_FA_v_rat0 > 0) then
         tmp_v(:,:) = 0.0
         do J=js-1,je ; do i=is,ie
@@ -3116,28 +3116,33 @@ subroutine btstep_timeloop(eta, ubt, vbt, uhbt0, Datu, BTCL_u, vhbt0, Datv, BTCL
       ! extra timesteps for filtering, fit within dt.
       time_step_end = time_bt_start + real_to_time(n*dtbt_diag, unscale=US%T_to_s)
       call enable_averages(dtbt, time_step_end, CS%diag)
-      if (CS%id_ubt_hifreq > 0) call post_data(CS%id_ubt_hifreq, ubt(IsdB:IedB,jsd:jed), CS%diag)
-      if (CS%id_vbt_hifreq > 0) call post_data(CS%id_vbt_hifreq, vbt(isd:ied,JsdB:JedB), CS%diag)
-      if (CS%id_eta_hifreq > 0) call post_data(CS%id_eta_hifreq, eta(isd:ied,jsd:jed), CS%diag)
+      if (CS%id_ubt_hifreq > 0) call post_data(CS%id_ubt_hifreq, ubt(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+      if (CS%id_vbt_hifreq > 0) call post_data(CS%id_vbt_hifreq, vbt(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
+      if (CS%id_eta_hifreq > 0) call post_data(CS%id_eta_hifreq, eta(isd:ied,jsd:jed), CS%diag, on_device=.true.)
       if (CS%id_etaPF_hifreq > 0) then
+        ! eta, eta_PF and eta_pred are current on the device, so find the anomalies there.
+        !$omp target enter data map(alloc: eta_anom_PF)
         if (CS%BT_project_velocity) then
-          do j=js,je ; do i=is,ie
+          do concurrent (j=js:je, i=is:ie)
             eta_anom_PF(i,j) = eta(i,j) - eta_PF(i,j)
-          enddo ; enddo
+          enddo
         else
-          do j=js,je ; do i=is,ie
+          do concurrent (j=js:je, i=is:ie)
             eta_anom_PF(i,j) = eta_pred(i,j) - eta_PF(i,j)
-          enddo ; enddo
+          enddo
         endif
-        call post_data(CS%id_etaPF_hifreq, eta_anom_PF(isd:ied,jsd:jed), CS%diag)
+        call post_data(CS%id_etaPF_hifreq, eta_anom_PF(isd:ied,jsd:jed), CS%diag, on_device=.true.)
+        !$omp target exit data map(delete: eta_anom_PF)
       endif
-      if (CS%id_uhbt_hifreq > 0) call post_data(CS%id_uhbt_hifreq, uhbt(IsdB:IedB,jsd:jed), CS%diag)
-      if (CS%id_vhbt_hifreq > 0) call post_data(CS%id_vhbt_hifreq, vhbt(isd:ied,JsdB:JedB), CS%diag)
+      if (CS%id_uhbt_hifreq > 0) call post_data(CS%id_uhbt_hifreq, uhbt(IsdB:IedB,jsd:jed), CS%diag, on_device=.true.)
+      if (CS%id_vhbt_hifreq > 0) call post_data(CS%id_vhbt_hifreq, vhbt(isd:ied,JsdB:JedB), CS%diag, on_device=.true.)
       if (CS%BT_project_velocity) then
         ! This diagnostic is redundant in this case and should probably be omitted.
-        if (CS%id_eta_pred_hifreq > 0) call post_data(CS%id_eta_pred_hifreq, eta(isd:ied,jsd:jed), CS%diag)
+        if (CS%id_eta_pred_hifreq > 0) call post_data(CS%id_eta_pred_hifreq, eta(isd:ied,jsd:jed), CS%diag, &
+            on_device=.true.)
       else
-        if (CS%id_eta_pred_hifreq > 0) call post_data(CS%id_eta_pred_hifreq, eta_pred(isd:ied,jsd:jed), CS%diag)
+        if (CS%id_eta_pred_hifreq > 0) call post_data(CS%id_eta_pred_hifreq, eta_pred(isd:ied,jsd:jed), CS%diag, &
+            on_device=.true.)
       endif
     endif
   enddo ! end of do n=1,ntimestep
@@ -6794,7 +6799,7 @@ subroutine register_barotropic_restarts(HI, GV, US, param_file, CS, restart_CS)
   vd(3) = var_desc("vbtav","m s-1","Time mean barotropic meridional velocity",&
                 hor_grid='v', z_grid='1')
   call register_restart_pair(CS%ubtav, CS%vbtav, vd(2), vd(3), .false., restart_CS, &
-                             conversion=US%L_T_to_m_s)
+                             conversion=US%L_T_to_m_s, on_device=.true.)
 
   if (CS%gradual_BT_ICs) then
     vd(2) = var_desc("ubt_IC", "m s-1", &

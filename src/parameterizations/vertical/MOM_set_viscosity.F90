@@ -1216,15 +1216,15 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
 
 ! Offer diagnostics for averaging
   if (CS%id_bbl_thick_u > 0) &
-    call post_data(CS%id_bbl_thick_u, visc%bbl_thick_u, CS%diag)
+    call post_data(CS%id_bbl_thick_u, visc%bbl_thick_u, CS%diag, on_device=.true.)
   if (CS%id_kv_bbl_u > 0) &
-    call post_data(CS%id_kv_bbl_u, visc%kv_bbl_u, CS%diag)
+    call post_data(CS%id_kv_bbl_u, visc%kv_bbl_u, CS%diag, on_device=.true.)
   if (CS%id_bbl_u > 0) &
     call post_data(CS%id_bbl_u, CS%bbl_u, CS%diag)
   if (CS%id_bbl_thick_v > 0) &
-    call post_data(CS%id_bbl_thick_v, visc%bbl_thick_v, CS%diag)
+    call post_data(CS%id_bbl_thick_v, visc%bbl_thick_v, CS%diag, on_device=.true.)
   if (CS%id_kv_bbl_v > 0) &
-    call post_data(CS%id_kv_bbl_v, visc%kv_bbl_v, CS%diag)
+    call post_data(CS%id_kv_bbl_v, visc%kv_bbl_v, CS%diag, on_device=.true.)
   if (CS%id_bbl_v > 0) &
     call post_data(CS%id_bbl_v, CS%bbl_v, CS%diag)
   if (CS%id_Ray_u > 0) &

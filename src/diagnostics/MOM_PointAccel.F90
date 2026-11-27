@@ -110,6 +110,8 @@ subroutine write_u_accel(I, j, um, hin, ADp, CDp, dt, G, GV, US, CS, vel_rpt, st
   logical :: prev_avail
   integer :: file
 
+  call refresh_device_accel_terms(ADp)
+
   Angstrom = GV%Angstrom_H + GV%H_subroundoff
   h_scale = GV%H_to_mks ; vel_scale = US%L_T_to_m_s ; uh_scale = h_scale*vel_scale
   temp_scale = US%C_to_degC ; saln_scale = US%S_to_ppt
@@ -450,6 +452,8 @@ subroutine write_v_accel(i, J, vm, hin, ADp, CDp, dt, G, GV, US, CS, vel_rpt, st
   logical :: do_k(SZK_(GV)+1)
   logical :: prev_avail
   integer :: file
+
+  call refresh_device_accel_terms(ADp)
 
   Angstrom = GV%Angstrom_H + GV%H_subroundoff
   h_scale = GV%H_to_mks ; vel_scale = US%L_T_to_m_s ; uh_scale = h_scale*vel_scale
@@ -805,5 +809,30 @@ subroutine PointAccel_init(MIS, Time, G, param_file, diag, dirs, CS)
   CS%u_file = -1 ; CS%v_file = -1 ; CS%cols_written = 0
 
 end subroutine PointAccel_init
+
+!> Refresh the host copies of the acceleration terms that are kept only on the device in GPU builds.
+subroutine refresh_device_accel_terms(ADp)
+  type(accel_diag_ptrs), intent(in) :: ADp !< A structure pointing to the various accelerations in
+                                           !! the momentum equations.
+
+  if (associated(ADp%gradKEu)) then
+    !$omp target update from(ADp%gradKEu)
+  endif
+  if (associated(ADp%gradKEv)) then
+    !$omp target update from(ADp%gradKEv)
+  endif
+  if (associated(ADp%rv_x_u)) then
+    !$omp target update from(ADp%rv_x_u)
+  endif
+  if (associated(ADp%rv_x_v)) then
+    !$omp target update from(ADp%rv_x_v)
+  endif
+  if (associated(ADp%du_dt_visc)) then
+    !$omp target update from(ADp%du_dt_visc)
+  endif
+  if (associated(ADp%dv_dt_visc)) then
+    !$omp target update from(ADp%dv_dt_visc)
+  endif
+end subroutine refresh_device_accel_terms
 
 end module MOM_PointAccel

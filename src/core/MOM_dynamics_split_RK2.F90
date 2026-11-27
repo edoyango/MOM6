@@ -1219,18 +1219,18 @@ subroutine step_MOM_dyn_split_RK2(u_inst, v_inst, h, tv, visc, Time_local, dt, f
 
   !  Here various terms used in to update the momentum equations are
   !  offered for time averaging.
-  if (CS%id_PFu > 0) call post_data(CS%id_PFu, CS%PFu, CS%diag)
-  if (CS%id_PFv > 0) call post_data(CS%id_PFv, CS%PFv, CS%diag)
-  if (CS%id_CAu > 0) call post_data(CS%id_CAu, CS%CAu, CS%diag)
-  if (CS%id_CAv > 0) call post_data(CS%id_CAv, CS%CAv, CS%diag)
+  if (CS%id_PFu > 0) call post_data(CS%id_PFu, CS%PFu, CS%diag, on_device=.true.)
+  if (CS%id_PFv > 0) call post_data(CS%id_PFv, CS%PFv, CS%diag, on_device=.true.)
+  if (CS%id_CAu > 0) call post_data(CS%id_CAu, CS%CAu, CS%diag, on_device=.true.)
+  if (CS%id_CAv > 0) call post_data(CS%id_CAv, CS%CAv, CS%diag, on_device=.true.)
 
   ! Here the thickness fluxes are offered for time averaging.
-  if (CS%id_uh         > 0) call post_data(CS%id_uh,  uh,                   CS%diag)
-  if (CS%id_vh         > 0) call post_data(CS%id_vh,  vh,                   CS%diag)
-  if (CS%id_uav        > 0) call post_data(CS%id_uav, u_av,                 CS%diag)
-  if (CS%id_vav        > 0) call post_data(CS%id_vav, v_av,                 CS%diag)
-  if (CS%id_u_BT_accel > 0) call post_data(CS%id_u_BT_accel, CS%u_accel_bt, CS%diag)
-  if (CS%id_v_BT_accel > 0) call post_data(CS%id_v_BT_accel, CS%v_accel_bt, CS%diag)
+  if (CS%id_uh         > 0) call post_data(CS%id_uh,  uh,                   CS%diag, on_device=.true.)
+  if (CS%id_vh         > 0) call post_data(CS%id_vh,  vh,                   CS%diag, on_device=.true.)
+  if (CS%id_uav        > 0) call post_data(CS%id_uav, u_av,                 CS%diag, on_device=.true.)
+  if (CS%id_vav        > 0) call post_data(CS%id_vav, v_av,                 CS%diag, on_device=.true.)
+  if (CS%id_u_BT_accel > 0) call post_data(CS%id_u_BT_accel, CS%u_accel_bt, CS%diag, on_device=.true.)
+  if (CS%id_v_BT_accel > 0) call post_data(CS%id_v_BT_accel, CS%v_accel_bt, CS%diag, on_device=.true.)
 
   ! Calculate effective areas and post data
   if (CS%id_ueffA > 0) then
@@ -1380,10 +1380,12 @@ subroutine register_restarts_dyn_split_RK2(HI, GV, US, param_file, CS, restart_C
 
   if (GV%Boussinesq) then
     call register_restart_field(CS%eta, "sfc", .false., restart_CS, &
-             longname="Free surface Height", units=thickness_units, conversion=GV%H_to_mks)
+             longname="Free surface Height", units=thickness_units, conversion=GV%H_to_mks, &
+             on_device=.true.)
   else
     call register_restart_field(CS%eta, "p_bot", .false., restart_CS, &
-             longname="Bottom Pressure", units=thickness_units, conversion=GV%H_to_mks)
+             longname="Bottom Pressure", units=thickness_units, conversion=GV%H_to_mks, &
+             on_device=.true.)
   endif
 
   ! These are needed, either to calculate CAu and CAv or to calculate the velocity anomalies in
@@ -1391,13 +1393,13 @@ subroutine register_restarts_dyn_split_RK2(HI, GV, US, param_file, CS, restart_C
   vd(1) = var_desc("u2", "m s-1", "Auxiliary Zonal velocity", 'u', 'L')
   vd(2) = var_desc("v2", "m s-1", "Auxiliary Meridional velocity", 'v', 'L')
   call register_restart_pair(CS%u_av, CS%v_av, vd(1), vd(2), .false., restart_CS, &
-                             conversion=US%L_T_to_m_s)
+                             conversion=US%L_T_to_m_s, on_device=.true.)
 
   if (CS%store_CAu) then
     vd(1) = var_desc("CAu", "m s-2", "Zonal Coriolis and advactive acceleration", 'u', 'L')
     vd(2) = var_desc("CAv", "m s-2", "Meridional Coriolis and advactive  acceleration", 'v', 'L')
     call register_restart_pair(CS%CAu_pred, CS%CAv_pred, vd(1), vd(2), .false., restart_CS, &
-                               conversion=US%L_T2_to_m_s2)
+                               conversion=US%L_T2_to_m_s2, on_device=.true.)
   else
     call register_restart_field(CS%h_av, "h2", .false., restart_CS, &
            longname="Auxiliary Layer Thickness", units=thickness_units, conversion=GV%H_to_mks)
@@ -1411,7 +1413,7 @@ subroutine register_restarts_dyn_split_RK2(HI, GV, US, param_file, CS, restart_C
   vd(1) = var_desc("diffu", "m s-2", "Zonal horizontal viscous acceleration", 'u', 'L')
   vd(2) = var_desc("diffv", "m s-2", "Meridional horizontal viscous acceleration", 'v', 'L')
   call register_restart_pair(CS%diffu, CS%diffv, vd(1), vd(2), .false., restart_CS, &
-                             conversion=US%L_T2_to_m_s2)
+                             conversion=US%L_T2_to_m_s2, on_device=.true.)
 
   call register_barotropic_restarts(HI, GV, US, param_file, CS%barotropic_CSp, restart_CS)
 
@@ -1424,7 +1426,7 @@ subroutine register_restarts_dyn_split_RK2(HI, GV, US, param_file, CS, restart_C
     vd(1) = var_desc("taux_bot", "kg m-1 s-2", "Zonal bottom stress", 'u', '1')
     vd(2) = var_desc("tauy_bot", "kg m-1 s-2", "Meridional bottom stress", 'v', '1')
     call register_restart_pair(CS%taux_bot, CS%tauy_bot, vd(1), vd(2), .false., restart_CS, &
-                             conversion=US%RLZ_T2_to_Pa)
+                             conversion=US%RLZ_T2_to_Pa, on_device=.true.)
   endif
 
 end subroutine register_restarts_dyn_split_RK2
@@ -1853,6 +1855,12 @@ subroutine initialize_dyn_split_RK2(u, v, h, tv, uh, vh, eta, Time, G, GV, US, p
   endif
   call do_group_pass(pass_av_h_uvh, G%Domain)
   call cpu_clock_end(id_clock_pass_init)
+
+  ! The device copies of these fields were mapped when their restarts were registered, before they
+  ! could be read from a restart file, and the host copies have since had their halos updated.
+  !$omp target update to(CS%eta, CS%u_av, CS%v_av, CS%diffu, CS%diffv)
+  !$omp target update to(CS%CAu_pred, CS%CAv_pred) if (CS%CAu_pred_stored)
+  !$omp target update to(CS%taux_bot, CS%tauy_bot) if (CS%split_bottom_stress)
 
   flux_units = get_flux_units(GV)
   thickness_units = get_thickness_units(GV)

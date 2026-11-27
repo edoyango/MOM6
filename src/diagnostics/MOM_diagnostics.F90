@@ -2,6 +2,8 @@
 ! See the LICENSE file for licensing information.
 ! SPDX-License-Identifier: Apache-2.0
 
+#include "do_concurrent_compat.h"
+
 !> Calculates any requested diagnostic quantities
 !! that are not calculated in the various subroutines.
 !! Diagnostic quantities are requested by allocating them memory.
@@ -303,11 +305,11 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
   ! one iteration that would break the following one-line workaround!
   if (nkmb==0 .and. nz > 1) nkmb = nz
 
-  if (CS%id_u > 0) call post_data(CS%id_u, u, CS%diag)
+  if (CS%id_u > 0) call post_data(CS%id_u, u, CS%diag, on_device=.true.)
 
-  if (CS%id_v > 0) call post_data(CS%id_v, v, CS%diag)
+  if (CS%id_v > 0) call post_data(CS%id_v, v, CS%diag, on_device=.true.)
 
-  if (CS%id_h > 0) call post_data(CS%id_h, h, CS%diag)
+  if (CS%id_h > 0) call post_data(CS%id_h, h, CS%diag, on_device=.true.)
 
   if (CS%id_usq > 0) call post_product_u(CS%id_usq, u, u, G, nz, CS%diag)
 
@@ -321,18 +323,39 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
     call post_data(CS%id_uv, uv, CS%diag)
   endif
 
-  ! Find the layer thicknesses in [Z ~> m] that can be used to determine interface heights
-  if ((CS%id_e > 0) .or. (CS%id_e_D > 0) .or. &
+  ! Find the layer thicknesses in [Z ~> m] that can be used to determine interface heights.  In
+  ! Boussinesq mode the interface heights are found on the device below instead.
+  if (((.not.GV%Boussinesq) .and. ((CS%id_e > 0) .or. (CS%id_e_D > 0))) .or. &
       ((CS%id_thkcello>0 .or. CS%id_volcello>0) .and. (CS%accurate_thick_cello))) &
     call find_dz_for_eta(h, tv, G, GV, US, dz_lay)
 
   if ((CS%id_e > 0) .or. (CS%id_e_D > 0)) then
     ! Find the interface heights, relative a reference height or to the bottom [Z ~> m]
-    do j=js,je ; do i=is,ie ; eta(i,j,nz+1) = -(G%bathyT(i,j) + G%Z_ref) ; enddo ; enddo
-    do k=nz,1,-1 ; do j=js,je ; do i=is,ie
-      eta(i,j,K) = eta(i,j,K+1) + dz_lay(i,j,K)
-    enddo ; enddo ; enddo
-    if (CS%id_e > 0) call post_data(CS%id_e, eta, CS%diag)
+    if (GV%Boussinesq) then
+      ! Use the same expressions as find_dz_for_eta and the host loops below, so that e can be
+      ! posted from the device.  The host copy of dz_lay is left as find_dz_for_eta set it.
+      !$omp target enter data map(alloc: eta, dz_lay)
+      do concurrent (k=1:nz, j=js:je, i=is:ie)
+        dz_lay(i,j,K) = h(i,j,k)*GV%H_to_Z
+      enddo
+      do concurrent (j=js:je, i=is:ie) DO_LOCALITY(local(k))
+        eta(i,j,nz+1) = -(G%bathyT(i,j) + G%Z_ref)
+        do k=nz,1,-1
+          eta(i,j,K) = eta(i,j,K+1) + dz_lay(i,j,K)
+        enddo
+      enddo
+      if (CS%id_e > 0) call post_data(CS%id_e, eta, CS%diag, on_device=.true.)
+      if (CS%id_e_D > 0) then
+        !$omp target update from(eta)
+      endif
+      !$omp target exit data map(delete: eta, dz_lay)
+    else
+      do j=js,je ; do i=is,ie ; eta(i,j,nz+1) = -(G%bathyT(i,j) + G%Z_ref) ; enddo ; enddo
+      do k=nz,1,-1 ; do j=js,je ; do i=is,ie
+        eta(i,j,K) = eta(i,j,K+1) + dz_lay(i,j,K)
+      enddo ; enddo ; enddo
+      if (CS%id_e > 0) call post_data(CS%id_e, eta, CS%diag)
+    endif
 
     if (CS%id_e_D > 0) then
       ! Find the interface heights, relative to the bottom [Z ~> m]
@@ -1160,6 +1183,26 @@ subroutine calculate_energy_diagnostics(u, v, h, uh, vh, ADp, CDp, G, GV, US, CS
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
 
   if (.not.(CS%KE_term_on .or. (CS%id_KE > 0))) return
+
+  ! In GPU builds these inputs are computed on the device, so refresh the host copies used below.
+  if (CS%KE_term_on) then
+    !$omp target update from(uh, vh)
+  endif
+  if ((CS%id_PE_to_KE > 0) .or. (CS%id_PE_to_KE_btbc > 0)) then
+    !$omp target update from(ADp%PFu, ADp%PFv)
+  endif
+  if ((CS%id_KE_Coradv > 0) .or. (CS%id_KE_Coradv_btbc > 0)) then
+    !$omp target update from(ADp%CAu, ADp%CAv)
+  endif
+  if (CS%id_KE_horvisc > 0) then
+    !$omp target update from(ADp%diffu, ADp%diffv)
+  endif
+  if (CS%id_KE_adv > 0) then
+    !$omp target update from(ADp%gradKEu, ADp%gradKEv)
+  endif
+  if (CS%id_KE_visc > 0) then
+    !$omp target update from(ADp%du_dt_visc, ADp%dv_dt_visc)
+  endif
 
   KE_u(:,:) = 0. ; KE_v(:,:) = 0.
 
@@ -2314,6 +2357,15 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
   ! access from across several modules.
   call set_dependent_diagnostics(MIS, ADp, CDp, G, GV, CS)
 
+  ! These momentum budget terms are computed on the device. They stay mapped for the whole run, and the
+  ! routines that use them on the host refresh their host copies first.
+  !$omp target enter data map(to: ADp%gradKEu) if (associated(ADp%gradKEu))
+  !$omp target enter data map(to: ADp%gradKEv) if (associated(ADp%gradKEv))
+  !$omp target enter data map(to: ADp%rv_x_u) if (associated(ADp%rv_x_u))
+  !$omp target enter data map(to: ADp%rv_x_v) if (associated(ADp%rv_x_v))
+  !$omp target enter data map(to: ADp%du_dt_visc) if (associated(ADp%du_dt_visc))
+  !$omp target enter data map(to: ADp%dv_dt_visc) if (associated(ADp%dv_dt_visc))
+
 end subroutine MOM_diagnostics_init
 
 
@@ -2749,6 +2801,12 @@ subroutine MOM_diagnostics_end(CS, ADp, CDp)
   if (allocated(CS%dv_dt))      deallocate(CS%dv_dt)
   if (allocated(CS%du_dt))      deallocate(CS%du_dt)
 
+  !$omp target exit data map(delete: ADp%gradKEu) if (associated(ADp%gradKEu))
+  !$omp target exit data map(delete: ADp%gradKEv) if (associated(ADp%gradKEv))
+  !$omp target exit data map(delete: ADp%rv_x_u) if (associated(ADp%rv_x_u))
+  !$omp target exit data map(delete: ADp%rv_x_v) if (associated(ADp%rv_x_v))
+  !$omp target exit data map(delete: ADp%du_dt_visc) if (associated(ADp%du_dt_visc))
+  !$omp target exit data map(delete: ADp%dv_dt_visc) if (associated(ADp%dv_dt_visc))
   if (associated(ADp%gradKEu))    deallocate(ADp%gradKEu)
   if (associated(ADp%gradKEv))    deallocate(ADp%gradKEv)
   if (associated(ADp%du_dt_visc)) deallocate(ADp%du_dt_visc)

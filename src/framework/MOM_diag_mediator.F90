@@ -1427,7 +1427,7 @@ subroutine post_data_1d_k(diag_field_id, field, diag_cs, is_static)
 end subroutine post_data_1d_k
 
 !> Make a real 2-d array diagnostic available for averaging or output
-subroutine post_data_2d(diag_field_id, field, diag_cs, is_static, mask)
+subroutine post_data_2d(diag_field_id, field, diag_cs, is_static, mask, on_device)
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
                                                  !! previous call to register_diag_field.
   real,              intent(in) :: field(:,:)    !< 2-d array being offered for output or averaging
@@ -1435,18 +1435,41 @@ subroutine post_data_2d(diag_field_id, field, diag_cs, is_static, mask)
   type(diag_ctrl), target, intent(in) :: diag_CS !< Structure used to regulate diagnostic output
   logical, optional, intent(in) :: is_static !< If true, this is a static field that is always offered.
   real,    optional, intent(in) :: mask(:,:) !< If present, use this real array as the data mask [nondim]
+  logical, optional, intent(in) :: on_device !< If true, field (and mask) are current on the OpenMP device,
+                                             !! and the diagnostic is accumulated there when possible.
+                                             !! The default is false.
 
   ! Local variables
   type(diag_type), pointer :: diag => null()
+  logical :: dev        ! True if the data are posted from the device
+  logical :: need_host  ! True if a variant of this diagnostic needs the data on the host
 
   if (id_clock_diag_mediator>0) call cpu_clock_begin(id_clock_diag_mediator)
 
   ! Iterate over list of diag 'variants' (e.g. CMOR aliases) and post each.
   call assert(diag_field_id < diag_cs%next_free_diag_id, &
               'post_data_2d: Unregistered diagnostic id')
+
+  dev = .false. ; if (present(on_device)) dev = on_device
+  if (dev) then
+    ! Variants that are processed on the host need the host copy of the data.
+    need_host = diag_cs%diag_as_chksum
+    diag => diag_cs%diags(diag_field_id)
+    do while (associated(diag))
+      if (host_only_variant(diag, is_static, diag_cs)) need_host = .true.
+      diag => diag%next
+    enddo
+    if (need_host) then
+      !$omp target update from(field)
+      if (present(mask)) then
+        !$omp target update from(mask)
+      endif
+    endif
+  endif
+
   diag => diag_cs%diags(diag_field_id)
   do while (associated(diag))
-    call post_data_2d_low(diag, field, diag_cs, is_static, mask)
+    call post_data_2d_low(diag, field, diag_cs, is_static, mask, on_device=dev)
     diag => diag%next
   enddo
 
@@ -1455,15 +1478,19 @@ end subroutine post_data_2d
 
 !> Make a real 2-d array diagnostic available for averaging or output
 !! using a diag_type instead of an integer id.
-subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
+subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask, on_device)
   type(diag_type),   intent(in) :: diag       !< A structure describing the diagnostic to post
   real,    target,   intent(in) :: field(:,:) !< 2-d array being offered for output or averaging
                                               !! in internally scaled arbitrary units [A ~> a]
   type(diag_ctrl),   intent(in) :: diag_CS !< Structure used to regulate diagnostic output
   logical, optional, intent(in) :: is_static !< If true, this is a static field that is always offered.
   real, optional, target, intent(in) :: mask(:,:) !< If present, use this real array as the data mask [nondim]
+  logical, optional, intent(in) :: on_device !< If true, field (and mask) are current on the OpenMP device.
+                                             !! Variants that need host processing use the host copy,
+                                             !! which the caller has refreshed.
 
   ! Local variables
+  logical :: dev   ! True if this variant is sent to the diag manager from the device
   real, dimension(:,:), pointer :: locfield ! The field being offered in arbitrary unscaled units [a]
   real, dimension(:,:), pointer :: locmask  ! A pointer to the data mask to use [nondim]
   logical :: used  ! The return value of send_data is not used for anything.
@@ -1477,6 +1504,7 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
   integer :: dl, dlfac
   integer :: time_days
   integer :: time_seconds
+  real :: conv     ! The conversion factor of this diagnostic [a A-1 ~> 1]
   character(len=300) :: mesg
   character(len=300) :: debug_mesg
 
@@ -1484,6 +1512,8 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
   locmask => NULL()
   is_stat = .false. ; if (present(is_static)) is_stat = is_static
   not_static = .not. is_stat
+  dev = .false. ; if (present(on_device)) dev = on_device
+  if (dev) dev = .not.host_only_variant(diag, is_static, diag_cs) .and. .not.diag_cs%diag_as_chksum
 
   ! Determine the proper array indices, noting that because of the (:,:)
   ! declaration of field, symmetric arrays are using a SW-grid indexing,
@@ -1524,9 +1554,18 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
 
   if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.)) then
     allocate( locfield( lbound(field,1):ubound(field,1), lbound(field,2):ubound(field,2) ) )
-    do j=jsv,jev ; do i=isv,iev
-      locfield(i,j) = field(i,j) * diag%conversion_factor
-    enddo ; enddo
+    if (dev) then
+      ! Rescale on the device; the device copy of locfield is released after it has been sent.
+      conv = diag%conversion_factor
+      !$omp target enter data map(alloc: locfield)
+      do concurrent (j=jsv:jev, i=isv:iev)
+        locfield(i,j) = field(i,j) * conv
+      enddo
+    else
+      do j=jsv,jev ; do i=isv,iev
+        locfield(i,j) = field(i,j) * diag%conversion_factor
+      enddo ; enddo
+    endif
   else
     locfield => field
   endif
@@ -1590,29 +1629,31 @@ subroutine post_data_2d_low(diag, field, diag_cs, is_static, mask)
     if (is_stat) then
       if (associated(locmask)) then
         used = send_data_infra(diag%fms_diag_id, locfield, &
-                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, rmask=locmask)
+                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, rmask=locmask, on_device=dev)
       else
         used = send_data_infra(diag%fms_diag_id, locfield, &
-                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev)
+                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, on_device=dev)
       endif
     elseif (diag_cs%ave_enabled) then
       if (associated(locmask)) then
         used = send_data_infra(diag%fms_diag_id, locfield, &
                          is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
-                         time=diag_cs%time_end, weight=diag_cs%time_int, rmask=locmask)
+                         time=diag_cs%time_end, weight=diag_cs%time_int, rmask=locmask, on_device=dev)
       else
         used = send_data_infra(diag%fms_diag_id, locfield, &
                          is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
-                         time=diag_cs%time_end, weight=diag_cs%time_int)
+                         time=diag_cs%time_end, weight=diag_cs%time_int, on_device=dev)
       endif
     endif
   endif
-  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dlfac<2) &
+  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dlfac<2) then
+    !$omp target exit data map(delete: locfield) if (dev)
     deallocate( locfield )
+  endif
 end subroutine post_data_2d_low
 
 !> Make a real 3-d array diagnostic available for averaging or output.
-subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
+subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h, on_device)
 
   integer,           intent(in) :: diag_field_id !< The id for an output variable returned by a
                                                  !! previous call to register_diag_field.
@@ -1624,9 +1665,14 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
   real, dimension(:,:,:), &
          target, optional, intent(in) :: alt_h  !< An alternate thickness to use for vertically
                                                 !! remapping this diagnostic [H ~> m or kg m-2].
+  logical, optional, intent(in) :: on_device !< If true, field (and mask) are current on the OpenMP device,
+                                             !! and the native-grid variants are accumulated there when
+                                             !! possible. The default is false.
 
   ! Local variables
   type(diag_type), pointer :: diag => null()
+  logical :: dev        ! True if the data are posted from the device
+  logical :: need_host  ! True if a variant of this diagnostic needs the data on the host
   real, dimension(:,:,:), allocatable :: remapped_field !< The vertically remapped diagnostic [A ~> a]
   logical :: staggered_in_x, staggered_in_y, dz_diag_needed, dz_begin_needed
   real, dimension(:,:,:), pointer :: h_diag => NULL() !< A pointer to the thickness to use for vertically
@@ -1662,6 +1708,25 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
     endif
     diag => diag%next
   enddo
+
+  dev = .false. ; if (present(on_device)) dev = on_device
+  if (dev) then
+    ! Remapped variants and variants that are processed on the host need the host copy of the data.
+    need_host = diag_cs%diag_as_chksum
+    diag => diag_cs%diags(diag_field_id)
+    do while (associated(diag))
+      if (diag%axes%needs_remapping .or. diag%axes%needs_interpolating .or. &
+          (diag%v_extensive .and. .not.diag%axes%is_native)) need_host = .true.
+      if (host_only_variant(diag, is_static, diag_cs)) need_host = .true.
+      diag => diag%next
+    enddo
+    if (need_host) then
+      !$omp target update from(field)
+      if (present(mask)) then
+        !$omp target update from(mask)
+      endif
+    endif
+  endif
 
   ! Determine the diagnostic grid spacing in height units, if it is needed.
   if (dz_diag_needed) then
@@ -1764,7 +1829,7 @@ subroutine post_data_3d(diag_field_id, field, diag_cs, is_static, mask, alt_h)
       deallocate(remapped_field)
       if (id_clock_diag_remap>0) call cpu_clock_end(id_clock_diag_remap)
     else
-      call post_data_3d_low(diag, field, diag_cs, is_static, mask)
+      call post_data_3d_low(diag, field, diag_cs, is_static, mask, on_device=dev)
     endif
     diag => diag%next
   enddo
@@ -1777,15 +1842,20 @@ end subroutine post_data_3d
 
 !> Make a real 3-d array diagnostic available for averaging or output
 !! using a diag_type instead of an integer id.
-subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
+subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask, on_device)
   type(diag_type),   intent(in) :: diag       !< A structure describing the diagnostic to post
   real,    target,   intent(in) :: field(:,:,:) !< 3-d array being offered for output or averaging
                                                 !! in internally scaled arbitrary units [A ~> a]
   type(diag_ctrl),   intent(in) :: diag_CS !< Structure used to regulate diagnostic output
   logical, optional, intent(in) :: is_static !< If true, this is a static field that is always offered.
   real,    optional,target, intent(in) :: mask(:,:,:) !< If present, use this real array as the data mask [nondim]
+  logical, optional, intent(in) :: on_device !< If true, field (and mask) are current on the OpenMP device.
+                                             !! Variants that need host processing use the host copy,
+                                             !! which the caller has refreshed.
 
   ! Local variables
+  logical :: dev   ! True if this variant is sent to the diag manager from the device
+  real :: conv     ! The conversion factor of this diagnostic [a A-1 ~> 1]
   real, dimension(:,:,:), pointer :: locfield ! The field being offered in arbitrary unscaled units [a]
   real, dimension(:,:,:), pointer :: locmask  ! A pointer to the data mask to use [nondim]
   character(len=300) :: mesg
@@ -1808,6 +1878,8 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
   locmask => NULL()
   is_stat = .false. ; if (present(is_static)) is_stat = is_static
   not_static = .not. is_stat
+  dev = .false. ; if (present(on_device)) dev = on_device
+  if (dev) dev = .not.host_only_variant(diag, is_static, diag_cs) .and. .not.diag_cs%diag_as_chksum
 
   ! Determine the proper array indices, noting that because of the (:,:)
   ! declaration of field, symmetric arrays are using a SW-grid indexing,
@@ -1866,9 +1938,18 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
         "have j-direction space to represent the symmetric computational domain.")
     endif
 
-    do k=ks,ke ; do j=jsv,jev ; do i=isv,iev
-      locfield(i,j,k) = field(i,j,k) * diag%conversion_factor
-    enddo ; enddo ; enddo
+    if (dev) then
+      ! Rescale on the device; the device copy of locfield is released after it has been sent.
+      conv = diag%conversion_factor
+      !$omp target enter data map(alloc: locfield)
+      do concurrent (k=ks:ke, j=jsv:jev, i=isv:iev)
+        locfield(i,j,k) = field(i,j,k) * conv
+      enddo
+    else
+      do k=ks,ke ; do j=jsv,jev ; do i=isv,iev
+        locfield(i,j,k) = field(i,j,k) * diag%conversion_factor
+      enddo ; enddo ; enddo
+    endif
   else
     locfield => field
   endif
@@ -1934,20 +2015,20 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
       if (is_stat) then
         if (associated(locmask)) then
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, rmask=locmask)
+                         is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, rmask=locmask, on_device=dev)
         else
           used = send_data_infra(diag%fms_diag_id, locfield, &
-                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev)
+                           is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, on_device=dev)
         endif
       elseif (diag_cs%ave_enabled) then
         if (associated(locmask)) then
           used = send_data_infra(diag%fms_diag_id, locfield, &
                            is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
-                           time=diag_cs%time_end, weight=diag_cs%time_int, rmask=locmask)
+                           time=diag_cs%time_end, weight=diag_cs%time_int, rmask=locmask, on_device=dev)
         else
           used = send_data_infra(diag%fms_diag_id, locfield, &
                            is_in=isv, ie_in=iev, js_in=jsv, je_in=jev, &
-                           time=diag_cs%time_end, weight=diag_cs%time_int)
+                           time=diag_cs%time_end, weight=diag_cs%time_int, on_device=dev)
         endif
       endif
     endif
@@ -1957,10 +2038,28 @@ subroutine post_data_3d_low(diag, field, diag_cs, is_static, mask)
     call post_xy_average(diag_cs, diag, locfield)
   endif
 
-  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dlfac<2) &
+  if ((diag%conversion_factor /= 0.) .and. (diag%conversion_factor /= 1.) .and. dlfac<2) then
+    !$omp target exit data map(delete: locfield) if (dev)
     deallocate( locfield )
+  endif
 
 end subroutine post_data_3d_low
+
+!> Returns true if this variant of a diagnostic is processed on the host by the mediator (downsampled or
+!! horizontally averaged), so that a post from the device needs the host copy of the data.
+logical function host_only_variant(diag, is_static, diag_cs)
+  type(diag_type),   intent(in) :: diag      !< A structure describing the diagnostic to post
+  logical, optional, intent(in) :: is_static !< If true, this is a static field that is always offered.
+  type(diag_ctrl),   intent(in) :: diag_CS   !< Structure used to regulate diagnostic output
+
+  logical :: not_static ! True if this is not a static field
+
+  not_static = .true. ; if (present(is_static)) not_static = .not.is_static
+  host_only_variant = (diag%fms_xyave_diag_id > 0)
+  if (not_static .and. associated(diag%axes)) then
+    if (diag%axes%downsample_level_factor > 1) host_only_variant = .true.
+  endif
+end function host_only_variant
 
 !> Put data into the buffer for a diagnostic one column at a time
 subroutine post_data_3d_by_column(diag_field_id, field, diag_cs, i, j)
@@ -3953,6 +4052,10 @@ subroutine diag_masks_set(G, nz, diag_cs)
     diag_cs%mask3dCvi(:,:,k) = diag_cs%mask2dCv(:,:)
   enddo
 
+  ! The native 3-d masks are used as rmask by diagnostics that are posted from the device.
+  !$omp target enter data map(to: diag_cs%mask3dTL, diag_cs%mask3dBL, diag_cs%mask3dCuL, diag_cs%mask3dCvL)
+  !$omp target enter data map(to: diag_cs%mask3dTi, diag_cs%mask3dBi, diag_cs%mask3dCui, diag_cs%mask3dCvi)
+
   ! Allocate and initialize the downsampled masks
   call downsample_diag_masks_set(G, nz, diag_cs)
 
@@ -4038,6 +4141,10 @@ subroutine diag_mediator_end(time, diag_CS, end_diag_manager)
   enddo
 
   call diag_grid_storage_end(diag_cs%diag_grid_temp)
+  if (associated(diag_cs%mask3dTL)) then
+    !$omp target exit data map(delete: diag_cs%mask3dTL, diag_cs%mask3dBL, diag_cs%mask3dCuL, diag_cs%mask3dCvL)
+    !$omp target exit data map(delete: diag_cs%mask3dTi, diag_cs%mask3dBi, diag_cs%mask3dCui, diag_cs%mask3dCvi)
+  endif
   if (associated(diag_cs%mask3dTL))  deallocate(diag_cs%mask3dTL)
   if (associated(diag_cs%mask3dBL))  deallocate(diag_cs%mask3dBL)
   if (associated(diag_cs%mask3dCuL)) deallocate(diag_cs%mask3dCuL)
