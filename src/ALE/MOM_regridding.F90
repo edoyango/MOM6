@@ -1,6 +1,7 @@
 ! This file is part of MOM6, the Modular Ocean Model version 6.
 ! See the LICENSE file for licensing information.
 ! SPDX-License-Identifier: Apache-2.0
+#include "do_concurrent_compat.h"
 
 !> Generates vertical grids as part of the ALE algorithm
 module MOM_regridding
@@ -1610,6 +1611,144 @@ subroutine filtered_grid_motion( CS, nk, z_old, z_new, dz_g )
 
 end subroutine filtered_grid_motion
 
+!> Returns the change in interface positions of a block of columns based on the old and new
+!! interface positions, as in filtered_grid_motion, with the interfaces in the last array index.
+subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_col, nk, z_old, z_new, dz_g, bad)
+  type(regridding_CS), intent(in) :: CS  !< Regridding control structure
+  integer,             intent(in) :: nib !< The first dimension of the block arrays
+  integer,             intent(in) :: njb !< The second dimension of the block arrays
+  integer,             intent(in) :: iie !< The number of columns of this block in the first dimension
+  integer,             intent(in) :: jje !< The number of columns of this block in the second dimension
+  logical, dimension(nib,njb),         intent(in)    :: do_col !< True for the columns to work on
+  integer,                             intent(in)    :: nk    !< Number of cells in source grid
+  real,    dimension(nib,njb,nk+1),    intent(in)    :: z_old !< Old grid position [H ~> m or kg m-2]
+  real,    dimension(nib,njb,CS%nk+1), intent(in)    :: z_new !< New grid position before filtering
+                                                              !! [H ~> m or kg m-2]
+  real,    dimension(nib,njb,CS%nk+1), intent(inout) :: dz_g  !< Change in interface positions including
+                                                              !! the effects of filtering [H ~> m or kg m-2]
+  logical,                             intent(out)   :: bad   !< True if z_old and z_new use different sign
+                                                              !! conventions in any column
+  ! Local variables
+  real :: sgn(nib,njb) ! The sign convention for downward [nondim].
+  logical :: massless(nib,njb) ! True for massless columns, which do not move.
+  logical :: bad_col(nib,njb)  ! True if z_old and z_new use different sign conventions in a column
+  logical :: any_bad ! True if z_old and z_new use different sign conventions in any column
+  real :: dz_tgt  ! The target grid movement of the unfiltered grid [H ~> m or kg m-2]
+  real :: zr1     ! The old grid position of an interface relative to the surface [H ~> m or kg m-2]
+  real :: z_old_k ! The corrected position of the old grid [H ~> m or kg m-2]
+  real :: Aq      ! A temporary variable related to the grid weights [nondim]
+  real :: Bq      ! A temporary variable used in the linear term in the quadratic expression for the
+                  ! filtered grid movement [H ~> m or kg m-2]
+  real :: z0, dz0 ! Together these give the position of an interface relative to a reference hieght
+                  ! that may be adjusted for numerical accuracy in a solver [H ~> m or kg m-2]
+  real :: F0      ! An estimated grid movement  [H ~> m or kg m-2]
+  real :: zs      ! The depth at which the shallow filtering timescale applies [H ~> m or kg m-2]
+  real :: zd      ! The depth at which the deep filtering timescale applies [H ~> m or kg m-2]
+  real :: dzwt    ! The depth range over which the transition in the filtering timescale occurs [H ~> m or kg m-2]
+  real :: Idzwt   ! The Adcroft reciprocal of dzwt [H-1 ~> m-1 or m2 kg-1]
+  real :: wtd     ! The weight given to the new grid when time filtering [nondim]
+  real :: Iwtd    ! The inverse of wtd [nondim]
+  real :: Int_zs  ! A depth integral of the weights in [H ~> m or kg m-2]
+  real :: Int_zd  ! A depth integral of the weights in [H ~> m or kg m-2]
+  real :: dInt_zs_zd ! The depth integral of the weights between the deep and shallow depths in [H ~> m or kg m-2]
+  integer :: k, nk_new, ii, jj
+
+  nk_new = CS%nk
+
+  !$omp target enter data map(alloc: sgn, massless, bad_col)
+
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+    bad_col(ii,jj) = .false. ; massless(ii,jj) = .false. ; sgn(ii,jj) = 1.0
+    if ((z_old(ii,jj,nk+1) - z_old(ii,jj,1)) * (z_new(ii,jj,nk_new+1) - z_new(ii,jj,1)) < 0.0) then
+      bad_col(ii,jj) = .true. ; massless(ii,jj) = .true.
+    elseif ((z_old(ii,jj,nk+1) - z_old(ii,jj,1)) * (z_new(ii,jj,nk_new+1) - z_new(ii,jj,1)) == 0.0) then
+      ! This is a massless column, so do nothing and return.
+      massless(ii,jj) = .true.
+    elseif ((z_old(ii,jj,nk+1) - z_old(ii,jj,1)) + (z_new(ii,jj,nk_new+1) - z_new(ii,jj,1)) > 0.0) then
+      sgn(ii,jj) = 1.0
+    else
+      sgn(ii,jj) = -1.0
+    endif
+  enddo
+
+  zs = CS%depth_of_time_filter_shallow
+  zd = CS%depth_of_time_filter_deep
+  wtd = 1.0 - CS%old_grid_weight
+  Iwtd = 1.0 / wtd
+
+  dzwt = (zd - zs)
+  Idzwt = 0.0 ; if (abs(zd - zs) > 0.0) Idzwt = 1.0 / (zd - zs)
+  dInt_zs_zd = 0.5*(1.0 + Iwtd) * (zd - zs)
+  Aq = 0.5*(Iwtd - 1.0)
+
+  ! The interfaces of a column are independent, given its sign convention.
+  do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) &
+      DO_LOCALITY(local(z_old_k, dz_tgt, zr1, Int_zs, Int_zd, dz0, z0, F0, Bq))
+    if (massless(ii,jj) .or. (k == 1)) then
+      dz_g(ii,jj,k) = 0.0
+    else
+      z_old_k = z_old(ii,jj,min(k,nk+1)) ! This allows for virtual z_old interface at bottom of the model
+      ! zr1 is positive and increases with depth, and dz_tgt is positive downward.
+      dz_tgt = sgn(ii,jj)*(z_new(ii,jj,k) - z_old_k)
+      zr1 = sgn(ii,jj)*(z_old_k - z_old(ii,jj,1))
+
+      !   First, handle the two simple and common cases that do not pass through
+      ! the adjustment rate transition zone.
+      if ((zr1 > zd) .and. (zr1 + wtd * dz_tgt > zd)) then
+        dz_g(ii,jj,k) = sgn(ii,jj) * wtd * dz_tgt
+      elseif ((zr1 < zs) .and. (zr1 + dz_tgt < zs)) then
+        dz_g(ii,jj,k) = sgn(ii,jj) * dz_tgt
+      else
+        ! Find the new value by inverting the equation
+        !   integral(0 to dz_new) Iwt(z) dz = dz_tgt
+        ! This is trivial where Iwt is a constant, and agrees with the two limits above.
+
+        ! Take test values at the transition points to figure out which segment
+        ! the new value will be found in.
+        if (zr1 >= zd) then
+          Int_zd = Iwtd*(zd - zr1)
+          Int_zs = Int_zd - dInt_zs_zd
+        elseif (zr1 <= zs) then
+          Int_zs = (zs - zr1)
+          Int_zd = dInt_zs_zd + (zs - zr1)
+        else
+          Int_zd = (zd - zr1) * (Iwtd*(0.5*(zd+zr1) - zs) + 0.5*(zd - zr1)) * Idzwt
+          Int_zs = (zs - zr1) * (0.5*Iwtd * ((zr1 - zs)) + (zd - 0.5*(zr1+zs))) * Idzwt
+          ! It has been verified that  Int_zs = Int_zd - dInt_zs_zd to within roundoff.
+        endif
+
+        if (dz_tgt >= Int_zd) then ! The new location is in the deep, slow region.
+          dz_g(ii,jj,k) = sgn(ii,jj) * ((zd-zr1) + wtd*(dz_tgt - Int_zd))
+        elseif (dz_tgt <= Int_zs) then ! The new location is in the shallow region.
+          dz_g(ii,jj,k) = sgn(ii,jj) * ((zs-zr1) + (dz_tgt - Int_zs))
+        else  ! We need to solve a quadratic equation for z_new.
+          ! For accuracy, do the integral from the starting depth or the nearest
+          ! edge of the transition region.  The results with each choice are
+          ! mathematically equivalent, but differ in roundoff, and this choice
+          ! should minimize the likelihood of inadvertently overlapping interfaces.
+          if (zr1 <= zs) then ; dz0 = zs-zr1 ; z0 = zs ; F0 = dz_tgt - Int_zs
+          elseif (zr1 >= zd) then ; dz0 = zd-zr1 ; z0 = zd ; F0 = dz_tgt - Int_zd
+          else ; dz0 = 0.0 ; z0 = zr1 ; F0 = dz_tgt ; endif
+
+          Bq = (dzwt + 2.0*Aq*(z0-zs))
+          ! Solve the quadratic: Aq*(zn-z0)**2 + Bq*(zn-z0) - F0*dzwt = 0
+          ! Note that b>=0, and the two terms in the standard form cancel for the right root.
+          dz_g(ii,jj,k) = sgn(ii,jj) * (dz0 + 2.0*F0*dzwt / (Bq + sqrt(Bq**2 + 4.0*Aq*F0*dzwt) ))
+        endif
+      endif
+    endif
+  enddo
+
+  any_bad = .false.
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad))
+    any_bad = any_bad .or. bad_col(ii,jj)
+  enddo
+  bad = any_bad
+
+  !$omp target exit data map(delete: sgn, massless, bad_col)
+
+end subroutine filtered_grid_motion_block
+
 !> Builds a z*-coordinate grid with partial steps (Adcroft and Campin, 2004).
 !! z* is defined as
 !!   z* = (z-eta)/(H+eta)*H  s.t. z*=0 when z=eta and z*=-H when z=-H .
@@ -2223,6 +2362,87 @@ subroutine adjust_interface_motion( CS, nk, h_old, dz_int )
  !if (dz_int(1)/=0.) stop 'MOM_regridding: adjust_interface_motion() surface moved'
 
 end subroutine adjust_interface_motion
+
+!> Adjusts dz_int of a block of columns to ensure non-zero minimum thicknesses, as in
+!! adjust_interface_motion, with the interfaces in the last array index.
+subroutine adjust_interface_motion_block(CS, nib, njb, iie, jje, do_col, nk, h_old, dz_int, &
+                                         bad_roundoff, bad_repeat)
+  type(regridding_CS), intent(in) :: CS  !< Regridding control structure
+  integer,             intent(in) :: nib !< The first dimension of the block arrays
+  integer,             intent(in) :: njb !< The second dimension of the block arrays
+  integer,             intent(in) :: iie !< The number of columns of this block in the first dimension
+  integer,             intent(in) :: jje !< The number of columns of this block in the second dimension
+  logical, dimension(nib,njb),         intent(in)    :: do_col !< True for the columns to work on
+  integer,                             intent(in)    :: nk     !< Number of layers in h_old
+  real,    dimension(nib,njb,nk),      intent(in)    :: h_old  !< Layer thicknesses on the old grid
+                                                               !! [H ~> m or kg m-2]
+  real,    dimension(nib,njb,CS%nk+1), intent(inout) :: dz_int !< Interface movements, adjusted to keep
+                                                               !! the thicknesses thicker than their minimum
+                                                               !! value [H ~> m or kg m-2]
+  logical,                             intent(out)   :: bad_roundoff !< True if an implied thickness in any
+                                                               !! column is more negative than roundoff
+  logical,                             intent(out)   :: bad_repeat !< True if the repeated adjustment for
+                                                               !! negative thicknesses failed in any column
+  ! Local variables
+  real :: h_new   ! A layer thickness on the new grid [H ~> m or kg m-2]
+  real :: eps     ! A tiny relative thickness [nondim]
+  real :: h_err(nib,njb) ! An error tolerance that use used to flag unacceptably large negative layer
+                         ! thicknesses that can not be explained by roundoff errors [H ~> m or kg m-2]
+  logical :: bad_col(nib,njb) ! True if an implied thickness in a column is more negative than roundoff
+  logical :: rep_col(nib,njb) ! True if the repeated adjustment failed in a column
+  logical :: any_bad, any_rep ! True if bad_col or rep_col are true for any column
+  real :: min_thickness ! A copy of CS%min_thickness [H ~> m or kg m-2]
+  integer :: k, nk_new, ii, jj
+
+  eps = 1. ; eps = epsilon(eps)
+  nk_new = CS%nk ; min_thickness = CS%min_thickness
+
+  !$omp target enter data map(alloc: h_err, bad_col, rep_col)
+
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+    h_err(ii,jj) = 0. ; bad_col(ii,jj) = .false. ; rep_col(ii,jj) = .false.
+  enddo
+  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+    do k = 1, min(nk_new,nk)
+      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+        h_err(ii,jj) = h_err(ii,jj) + max( h_old(ii,jj,k), abs(dz_int(ii,jj,k)), abs(dz_int(ii,jj,k+1)) )*eps
+        h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
+        if (h_new < -3.0*h_err(ii,jj)) bad_col(ii,jj) = .true.
+      enddo
+    enddo
+    do k = nk+1, nk_new
+      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+        h_err(ii,jj) = h_err(ii,jj) + max( abs(dz_int(ii,jj,k)), abs(dz_int(ii,jj,k+1)) )*eps
+        h_new = ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
+        if (h_new < -3.0*h_err(ii,jj)) bad_col(ii,jj) = .true.
+      enddo
+    enddo
+  enddo
+  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+    do k = min(nk_new,nk),2,-1
+      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+        h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
+        if (h_new<min_thickness) & ! Implies next h_new = min_thickness
+            dz_int(ii,jj,k) = ( dz_int(ii,jj,k+1) - h_old(ii,jj,k) ) + min_thickness
+        h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
+        if (h_new<0.) &
+            dz_int(ii,jj,k) = ( 1. - eps ) * ( dz_int(ii,jj,k+1) - h_old(ii,jj,k) ) ! Backup in case min_thickness==0
+        h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
+        if (h_new<0.) rep_col(ii,jj) = .true.
+      enddo
+    enddo
+  enddo
+
+  any_bad = .false. ; any_rep = .false.
+  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad, any_rep))
+    any_bad = any_bad .or. bad_col(ii,jj)
+    any_rep = any_rep .or. rep_col(ii,jj)
+  enddo
+  bad_roundoff = any_bad ; bad_repeat = any_rep
+
+  !$omp target exit data map(delete: h_err, bad_col, rep_col)
+
+end subroutine adjust_interface_motion_block
 
 
 !------------------------------------------------------------------------------
@@ -3085,6 +3305,11 @@ logical function regridding_unit_tests(verbose)
 
   call test_zstar_block(test, 9, 1000, .false.)
   call test_zstar_block(test, 9, 1000, .true.)
+  call test_filtered_block(test, 9, 1000, 0.0, 0.0, 0.0)
+  call test_filtered_block(test, 9, 1000, 0.3, 50.0, 500.0)
+  call test_filtered_block(test, 9, 1000, 0.6, 100.0, 100.0)
+  call test_adjust_block(test, 9, 1000, 0.01)
+  call test_adjust_block(test, 9, 1000, 0.001)
 
   regridding_unit_tests = test%summarize('regridding_unit_tests')
 
@@ -3144,6 +3369,117 @@ subroutine test_zstar_block(test, nk, niter, use_zScale)
   call test%test(error, trim(label))
 
 end subroutine test_zstar_block
+
+!> Test that filtered_grid_motion_block agrees bitwise with filtered_grid_motion on random columns
+subroutine test_filtered_block(test, nk, niter, old_grid_weight, zs, zd)
+  type(testing), intent(inout) :: test   !< Unit testing convenience functions
+  integer,       intent(in)    :: nk     !< Number of layers
+  integer,       intent(in)    :: niter  !< Number of randomized blocks to try
+  real,          intent(in)    :: old_grid_weight !< The weight of the old grid [nondim]
+  real,          intent(in)    :: zs     !< The depth of the shallow end of the filtering transition [H ~> m]
+  real,          intent(in)    :: zd     !< The depth of the deep end of the filtering transition [H ~> m]
+  ! Local variables
+  integer, parameter :: nib = 5, njb = 3 ! Block array sizes; the last i column is not used
+  type(regridding_CS) :: CS  ! Regridding control structure
+  real :: z_old(nib,njb,nk+1), z_new(nib,njb,nk+1) ! Old and new interface heights [H ~> m]
+  real :: dz_g(nib,njb,nk+1) ! Block interface movements [H ~> m]
+  real :: dz_g1(nk+1)        ! Column interface movements [H ~> m]
+  real :: h(nib,njb,nk), rnd(nib,njb,nk+1) ! Thicknesses [H ~> m] and random numbers [nondim]
+  real :: rnd2(nib,njb)      ! Random numbers [nondim]
+  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: bad             ! True if the block routine found inconsistent sign conventions
+  logical :: error           ! Indicates a difference
+  integer :: iter, ii, jj, k
+  character(len=64) :: label ! Generated label
+
+  CS%nk = nk ; CS%old_grid_weight = old_grid_weight
+  CS%depth_of_time_filter_shallow = zs ; CS%depth_of_time_filter_deep = zd
+  error = .false.
+  do iter = 1, niter
+    ! Old interfaces from random thicknesses, with some vanished layers and massless columns
+    call random_number(h) ; h(:,:,:) = max(0.0, 200.0*h(:,:,:) - 20.0)
+    call random_number(rnd2)
+    do jj=1,njb ; do ii=1,nib
+      if (rnd2(ii,jj) < 0.05) h(ii,jj,:) = 0.0
+      z_old(ii,jj,nk+1) = -1000.0*rnd2(ii,jj)
+      do k=nk,1,-1 ; z_old(ii,jj,k) = z_old(ii,jj,k+1) + h(ii,jj,k) ; enddo
+    enddo ; enddo
+    ! New interfaces move within the column, keeping the top and bottom
+    call random_number(rnd)
+    do jj=1,njb ; do ii=1,nib
+      z_new(ii,jj,1) = z_old(ii,jj,1) ; z_new(ii,jj,nk+1) = z_old(ii,jj,nk+1)
+      do k=2,nk
+        z_new(ii,jj,k) = z_old(ii,jj,nk+1) + (z_old(ii,jj,1) - z_old(ii,jj,nk+1)) * &
+                         (1.0 - real(k-1)/real(nk) + 0.05*(rnd(ii,jj,k) - 0.5))
+      enddo
+    enddo ; enddo
+    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+
+    call filtered_grid_motion_block(CS, nib, njb, nib-1, njb, do_col, nk, z_old, z_new, dz_g, bad)
+    if (bad) error = .true.
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+      dz_g1(:) = -999.0
+      call filtered_grid_motion(CS, nk, z_old(ii,jj,:), z_new(ii,jj,:), dz_g1)
+      if (any(dz_g(ii,jj,:) /= dz_g1(:))) error = .true.
+    endif ; enddo ; enddo
+  enddo
+
+  write(label, '(a,3es10.2)') 'filtered_grid_motion_block', old_grid_weight, zs, zd
+  call test%test(error, trim(label))
+
+end subroutine test_filtered_block
+
+!> Test that adjust_interface_motion_block agrees bitwise with adjust_interface_motion on random columns
+subroutine test_adjust_block(test, nk, niter, min_thickness)
+  type(testing), intent(inout) :: test   !< Unit testing convenience functions
+  integer,       intent(in)    :: nk     !< Number of layers
+  integer,       intent(in)    :: niter  !< Number of randomized blocks to try
+  real,          intent(in)    :: min_thickness !< The minimum layer thickness [H ~> m]
+  ! Local variables
+  integer, parameter :: nib = 5, njb = 3 ! Block array sizes; the last i column is not used
+  type(regridding_CS) :: CS  ! Regridding control structure
+  real :: h_old(nib,njb,nk)  ! Old thicknesses [H ~> m]
+  real :: h_tgt(nib,njb,nk)  ! Target thicknesses [H ~> m]
+  real :: dz(nib,njb,nk+1)   ! Block interface movements [H ~> m]
+  real :: dz_in(nib,njb,nk+1) ! The interface movements before adjustment [H ~> m]
+  real :: dz1(nk+1)          ! Column interface movements [H ~> m]
+  real :: rnd(nib,njb,nk)    ! Random numbers [nondim]
+  real :: rnd2(nib,njb)      ! Random numbers [nondim]
+  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: bad_roundoff, bad_repeat ! Error flags from the block routine
+  logical :: error           ! Indicates a difference
+  integer :: iter, ii, jj, k
+  character(len=64) :: label ! Generated label
+
+  CS%nk = nk ; CS%min_thickness = min_thickness
+  error = .false.
+  do iter = 1, niter
+    call random_number(h_old) ; h_old(:,:,:) = max(0.0, 10.0*h_old(:,:,:) - 1.0)
+    ! Target thicknesses with some vanished or thinner than the minimum
+    call random_number(rnd)
+    h_tgt(:,:,:) = 10.0*rnd(:,:,:)
+    where (rnd(:,:,:) < 0.2) h_tgt(:,:,:) = 0.01*min_thickness*rnd(:,:,:)
+    where (rnd(:,:,:) < 0.05) h_tgt(:,:,:) = 0.0
+    do jj=1,njb ; do ii=1,nib
+      dz(ii,jj,1) = 0.0
+      do k=1,nk ; dz(ii,jj,k+1) = dz(ii,jj,k) + (h_old(ii,jj,k) - h_tgt(ii,jj,k)) ; enddo
+    enddo ; enddo
+    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+
+    dz_in(:,:,:) = dz(:,:,:)
+    call adjust_interface_motion_block(CS, nib, njb, nib-1, njb, do_col, nk, h_old, dz, bad_roundoff, bad_repeat)
+    if (bad_roundoff .or. bad_repeat) error = .true.
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+      dz1(:) = dz_in(ii,jj,:)
+      call adjust_interface_motion(CS, nk, h_old(ii,jj,:), dz1)
+      if (any(dz(ii,jj,:) /= dz1(:))) error = .true.
+    endif ; enddo ; enddo
+  enddo
+
+  write(label, '(a,es10.2)') 'adjust_interface_motion_block', min_thickness
+  call test%test(error, trim(label))
+
+end subroutine test_adjust_block
 
 !> \namespace mom_regridding
 !!
