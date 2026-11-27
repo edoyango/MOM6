@@ -1451,6 +1451,10 @@ subroutine remap_dyn_split_RK2_aux_vars(G, GV, CS, h_old_u, h_old_v, h_new_u, h_
 
   if (.not.CS%remap_aux) return
 
+  ! These are current on the device, but they are remapped on the host.
+  !$omp target update from(CS%u_av, CS%v_av, CS%CAu_pred, CS%CAv_pred) if(CS%store_CAu)
+  !$omp target update from(CS%diffu, CS%diffv)
+
   if (CS%store_CAu) then
     call ALE_remap_velocities(ALE_CSp, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, CS%u_av, CS%v_av)
     call pass_vector(CS%u_av, CS%v_av, G%Domain, complete=.false.)
@@ -1460,6 +1464,9 @@ subroutine remap_dyn_split_RK2_aux_vars(G, GV, CS, h_old_u, h_old_v, h_new_u, h_
 
   call ALE_remap_velocities(ALE_CSp, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, CS%diffu, CS%diffv)
   call pass_vector(CS%diffu, CS%diffv, G%Domain, complete=.true.)
+
+  !$omp target update to(CS%u_av, CS%v_av, CS%CAu_pred, CS%CAv_pred) if(CS%store_CAu)
+  !$omp target update to(CS%diffu, CS%diffv)
 
 end subroutine remap_dyn_split_RK2_aux_vars
 
