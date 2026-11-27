@@ -32,6 +32,8 @@ use regrid_interp, only : set_interp_scheme, set_interp_extrap, set_interp_answe
 
 use coord_zlike,  only : zlike_CS
 use coord_zlike,  only : init_coord_zlike, set_zlike_params, build_zstar_column, end_coord_zlike
+use coord_zlike,  only : build_zstar_block
+use numerical_testing_type, only : testing
 use coord_sigma,  only : sigma_CS
 use coord_sigma,  only : init_coord_sigma, set_sigma_params, build_sigma_column, end_coord_sigma
 use coord_rho,    only : init_coord_rho, rho_CS, set_rho_params, build_rho_column, end_coord_rho
@@ -165,7 +167,7 @@ public getCoordinateUnits, getCoordinateShortName, getStaticThickness
 public DEFAULT_COORDINATE_MODE
 public set_h_neglect, set_dz_neglect
 public get_zlike_CS, get_sigma_CS, get_rho_CS
-public regridding_block_supported
+public regridding_block_supported, regridding_unit_tests
 
 !> Documentation for coordinate options
 character(len=*), parameter, public :: regriddingCoordinateModeDoc = &
@@ -3063,6 +3065,85 @@ integer function rho_function1( string, rho_target )
   rho_function1 = nk
 
 end function rho_function1
+
+!> Runs the unit tests of the regridding module, which check that the block routines agree bitwise with
+!! the column routines.  Returns true if any test fails.
+logical function regridding_unit_tests(verbose)
+  logical, intent(in) :: verbose !< If true, write results to stdout
+  ! Local variables
+  type(testing) :: test ! Unit testing convenience functions
+  integer :: seed_size  ! Number of integers used by seed
+  integer, allocatable :: seed(:) ! Random number seed
+
+  call test%set( verbose=verbose ) ! Sets the verbosity flag in test
+  if (verbose) write(test%stdout,*) '  ===== MOM_regridding: regridding_unit_tests ================='
+
+  call random_seed(size=seed_size)
+  allocate( seed(seed_size) )
+  seed(:) = 102030405 ! Repeatable sequences
+  call random_seed(put=seed)
+
+  call test_zstar_block(test, 9, 1000, .false.)
+  call test_zstar_block(test, 9, 1000, .true.)
+
+  regridding_unit_tests = test%summarize('regridding_unit_tests')
+
+end function regridding_unit_tests
+
+!> Test that build_zstar_block agrees bitwise with build_zstar_column on random columns
+subroutine test_zstar_block(test, nk, niter, use_zScale)
+  type(testing), intent(inout) :: test   !< Unit testing convenience functions
+  integer,       intent(in)    :: nk     !< Number of layers
+  integer,       intent(in)    :: niter  !< Number of randomized blocks to try
+  logical,       intent(in)    :: use_zScale !< If true, pass a zScale argument
+  ! Local variables
+  integer, parameter :: nib = 5, njb = 3 ! Block array sizes; the last i column is not used
+  type(zlike_CS), pointer :: zCS => NULL() ! z-like coordinate control structure
+  real :: res(nk)            ! Coordinate resolution [Z ~> m]
+  real :: depth(nib,njb)     ! Depths of the columns [Z ~> m]
+  real :: tot(nib,njb)       ! Total thicknesses of the columns [Z ~> m]
+  real :: rnd(nib,njb), rnd2(nib,njb) ! Random numbers [nondim]
+  real :: min_thick(1)       ! Minimum thickness [Z ~> m]
+  real :: zI(nib,njb,nk+1)   ! Block interface positions [Z ~> m]
+  real :: zI1(nk+1)          ! Column interface positions [Z ~> m]
+  real :: zScale             ! A scaling factor for the resolution [nondim]
+  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: error           ! Indicates a difference
+  integer :: iter, ii, jj
+  character(len=64) :: label ! Generated label
+
+  zScale = 0.9
+  error = .false.
+  do iter = 1, niter
+    call random_number(res) ; res(:) = 0.1 + 20.0*res(:)
+    call random_number(min_thick) ; min_thick(1) = 0.5*min_thick(1)
+    call init_coord_zlike(zCS, nk, res)
+    call set_zlike_params(zCS, min_thickness=min_thick(1))
+    call random_number(depth) ; depth(:,:) = 1.0 + 200.0*depth(:,:) ! Some columns are shallow enough to inflate
+    call random_number(rnd) ; tot(:,:) = depth(:,:) * (1.0 + 0.2*(rnd(:,:) - 0.5))
+    where (rnd(:,:) < 0.05) tot(:,:) = 0.0 ! Massless columns
+    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+
+    if (use_zScale) then
+      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_col, depth, tot, zI, zScale=zScale)
+    else
+      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_col, depth, tot, zI)
+    endif
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+      if (use_zScale) then
+        call build_zstar_column(zCS, depth(ii,jj), tot(ii,jj), zI1, zScale=zScale)
+      else
+        call build_zstar_column(zCS, depth(ii,jj), tot(ii,jj), zI1)
+      endif
+      if (any(zI(ii,jj,:) /= zI1(:))) error = .true.
+    endif ; enddo ; enddo
+    call end_coord_zlike(zCS)
+  enddo
+
+  write(label, '(a,l1)') 'build_zstar_block, zScale=', use_zScale
+  call test%test(error, trim(label))
+
+end subroutine test_zstar_block
 
 !> \namespace mom_regridding
 !!
