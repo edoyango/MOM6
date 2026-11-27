@@ -2165,7 +2165,7 @@ subroutine ALE_regridding_and_remapping(CS, G, GV, US, u, v, h, tv, dtdia, Time_
   do m=1,ntr
     !$omp target exit data map(from: CS%tracer_Reg%Tr(m)%t)
   enddo
-  !$omp target exit data map(delete: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
+  !$omp target exit data map(release: h_new, dzRegrid, h_old_u, h_old_v, h_new_u, h_new_v, PCM_cell)
 
   if (showCallTree) call callTree_waypoint("finished ALE_regrid (ALE_regridding_and_remapping)")
   call cpu_clock_end(id_clock_ALE)

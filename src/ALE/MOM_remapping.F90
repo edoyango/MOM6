@@ -367,7 +367,7 @@ end subroutine remapping_core_h
 !> Remaps a block of columns of values u0 on grids h0 to grids h1, as in remapping_core_h with the OM4-era
 !! reconstructions and sub-cells, using the intersection of the grids from intersect_src_tgt_grids_block.
 !! The cells and sub-cells are in the last array index.
-subroutine remapping_core_h_block(CS, nib, njb, iie, jje, do_col, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
+subroutine remapping_core_h_block(CS, nib, njb, iie, jje, do_ij, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
                                   isrc_start, isrc_end, isrc_max, itgt_start, itgt_end, isub_src, &
                                   ppoly_E, ppoly_coefs, slp, mslp, u_sub, uh_sub, PCM_cell)
   type(remapping_CS), intent(in)  :: CS  !< Remapping control structure
@@ -375,7 +375,7 @@ subroutine remapping_core_h_block(CS, nib, njb, iie, jje, do_col, n0, h0, u0, n1
   integer, intent(in)  :: njb  !< The second dimension of the block arrays
   integer, intent(in)  :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in)  :: jje  !< The number of columns of this block in the second dimension
-  logical, intent(in)  :: do_col(nib,njb) !< True for the columns to remap
+  logical, intent(in)  :: do_ij(nib,njb)  !< True for the columns to remap
   integer, intent(in)  :: n0   !< Number of cells on source grid
   real,    intent(in)  :: h0(nib,njb,n0) !< Cell widths on source grid [H]
   real,    intent(in)  :: u0(nib,njb,n0) !< Cell averages on source grid [A]
@@ -405,14 +405,14 @@ subroutine remapping_core_h_block(CS, nib, njb, iie, jje, do_col, n0, h0, u0, n1
   if (.not.remapping_block_supported(CS, mesg)) call MOM_error(FATAL, &
     "MOM_remapping, remapping_core_h_block: "//trim(mesg))
 
-  call build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u0, ppoly_coefs, ppoly_E, &
+  call build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_ij, h0, u0, ppoly_coefs, ppoly_E, &
                                    slp, mslp, iMethod, PCM_cell)
 
-  call remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u0, ppoly_E, ppoly_coefs, &
+  call remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_ij, n0, h0, u0, ppoly_E, ppoly_coefs, &
                                        n1, h_sub, h0_eff, isrc_start, isrc_end, isrc_max, isub_src, &
                                        iMethod, CS%force_bounds_in_subcell, u_sub, uh_sub)
 
-  call remap_sub_to_tgt_grid_om4_block(nib, njb, iie, jje, do_col, n0, n1, h1, h_sub, u_sub, uh_sub, &
+  call remap_sub_to_tgt_grid_om4_block(nib, njb, iie, jje, do_ij, n0, n1, h1, h_sub, u_sub, uh_sub, &
                                        itgt_start, itgt_end, CS%force_bounds_in_target, u1)
 
 end subroutine remapping_core_h_block
@@ -634,7 +634,7 @@ end subroutine build_reconstructions_1d
 
 !> Creates the PCM or PLM polynomial reconstructions of a block of columns, as in
 !! build_reconstructions_1d, with the cells in the last array index.
-subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u0, ppoly_r_coefs, &
+subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_ij, h0, u0, ppoly_r_coefs, &
                                        ppoly_r_E, slp, mslp, iMethod, PCM_cell)
   type(remapping_CS), intent(in) :: CS  !< Remapping control structure
   integer,            intent(in) :: nib !< The first dimension of the block arrays
@@ -642,7 +642,7 @@ subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u
   integer,            intent(in) :: iie !< The number of columns of this block in the first dimension
   integer,            intent(in) :: jje !< The number of columns of this block in the second dimension
   integer,            intent(in) :: n0  !< Number of cells on source grid
-  logical, dimension(nib,njb),      intent(in)    :: do_col !< True for the columns to reconstruct
+  logical, dimension(nib,njb),      intent(in)    :: do_ij  !< True for the columns to reconstruct
   real,    dimension(nib,njb,n0),   intent(in)    :: h0 !< Cell widths on source grid [H]
   real,    dimension(nib,njb,n0),   intent(in)    :: u0 !< Cell averages on source grid [A]
   real,    dimension(nib,njb,n0,2), intent(inout) :: ppoly_r_coefs !< Coefficients of polynomial [A]
@@ -671,10 +671,10 @@ subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u
 
   select case ( local_remapping_scheme )
     case ( REMAPPING_PCM )
-      call PCM_reconstruction_block(nib, njb, iie, jje, n0, do_col, u0, ppoly_r_E, ppoly_r_coefs)
+      call PCM_reconstruction_block(nib, njb, iie, jje, n0, do_ij, u0, ppoly_r_E, ppoly_r_coefs)
       iMethod = INTEGRATION_PCM
     case ( REMAPPING_PLM )
-      call PLM_reconstruction_block(nib, njb, iie, jje, n0, do_col, h0, u0, ppoly_r_E, ppoly_r_coefs, &
+      call PLM_reconstruction_block(nib, njb, iie, jje, n0, do_ij, h0, u0, ppoly_r_E, ppoly_r_coefs, &
                                     slp, mslp, CS%h_neglect)
       iMethod = INTEGRATION_PLM
     case default
@@ -684,7 +684,7 @@ subroutine build_reconstructions_block(CS, nib, njb, iie, jje, n0, do_col, h0, u
 
   if (present(PCM_cell)) then
     ! Change the coefficients to those for the piecewise constant method in indicated cells.
-    do concurrent (k=1:n0, jj=1:jje, ii=1:iie, do_col(ii,jj) .and. PCM_cell(ii,jj,k))
+    do concurrent (k=1:n0, jj=1:jje, ii=1:iie, do_ij(ii,jj) .and. PCM_cell(ii,jj,k))
       ppoly_r_coefs(ii,jj,k,1) = u0(ii,jj,k)
       ppoly_r_E(ii,jj,k,1) = u0(ii,jj,k)
       ppoly_r_E(ii,jj,k,2) = u0(ii,jj,k)
@@ -944,13 +944,13 @@ end subroutine intersect_src_tgt_grids
 
 !> Returns the intersection of the source and target grids of a block of columns, as in
 !! intersect_src_tgt_grids, with the cells and sub-cells in the last array index.
-subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, n0, h0, n1, h1, h_sub, h0_eff, &
+subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_ij, n0, h0, n1, h1, h_sub, h0_eff, &
                                          isrc_start, isrc_end, isrc_max, itgt_start, itgt_end, isub_src, bad)
   integer, intent(in)  :: nib  !< The first dimension of the block arrays
   integer, intent(in)  :: njb  !< The second dimension of the block arrays
   integer, intent(in)  :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in)  :: jje  !< The number of columns of this block in the second dimension
-  logical, intent(in)  :: do_col(nib,njb) !< True for the columns to work on
+  logical, intent(in)  :: do_ij(nib,njb)  !< True for the columns to work on
   integer, intent(in)  :: n0      !< Number of cells in source grid
   real,    intent(in)  :: h0(nib,njb,n0)  !< Source grid widths [H]
   integer, intent(in)  :: n1      !< Number of cells in target grid
@@ -985,7 +985,7 @@ subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, n0, h0, n1,
   !$omp                              dh0_eff, src_has_volume, tgt_has_volume, bad_col)
 
   ! Initialize algorithm
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     h0_supply(ii,jj) = h0(ii,jj,1)
     h1_supply(ii,jj) = h1(ii,jj,1)
     src_has_volume(ii,jj) = .true.
@@ -1006,11 +1006,11 @@ subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, n0, h0, n1,
   enddo
 
   ! Loop over each sub-cell to calculate intersections with source and target grids
-  do concurrent (jj=1:jje) DO_LOCALITY(local(i_sub))
+  do concurrent (jj=1:jje)
     do i_sub = 2, n0+n1+1
       ! ifx vectorizes this loop with masked scatters, which made it twice as slow on the CPU.
       !DIR$ NOVECTOR
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(dh))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(dh))
 
         ! This is the width of the sub-cell, determined by which ever column has the least
         ! supply available to consume.
@@ -1121,12 +1121,12 @@ subroutine intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, n0, h0, n1,
   enddo
 
   any_bad = .false.
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad))
     any_bad = any_bad .or. bad_col(ii,jj)
   enddo
   bad = any_bad
 
-  !$omp target exit data map(delete: i0, i1, i_start0, i_start1, i_max, dh_max, h0_supply, h1_supply, &
+  !$omp target exit data map(release: i0, i1, i_start0, i_start1, i_max, dh_max, h0_supply, h1_supply, &
   !$omp                              dh0_eff, src_has_volume, tgt_has_volume, bad_col)
 
 end subroutine intersect_src_tgt_grids_block
@@ -1294,14 +1294,14 @@ end subroutine remap_src_to_sub_grid_om4
 
 !> Remaps the PCM or PLM reconstructions of a block of columns onto their sub-cells, as in
 !! remap_src_to_sub_grid_om4, with the cells and sub-cells in the last array index.
-subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u0, ppoly0_E, ppoly0_coefs, &
+subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_ij, n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                                            n1, h_sub, h0_eff, isrc_start, isrc_end, isrc_max, isub_src, &
                                            method, force_bounds_in_subcell, u_sub, uh_sub)
   integer, intent(in)  :: nib  !< The first dimension of the block arrays
   integer, intent(in)  :: njb  !< The second dimension of the block arrays
   integer, intent(in)  :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in)  :: jje  !< The number of columns of this block in the second dimension
-  logical, intent(in)  :: do_col(nib,njb) !< True for the columns to work on
+  logical, intent(in)  :: do_ij(nib,njb)  !< True for the columns to work on
   integer, intent(in)  :: n0      !< Number of cells in source grid
   real,    intent(in)  :: h0(nib,njb,n0)  !< Source grid widths [H]
   real,    intent(in)  :: u0(nib,njb,n0)  !< Source cell averages [A]
@@ -1335,12 +1335,12 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
   iMethod = method
   !$omp target enter data map(alloc: xa, dh0_eff, i0_last_thick_cell)
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     i0_last_thick_cell(ii,jj) = 0
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(i0))
+  do concurrent (jj=1:jje)
     do i0 = 1, n0
-      do concurrent (ii=1:iie, do_col(ii,jj))
+      do concurrent (ii=1:iie, do_ij(ii,jj))
         if (h0(ii,jj,i0)>0.) i0_last_thick_cell(ii,jj) = i0
       enddo
     enddo
@@ -1349,15 +1349,15 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
   ! Loop over each sub-cell to calculate average/integral values within each sub-cell.
   ! Uses: h_sub, isub_src, h0_eff
   ! Sets: u_sub, uh_sub
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     xa(ii,jj) = 0.
     dh0_eff(ii,jj) = 0.
     uh_sub(ii,jj,1) = 0.
     u_sub(ii,jj,1) = ppoly0_E(ii,jj,1,1)
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(i_sub))
+  do concurrent (jj=1:jje)
     do i_sub = 2, n0+n1
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(dh, i0, xb))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(dh, i0, xb))
 
         ! Sub-cell thickness from loop above
         dh = h_sub(ii,jj,i_sub)
@@ -1400,7 +1400,7 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
     enddo
   enddo
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     u_sub(ii,jj,n0+n1+1) = ppoly0_E(ii,jj,n0,2)                   ! This value is only needed when total
     uh_sub(ii,jj,n0+n1+1) = ppoly0_E(ii,jj,n0,2) * h_sub(ii,jj,n0+n1+1) ! target column is wider than the source
   enddo
@@ -1411,7 +1411,7 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
   ! Uses: i0_last_thick_cell, isrc_max, h_sub, isrc_start, isrc_end, uh_sub, u0, h0
   ! Updates: uh_sub
   ! Each source cell has its own range of sub-cells, so the source cells are independent.
-  do concurrent (i0=1:n0, jj=1:jje, ii=1:iie, do_col(ii,jj) .and. (i0 <= i0_last_thick_cell(ii,jj))) &
+  do concurrent (i0=1:n0, jj=1:jje, ii=1:iie, do_ij(ii,jj) .and. (i0 <= i0_last_thick_cell(ii,jj))) &
       DO_LOCALITY(local(i_max, dh_max, duh, i_sub))
     i_max = isrc_max(ii,jj,i0)
     dh_max = h_sub(ii,jj,i_max)
@@ -1425,7 +1425,7 @@ subroutine remap_src_to_sub_grid_om4_block(nib, njb, iie, jje, do_col, n0, h0, u
     endif
   enddo
 
-  !$omp target exit data map(delete: xa, dh0_eff, i0_last_thick_cell)
+  !$omp target exit data map(release: xa, dh0_eff, i0_last_thick_cell)
 
 end subroutine remap_src_to_sub_grid_om4_block
 
@@ -1635,13 +1635,13 @@ end subroutine remap_sub_to_tgt_grid_om4
 
 !> Remaps the sub-cells of a block of columns onto their target grids, as in
 !! remap_sub_to_tgt_grid_om4, with the cells and sub-cells in the last array index.
-subroutine remap_sub_to_tgt_grid_om4_block(nib, njb, iie, jje, do_col, n0, n1, h1, h_sub, u_sub, uh_sub, &
+subroutine remap_sub_to_tgt_grid_om4_block(nib, njb, iie, jje, do_ij, n0, n1, h1, h_sub, u_sub, uh_sub, &
                                            itgt_start, itgt_end, force_bounds_in_target, u1)
   integer, intent(in)  :: nib  !< The first dimension of the block arrays
   integer, intent(in)  :: njb  !< The second dimension of the block arrays
   integer, intent(in)  :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in)  :: jje  !< The number of columns of this block in the second dimension
-  logical, intent(in)  :: do_col(nib,njb) !< True for the columns to work on
+  logical, intent(in)  :: do_ij(nib,njb)  !< True for the columns to work on
   integer, intent(in)  :: n0      !< Number of cells in source grid
   integer, intent(in)  :: n1      !< Number of cells in target grid
   real,    intent(in)  :: h1(nib,njb,n1)  !< Target grid widths [H]
@@ -1661,7 +1661,7 @@ subroutine remap_sub_to_tgt_grid_om4_block(nib, njb, iie, jje, do_col, n0, n1, h
   integer :: ii, jj
 
   ! Each target cell has its own range of sub-cells, so the target cells are independent.
-  do concurrent (i1=1:n1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i_sub, dh, duh, u1min, u1max))
+  do concurrent (i1=1:n1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i_sub, dh, duh, u1min, u1max))
     u1min = 0. ! Not necessary, but avoids an overzealous compiler ...
     u1max = 0. ! ... warning about uninitialized variables
     if (h1(ii,jj,i1) > 0.) then
@@ -1844,12 +1844,12 @@ end subroutine interpolate_column
 !> Linearly interpolate interface data, u_src, from a block of columns with thicknesses h_src onto
 !! grids with thicknesses h_dest, as in interpolate_column without masking the edges, with the
 !! interfaces in the last array index.
-subroutine interpolate_column_block(nib, njb, iie, jje, do_col, nsrc, h_src, u_src, ndest, h_dest, u_dest)
+subroutine interpolate_column_block(nib, njb, iie, jje, do_ij, nsrc, h_src, u_src, ndest, h_dest, u_dest)
   integer, intent(in)    :: nib  !< The first dimension of the block arrays
   integer, intent(in)    :: njb  !< The second dimension of the block arrays
   integer, intent(in)    :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in)    :: jje  !< The number of columns of this block in the second dimension
-  logical, intent(in)    :: do_col(nib,njb)           !< True for the columns to work on
+  logical, intent(in)    :: do_ij(nib,njb)            !< True for the columns to work on
   integer, intent(in)    :: nsrc                      !< Number of source cells
   real,    intent(in)    :: h_src(nib,njb,nsrc)       !< Thickness of source cells [H]
   real,    intent(in)    :: u_src(nib,njb,nsrc+1)     !< Values at source cell interfaces [A]
@@ -1868,14 +1868,14 @@ subroutine interpolate_column_block(nib, njb, iie, jje, do_col, nsrc, h_src, u_s
 
   !$omp target enter data map(alloc: x_dest, dh, frac_pos, k_src, ks)
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     ks(ii,jj) = 0
     dh(ii,jj) = 0.
     x_dest(ii,jj) = 0.
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(k_dest))
+  do concurrent (jj=1:jje)
     do k_dest=1,ndest+1
-      do concurrent (ii=1:iie, do_col(ii,jj))
+      do concurrent (ii=1:iie, do_ij(ii,jj))
         do while (dh(ii,jj)<=x_dest(ii,jj) .and. ks(ii,jj)<nsrc)
           ! Move positions pointers forward until the interface that is being sought has been passed.
           x_dest(ii,jj) = x_dest(ii,jj) - dh(ii,jj)
@@ -1895,13 +1895,13 @@ subroutine interpolate_column_block(nib, njb, iie, jje, do_col, nsrc, h_src, u_s
     enddo
   enddo
 
-  do concurrent (k_dest=1:ndest+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(ksl))
+  do concurrent (k_dest=1:ndest+1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(ksl))
     ksl = k_src(ii,jj,k_dest)
     u_dest(ii,jj,k_dest) = (1.0 - frac_pos(ii,jj,k_dest)) * u_src(ii,jj,ksl) + &
                            frac_pos(ii,jj,k_dest) * u_src(ii,jj,ksl+1)
   enddo
 
-  !$omp target exit data map(delete: x_dest, dh, frac_pos, k_src, ks)
+  !$omp target exit data map(release: x_dest, dh, frac_pos, k_src, ks)
 
 end subroutine interpolate_column_block
 
@@ -2555,7 +2555,7 @@ subroutine test_recon_block(test, scheme, n0, niter, h_neglect, use_PCM_cell)
   real :: E(nib,njb,n0,2)  ! Block edge values [A]
   real :: coefs(nib,njb,n0,2) ! Block polynomial coefficients [A]
   real :: slp(nib,njb,n0), mslp(nib,njb,n0) ! Block work arrays [A]
-  logical :: do_col(nib,njb) ! Columns to reconstruct
+  logical :: do_ij(nib,njb)  ! Columns to reconstruct
   logical :: PCM(nib,njb,n0) ! Cells to reconstruct with PCM
   real :: E1(n0,2)         ! Column edge values [A]
   real :: S1(n0,2)         ! Column edge slopes [A H-1]
@@ -2578,15 +2578,15 @@ subroutine test_recon_block(test, scheme, n0, niter, h_neglect, use_PCM_cell)
       do k=2,n0 ; u0(:,:,k) = u0(:,:,k-1) + (u0(:,:,k) - 0.2) ; enddo
     endif
     call random_number(rnd) ; PCM(:,:,:) = use_PCM_cell .and. (rnd(:,:,:) > 0.8)
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
     if (use_PCM_cell) then
-      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_col, h0, u0, coefs, E, &
+      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_ij, h0, u0, coefs, E, &
                                        slp, mslp, iMethod, PCM)
     else
-      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_col, h0, u0, coefs, E, &
+      call build_reconstructions_block(CS, nib, njb, nib-1, njb, n0, do_ij, h0, u0, coefs, E, &
                                        slp, mslp, iMethod)
     endif
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       if (use_PCM_cell) then
         call build_reconstructions_1d(CS, n0, h0(ii,jj,:), u0(ii,jj,:), coefs1, E1, S1, iMethod1, &
                                       h_neglect, h_neglect, PCM_cell=PCM(ii,jj,:))
@@ -2636,7 +2636,7 @@ subroutine test_remap_block(test, scheme, n0, n1, niter, h_neglect, use_PCM_cell
   integer :: itgt_start(nib,njb,n1), itgt_end(nib,njb,n1), isub_src(nib,njb,n0+n1+1) ! Sub-cell indices
   real :: ppoly_E(nib,njb,n0,2), ppoly_coefs(nib,njb,n0,2) ! Reconstructions [A]
   real :: slp(nib,njb,n0), mslp(nib,njb,n0) ! Block work arrays [A]
-  logical :: do_col(nib,njb) ! Columns to remap
+  logical :: do_ij(nib,njb)  ! Columns to remap
   logical :: PCM(nib,njb,n0) ! Cells to reconstruct with PCM
   real :: u1_col(n1)       ! A remapped column [A]
   real :: tot0, tot1       ! Column total thicknesses [H]
@@ -2666,22 +2666,22 @@ subroutine test_remap_block(test, scheme, n0, n1, niter, h_neglect, use_PCM_cell
       do k=2,n0 ; u0(:,:,k) = u0(:,:,k-1) + (u0(:,:,k) - 0.2) ; enddo
     endif
     call random_number(rnd) ; PCM(:,:,:) = use_PCM_cell .and. (rnd(:,:,:) > 0.8)
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
 
-    call intersect_src_tgt_grids_block(nib, njb, nib-1, njb, do_col, n0, h0, n1, h1, h_sub, h0_eff, &
+    call intersect_src_tgt_grids_block(nib, njb, nib-1, njb, do_ij, n0, h0, n1, h1, h_sub, h0_eff, &
                                        isrc_start, isrc_end, isrc_max, itgt_start, itgt_end, isub_src, bad)
     if (bad) error = .true.
     if (use_PCM_cell) then
-      call remapping_core_h_block(CS, nib, njb, nib-1, njb, do_col, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
+      call remapping_core_h_block(CS, nib, njb, nib-1, njb, do_ij, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
                                   isrc_start, isrc_end, isrc_max, itgt_start, itgt_end, isub_src, &
                                   ppoly_E, ppoly_coefs, slp, mslp, u_sub, uh_sub, PCM_cell=PCM)
     else
-      call remapping_core_h_block(CS, nib, njb, nib-1, njb, do_col, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
+      call remapping_core_h_block(CS, nib, njb, nib-1, njb, do_ij, n0, h0, u0, n1, h1, u1, h_sub, h0_eff, &
                                   isrc_start, isrc_end, isrc_max, itgt_start, itgt_end, isub_src, &
                                   ppoly_E, ppoly_coefs, slp, mslp, u_sub, uh_sub)
     endif
 
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       if (use_PCM_cell) then
         call remapping_core_h(CS, n0, h0(ii,jj,:), u0(ii,jj,:), n1, h1(ii,jj,:), u1_col, PCM_cell=PCM(ii,jj,:))
       else
@@ -2716,7 +2716,7 @@ subroutine test_interp_block(test, nsrc, ndest, niter, same_total)
   real :: u1(ndest+1)        ! Column interpolated values [A]
   real :: rnd2(nib,njb)      ! Random numbers [nondim]
   real :: tot0, tot1         ! Column total thicknesses [H]
-  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: do_ij(nib,njb)  ! Columns to work on
   logical :: error           ! Indicates a difference
   integer :: iter, ii, jj, k
   character(len=80) :: label ! Generated label
@@ -2733,10 +2733,10 @@ subroutine test_interp_block(test, nsrc, ndest, niter, same_total)
       enddo ; enddo
     endif
     call random_number(u_src)
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
 
-    call interpolate_column_block(nib, njb, nib-1, njb, do_col, nsrc, h_src, u_src, ndest, h_dest, u_dest)
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    call interpolate_column_block(nib, njb, nib-1, njb, do_ij, nsrc, h_src, u_src, ndest, h_dest, u_dest)
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       call interpolate_column(nsrc, h_src(ii,jj,:), u_src(ii,jj,:), ndest, h_dest(ii,jj,:), u1, .false.)
       if (any(u_dest(ii,jj,:) /= u1(:))) error = .true.
     endif ; enddo ; enddo

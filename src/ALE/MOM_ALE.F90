@@ -1046,7 +1046,7 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
     isrc_start_b, isrc_end_b, isrc_max_b, & ! First, last and thickest sub-cells of each source cell
     itgt_start_b, itgt_end_b                ! First and last sub-cells of each target cell
   integer, dimension(nii,njj,2*SZK_(GV)+1) :: isub_src_b ! Source cell of each sub-cell
-  logical, dimension(nii,njj) :: do_col  ! True for the ocean columns of the block
+  logical, dimension(nii,njj) :: do_ij   ! True for the ocean columns of the block
   logical, dimension(nii,njj,SZK_(GV)) :: PCM_b ! If true, use PCM remapping in a cell
   real, allocatable :: work_conc(:,:,:,:) ! The rate of change of concentrations [Conc T-1 ~> Conc s-1]
   real, allocatable :: work_cont(:,:,:,:) ! The rate of change of cell-integrated tracer
@@ -1083,7 +1083,7 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
 
   !$omp target enter data map(alloc: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
   !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
-  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, PCM_b, work_conc, work_cont)
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_ij, PCM_b, work_conc, work_cont)
   ! Arrays that are already on the device are used there, while the others are copied.
   !$omp target enter data map(to: h_old, h_new)
   if (present(PCM_cell)) then
@@ -1107,7 +1107,7 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
     ! Build the start and final grids
     do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      do_col(ii,jj) = (G%mask2dT(i,j) > 0.)
+      do_ij(ii,jj) = (G%mask2dT(i,j) > 0.)
     enddo
     do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
@@ -1121,7 +1121,7 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
       enddo
     endif
 
-    call intersect_src_tgt_grids_block(nii, njj, iie, jje, do_col, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
+    call intersect_src_tgt_grids_block(nii, njj, iie, jje, do_ij, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
                                        isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, itgt_end_b, &
                                        isub_src_b, bad)
     if (bad) call MOM_error(FATAL, "MOM_ALE, ALE_remap_tracers: intersect_src_tgt_grids: THIS SHOULD NEVER HAPPEN!")
@@ -1129,17 +1129,17 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
     do m=1,ntr ! For each tracer
       call gather_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, Reg%Tr(m)%t, u0_b)
       if (present(PCM_cell)) then
-        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_ij, nz, h0_b, u0_b, nz, h1_b, u1_b, &
                                     h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
                                     itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
                                     u_sub_b, uh_sub_b, PCM_cell=PCM_b)
       else
-        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+        call remapping_core_h_block(CS%remapCS, nii, njj, iie, jje, do_ij, nz, h0_b, u0_b, nz, h1_b, u1_b, &
                                     h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
                                     itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
                                     u_sub_b, uh_sub_b)
       endif
-      call finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b, h1_b, u0_b, u1_b, &
+      call finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_ij, h0_b, h1_b, u0_b, u1_b, &
                                Reg%Tr(m)%conc_underflow, Idt, (iconc(m) > 0), (icont(m) > 0), Reg%Tr(m)%t, &
                                work_conc(:,:,:,max(iconc(m),1)), work_cont(:,:,:,max(icont(m),1)))
     enddo
@@ -1176,9 +1176,9 @@ subroutine ALE_remap_tracers_block(CS, G, GV, h_old, h_new, Reg, nii, njj, dt, P
     endif
   enddo
 
-  !$omp target exit data map(delete: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp target exit data map(release: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
   !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
-  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, PCM_b, work_conc, work_cont)
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_ij, PCM_b, work_conc, work_cont)
   deallocate(work_conc, work_cont, iconc, icont)
 
 end subroutine ALE_remap_tracers_block
@@ -1207,7 +1207,7 @@ end subroutine gather_tracer_block
 
 !> Underflows tiny concentrations, stores the tendency diagnostics and copies the remapped concentrations
 !! of a block of columns back into a tracer, as in the column loop of ALE_remap_tracers.
-subroutine finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b, h1_b, u0_b, u1_b, &
+subroutine finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_ij, h0_b, h1_b, u0_b, u1_b, &
                                conc_underflow, Idt, do_conc, do_cont, tr, work_conc, work_cont)
   type(ocean_grid_type),   intent(in) :: G   !< Ocean grid structure
   type(verticalGrid_type), intent(in) :: GV  !< Ocean vertical grid structure
@@ -1217,7 +1217,7 @@ subroutine finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b
   integer,                 intent(in) :: njj !< The j block size
   integer,                 intent(in) :: iie !< The number of columns of this block in the i direction
   integer,                 intent(in) :: jje !< The number of columns of this block in the j direction
-  logical, dimension(nii,njj),       intent(in)    :: do_col !< True for the ocean columns of the block
+  logical, dimension(nii,njj),       intent(in)    :: do_ij  !< True for the ocean columns of the block
   real, dimension(nii,njj,SZK_(GV)), intent(in)    :: h0_b   !< Source grid thicknesses [H ~> m or kg m-2]
   real, dimension(nii,njj,SZK_(GV)), intent(in)    :: h1_b   !< Target grid thicknesses [H ~> m or kg m-2]
   real, dimension(nii,njj,SZK_(GV)), intent(in)    :: u0_b   !< Concentrations on the source grid [CU ~> Conc]
@@ -1236,7 +1236,7 @@ subroutine finish_tracer_block(G, GV, isb, jsb, nii, njj, iie, jje, do_col, h0_b
   ! Local variables
   integer :: i, j, k, ii, jj
 
-  do concurrent (k=1:GV%ke, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+  do concurrent (k=1:GV%ke, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
     i = isb + ii - 1 ; j = jsb + jj - 1
 
     ! Possibly underflow any very tiny tracer concentrations to 0.  Note that this is not conservative!
@@ -1446,7 +1446,7 @@ subroutine ALE_remap_set_h_vel_partial(CS, G, GV, h_mask, h_u, h_v)
     enddo
   enddo
 
-  !$omp target exit data map(delete: h_tot, h_rsum_u, h_rsum_v)
+  !$omp target exit data map(release: h_tot, h_rsum_u, h_rsum_v)
 
 end subroutine ALE_remap_set_h_vel_partial
 
@@ -1595,7 +1595,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
                              G%mask2dCu, h_old_u, h_new_u, u, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_u2>0), I_dt, du2h_tot)
     !$omp target update from(du2h_tot) if(CS%id_remap_delta_integ_u2>0)
-    !$omp target exit data map(from: u) map(release: h_old_u, h_new_u) map(delete: du2h_tot)
+    !$omp target exit data map(from: u) map(release: h_old_u, h_new_u, du2h_tot)
   else
     !$OMP parallel do default(shared) private(h1,h2,u_src,h_mask_vel,u_tgt, &
     !$OMP                                     u_bt,ke_c_src,ke_c_tgt,rescale_coef, &
@@ -1683,7 +1683,7 @@ subroutine ALE_remap_velocities(CS, G, GV, h_old_u, h_old_v, h_new_u, h_new_v, u
                              G%mask2dCv, h_old_v, h_new_v, v, (variance_option .and. CS%conserve_ke), &
                              (CS%id_remap_delta_integ_v2>0), I_dt, dv2h_tot)
     !$omp target update from(dv2h_tot) if(CS%id_remap_delta_integ_v2>0)
-    !$omp target exit data map(from: v) map(release: h_old_v, h_new_v) map(delete: dv2h_tot)
+    !$omp target exit data map(from: v) map(release: h_old_v, h_new_v, dv2h_tot)
   else
     !$OMP parallel do default(shared) private(h1,h2,v_src,h_mask_vel,v_tgt, &
     !$OMP                                     v_bt,ke_c_src,ke_c_tgt,rescale_coef, &
@@ -1773,8 +1773,10 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
   integer,                 intent(in) :: ie  !< The last i index of the velocity points to remap
   integer,                 intent(in) :: js  !< The first j index of the velocity points to remap
   integer,                 intent(in) :: je  !< The last j index of the velocity points to remap
-  integer,                 intent(in) :: nib !< The i block size
-  integer,                 intent(in) :: njb !< The j block size
+  integer,                 intent(in) :: nib !< The i block size, at the staggering of the velocity
+                                             !! points being worked on
+  integer,                 intent(in) :: njb !< The j block size, at the staggering of the velocity
+                                             !! points being worked on
   real, dimension(isd:ied,jsd:jed),          intent(in)    :: mask  !< The land mask at velocity points [nondim]
   real, dimension(isd:ied,jsd:jed,SZK_(GV)), intent(in)    :: h_old !< Source grid thickness at velocity
                                                                     !! points [H ~> m or kg m-2]
@@ -1807,7 +1809,7 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
     isrc_start_b, isrc_end_b, isrc_max_b, & ! First, last and thickest sub-cells of each source cell
     itgt_start_b, itgt_end_b                ! First and last sub-cells of each target cell
   integer, dimension(nib,njb,2*SZK_(GV)+1) :: isub_src_b ! Source cell of each sub-cell
-  logical, dimension(nib,njb) :: do_col  ! True for the ocean columns of the block
+  logical, dimension(nib,njb) :: do_ij   ! True for the ocean columns of the block
   real, dimension(nib,njb) :: &
     u2h_tot, &    ! The vertically integrated vel**2 [H L2 T-2 ~> m3 s-2 or kg s-2]
     u_bt, &       ! Depth-averaged velocity [L T-1 ~> m s-1]
@@ -1829,7 +1831,7 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
 
   !$omp target enter data map(alloc: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
   !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
-  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, u2h_tot, u_bt, h2_tot, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_ij, u2h_tot, u_bt, h2_tot, &
   !$omp                              ke_c_src, ke_c_tgt, rescale_coef, h_from_bot, near_bot)
 
   do jsb=js,je,njb ; do isb=is,ie,nib
@@ -1839,7 +1841,7 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
     ! Make a block copy of the start and final grids and the source velocity
     do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      do_col(ii,jj) = (mask(i,j) > 0.)
+      do_ij(ii,jj) = (mask(i,j) > 0.)
     enddo
     do concurrent (k=1:nz, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
@@ -1849,23 +1851,23 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
     enddo
 
     if (do_ke_diag) then
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
         u2h_tot(ii,jj) = 0.
       enddo
-      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do concurrent (jj=1:jje)
         do k=1,nz
-          do concurrent (ii=1:iie, do_col(ii,jj))
+          do concurrent (ii=1:iie, do_ij(ii,jj))
             u2h_tot(ii,jj) = u2h_tot(ii,jj) - h0_b(ii,jj,k) * (u0_b(ii,jj,k)**2)
           enddo
         enddo
       enddo
     endif
 
-    call intersect_src_tgt_grids_block(nib, njb, iie, jje, do_col, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
+    call intersect_src_tgt_grids_block(nib, njb, iie, jje, do_ij, nz, h0_b, nz, h1_b, h_sub_b, h0_eff_b, &
                                        isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, itgt_end_b, &
                                        isub_src_b, bad)
     if (bad) call MOM_error(FATAL, "MOM_ALE, ALE_remap_velocities: intersect_src_tgt_grids: THIS SHOULD NEVER HAPPEN!")
-    call remapping_core_h_block(CS%vel_remapCS, nib, njb, iie, jje, do_col, nz, h0_b, u0_b, nz, h1_b, u1_b, &
+    call remapping_core_h_block(CS%vel_remapCS, nib, njb, iie, jje, do_ij, nz, h0_b, u0_b, nz, h1_b, u1_b, &
                                 h_sub_b, h0_eff_b, isrc_start_b, isrc_end_b, isrc_max_b, itgt_start_b, &
                                 itgt_end_b, isub_src_b, ppoly_E_b, ppoly_coefs_b, slp_b, mslp_b, &
                                 u_sub_b, uh_sub_b)
@@ -1875,25 +1877,25 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
       ! Assumes total depth doesn't change during remap, and
       ! that \int u(z) dz doesn't change during remap.
       ! First get barotropic component
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
         u_bt(ii,jj) = 0.0 ; h2_tot(ii,jj) = 0.0
         ke_c_src(ii,jj) = 0.0 ; ke_c_tgt(ii,jj) = 0.0
       enddo
-      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do concurrent (jj=1:jje)
         do k=1,nz
-          do concurrent (ii=1:iie, do_col(ii,jj))
+          do concurrent (ii=1:iie, do_ij(ii,jj))
             u_bt(ii,jj) = u_bt(ii,jj) + h1_b(ii,jj,k) * u1_b(ii,jj,k) ! Dimensions [H L T-1 ~> m2 s-1 or kg m-1 s-1]
             h2_tot(ii,jj) = h2_tot(ii,jj) + h1_b(ii,jj,k)
           enddo
         enddo
       enddo
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
         u_bt(ii,jj) = u_bt(ii,jj) / (h2_tot(ii,jj) + GV%H_subroundoff) ! Dimensions return to [L T-1 ~> m s-1]
       enddo
       ! Next get baroclinic ke = \int (u-u_bt)^2 from source and target
-      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do concurrent (jj=1:jje)
         do k=1,nz
-          do concurrent (ii=1:iie, do_col(ii,jj))
+          do concurrent (ii=1:iie, do_ij(ii,jj))
             ke_c_src(ii,jj) = ke_c_src(ii,jj) + h0_b(ii,jj,k) * (u0_b(ii,jj,k) - u_bt(ii,jj))**2
             ke_c_tgt(ii,jj) = ke_c_tgt(ii,jj) + h1_b(ii,jj,k) * (u1_b(ii,jj,k) - u_bt(ii,jj))**2
           enddo
@@ -1904,27 +1906,27 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
       ! correction cannot amplify the baroclinic part of velocity by more
       ! than 25%. This threshold is somewhat arbitrary. It was added to
       ! prevent unstable behavior when the amplification factor is large.
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
         if (ke_c_src(ii,jj) < 1.5625 * ke_c_tgt(ii,jj)) then
           rescale_coef(ii,jj) = sqrt(ke_c_src(ii,jj) / ke_c_tgt(ii,jj))
         else
           rescale_coef(ii,jj) = 1.25
         endif
       enddo
-      do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_ij(ii,jj))
         u1_b(ii,jj,k) = u_bt(ii,jj) + rescale_coef(ii,jj) * (u1_b(ii,jj,k) - u_bt(ii,jj))
       enddo
     endif
 
     if (do_ke_diag) then
-      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do concurrent (jj=1:jje)
         do k=1,nz
-          do concurrent (ii=1:iie, do_col(ii,jj))
+          do concurrent (ii=1:iie, do_ij(ii,jj))
             u2h_tot(ii,jj) = u2h_tot(ii,jj) + h1_b(ii,jj,k) * (u1_b(ii,jj,k)**2)
           enddo
         enddo
       enddo
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
         i = isb + ii - 1 ; j = jsb + jj - 1
         du2h_tot(i,j) = u2h_tot(ii,jj) * I_dt
       enddo
@@ -1932,13 +1934,13 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
 
     if (mask_bottom) then
       ! Zero out velocities in thin layers near the seafloor, as in mask_near_bottom_vel
-      do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+      do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
         h_from_bot(ii,jj) = 0.0
         near_bot(ii,jj) = .true.
       enddo
-      do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+      do concurrent (jj=1:jje)
         do k=nz,1,-1
-          do concurrent (ii=1:iie, do_col(ii,jj) .and. near_bot(ii,jj))
+          do concurrent (ii=1:iie, do_ij(ii,jj) .and. near_bot(ii,jj))
             h_from_bot(ii,jj) = h_from_bot(ii,jj) + h1_b(ii,jj,k)
             if (h_from_bot(ii,jj) > h_BBL) then
               near_bot(ii,jj) = .false.
@@ -1952,15 +1954,15 @@ subroutine ALE_remap_vel_block(CS, GV, isd, ied, jsd, jed, is, ie, js, je, nib, 
     endif
 
     ! Copy the new velocities back to the 3-d array
-    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       vel(i,j,k) = u1_b(ii,jj,k)
     enddo
   enddo ; enddo
 
-  !$omp target exit data map(delete: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
+  !$omp target exit data map(release: h0_b, h1_b, u0_b, u1_b, h0_eff_b, slp_b, mslp_b, ppoly_E_b, ppoly_coefs_b, &
   !$omp                              h_sub_b, u_sub_b, uh_sub_b, isrc_start_b, isrc_end_b, isrc_max_b, &
-  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_col, u2h_tot, u_bt, h2_tot, &
+  !$omp                              itgt_start_b, itgt_end_b, isub_src_b, do_ij, u2h_tot, u_bt, h2_tot, &
   !$omp                              ke_c_src, ke_c_tgt, rescale_coef, h_from_bot, near_bot)
 
 end subroutine ALE_remap_vel_block
@@ -2007,13 +2009,13 @@ subroutine ALE_remap_interface_vals_block(G, GV, h_old, h_new, int_val, nii, njj
   real :: val_tgt(nii,njj,SZK_(GV)+1)  ! Columns of interface values on the target grid [A]
   real :: h_src(nii,njj,SZK_(GV))      ! Columns of source grid layer thicknesses [H ~> m or kg m-2]
   real :: h_tgt(nii,njj,SZK_(GV))      ! Columns of target grid layer thicknesses [H ~> m or kg m-2]
-  logical :: do_col(nii,njj)           ! True for the ocean columns of the block
+  logical :: do_ij(nii,njj)            ! True for the ocean columns of the block
   integer :: i, j, k, nz, is, ie, js, je, isb, ieb, jsb, jeb, iie, jje, ii, jj
 
   nz = GV%ke
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
-  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, do_col)
+  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, do_ij)
 
   do jsb=js,je,njj ; do isb=is,ie,nii
     ieb = min(isb + nii - 1, ie) ; jeb = min(jsb + njj - 1, je)
@@ -2021,27 +2023,27 @@ subroutine ALE_remap_interface_vals_block(G, GV, h_old, h_new, int_val, nii, njj
 
     do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      do_col(ii,jj) = (G%mask2dT(i,j)>0.)
+      do_ij(ii,jj) = (G%mask2dT(i,j)>0.)
     enddo
-    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       h_src(ii,jj,k) = h_old(i,j,k)
       h_tgt(ii,jj,k) = h_new(i,j,k)
     enddo
-    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       val_src(ii,jj,K) = int_val(i,j,K)
     enddo
 
-    call interpolate_column_block(nii, njj, iie, jje, do_col, nz, h_src, val_src, nz, h_tgt, val_tgt)
+    call interpolate_column_block(nii, njj, iie, jje, do_ij, nz, h_src, val_src, nz, h_tgt, val_tgt)
 
-    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (K=1:nz+1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       int_val(i,j,K) = val_tgt(ii,jj,K)
     enddo
   enddo ; enddo
 
-  !$omp target exit data map(delete: val_src, val_tgt, h_src, h_tgt, do_col)
+  !$omp target exit data map(release: val_src, val_tgt, h_src, h_tgt, do_ij)
 
 end subroutine ALE_remap_interface_vals_block
 
@@ -2088,12 +2090,12 @@ subroutine ALE_remap_vertex_vals_block(G, GV, h_old, h_new, vert_val, nIIB, nJJB
   real :: h_src(nIIB,nJJB,SZK_(GV))      ! Columns of source grid layer thicknesses [H ~> m or kg m-2]
   real :: h_tgt(nIIB,nJJB,SZK_(GV))      ! Columns of target grid layer thicknesses [H ~> m or kg m-2]
   real :: I_mask_sum(nIIB,nJJB)          ! The inverse of the tracer point masks surrounding a corner [nondim]
-  logical :: do_col(nIIB,nJJB)           ! True for the vertices with an adjacent ocean point
+  logical :: do_ij(nIIB,nJJB)            ! True for the vertices with an adjacent ocean point
   integer :: I, J, k, nz, IsbB, IebB, JsbB, JebB, IIe, JJe, II, JJ
 
   nz = GV%ke
 
-  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_col)
+  !$omp target enter data map(alloc: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_ij)
 
   do JsbB=G%JscB,G%JecB,nJJB ; do IsbB=G%IscB,G%IecB,nIIB
     IebB = min(IsbB + nIIB - 1, G%IecB) ; JebB = min(JsbB + nJJB - 1, G%JecB)
@@ -2101,33 +2103,33 @@ subroutine ALE_remap_vertex_vals_block(G, GV, h_old, h_new, vert_val, nIIB, nJJB
 
     do concurrent (JJ=1:JJe, II=1:IIe) DO_LOCALITY(local(I, J))
       I = IsbB + II - 1 ; J = JsbB + JJ - 1
-      do_col(II,JJ) = ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) > 0.0 )
+      do_ij(II,JJ) = ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) > 0.0 )
       I_mask_sum(II,JJ) = 0.0
-      if (do_col(II,JJ)) &
+      if (do_ij(II,JJ)) &
         I_mask_sum(II,JJ) = 1.0 / ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
                                    (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)))
     enddo
-    do concurrent (k=1:nz, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+    do concurrent (k=1:nz, JJ=1:JJe, II=1:IIe, do_ij(II,JJ)) DO_LOCALITY(local(I, J))
       I = IsbB + II - 1 ; J = JsbB + JJ - 1
       h_src(II,JJ,k) = ((G%mask2dT(i,j) * h_old(i,j,k) + G%mask2dT(i+1,j+1) * h_old(i+1,j+1,k)) + &
           (G%mask2dT(i+1,j) * h_old(i+1,j,k) + G%mask2dT(i,j+1) * h_old(i,j+1,k)) ) * I_mask_sum(II,JJ)
       h_tgt(II,JJ,k) = ((G%mask2dT(i,j) * h_new(i,j,k) + G%mask2dT(i+1,j+1) * h_new(i+1,j+1,k)) + &
           (G%mask2dT(i+1,j) * h_new(i+1,j,k) + G%mask2dT(i,j+1) * h_new(i,j+1,k)) ) * I_mask_sum(II,JJ)
     enddo
-    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_ij(II,JJ)) DO_LOCALITY(local(I, J))
       I = IsbB + II - 1 ; J = JsbB + JJ - 1
       val_src(II,JJ,K) = vert_val(I,J,K)
     enddo
 
-    call interpolate_column_block(nIIB, nJJB, IIe, JJe, do_col, nz, h_src, val_src, nz, h_tgt, val_tgt)
+    call interpolate_column_block(nIIB, nJJB, IIe, JJe, do_ij, nz, h_src, val_src, nz, h_tgt, val_tgt)
 
-    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_col(II,JJ)) DO_LOCALITY(local(I, J))
+    do concurrent (K=1:nz+1, JJ=1:JJe, II=1:IIe, do_ij(II,JJ)) DO_LOCALITY(local(I, J))
       I = IsbB + II - 1 ; J = JsbB + JJ - 1
       vert_val(I,J,K) = val_tgt(II,JJ,K)
     enddo
   enddo ; enddo
 
-  !$omp target exit data map(delete: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_col)
+  !$omp target exit data map(release: val_src, val_tgt, h_src, h_tgt, I_mask_sum, do_ij)
 
 end subroutine ALE_remap_vertex_vals_block
 

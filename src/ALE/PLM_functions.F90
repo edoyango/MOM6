@@ -260,14 +260,14 @@ end subroutine PLM_reconstruction
 
 !> Reconstruction by linear polynomials within each cell of a block of columns, as in
 !! PLM_reconstruction, with the cells in the last array index.
-subroutine PLM_reconstruction_block(nib, njb, iie, jje, N, do_col, h, u, edge_values, ppoly_coef, &
+subroutine PLM_reconstruction_block(nib, njb, iie, jje, N, do_ij, h, u, edge_values, ppoly_coef, &
                                     slp, mslp, h_neglect)
   integer, intent(in) :: nib  !< The first dimension of the block arrays
   integer, intent(in) :: njb  !< The second dimension of the block arrays
   integer, intent(in) :: iie  !< The number of columns of this block in the first dimension
   integer, intent(in) :: jje  !< The number of columns of this block in the second dimension
   integer, intent(in) :: N    !< Number of cells
-  logical, dimension(nib,njb),     intent(in)    :: do_col !< True for the columns to reconstruct
+  logical, dimension(nib,njb),     intent(in)    :: do_ij  !< True for the columns to reconstruct
   real,    dimension(nib,njb,N),   intent(in)    :: h    !< cell widths [H]
   real,    dimension(nib,njb,N),   intent(in)    :: u    !< cell averages in arbitrary units [A]
   real,    dimension(nib,njb,N,2), intent(inout) :: edge_values !< edge values of piecewise polynomials,
@@ -294,13 +294,13 @@ subroutine PLM_reconstruction_block(nib, njb, iie, jje, N, do_col, h, u, edge_va
 
   ! The interior loops are skipped when they are empty because nvfortran's implicit copies of their
   ! k-1:k+1 array sections then fail.
-  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj))
+  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_ij(ii,jj))
     slp(ii,jj,k) = PLM_slope_wa(h(ii,jj,k-1), h(ii,jj,k), h(ii,jj,k+1), h_neglect, &
                                 u(ii,jj,k-1), u(ii,jj,k), u(ii,jj,k+1))
   enddo ; endif
 
   ! Boundary cells use PCM.
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     slp(ii,jj,1) = 0. ; slp(ii,jj,N) = 0.
     mslp(ii,jj,1) = 0. ; mslp(ii,jj,N) = 0.
     edge_values(ii,jj,1,1) = u(ii,jj,1)
@@ -313,13 +313,13 @@ subroutine PLM_reconstruction_block(nib, njb, iie, jje, N, do_col, h, u, edge_va
     ppoly_coef(ii,jj,N,2) = 0.
   enddo
 
-  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj))
+  if (N > 2) then ; do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_ij(ii,jj))
     mslp(ii,jj,k) = PLM_monotonized_slope( u(ii,jj,k-1), u(ii,jj,k), u(ii,jj,k+1), &
                                            slp(ii,jj,k-1), slp(ii,jj,k), slp(ii,jj,k+1) )
   enddo ; endif
 
   if (N > 2) then
-    do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(slope, u_l, u_r, edge, e_r))
+    do concurrent (k=2:N-1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(slope, u_l, u_r, edge, e_r))
       slope = mslp(ii,jj,k)
       u_l = u(ii,jj,k) - 0.5 * slope ! Left edge value of cell k
       u_r = u(ii,jj,k) + 0.5 * slope ! Right edge value of cell k

@@ -1417,7 +1417,7 @@ subroutine regridding_main_block(CS, G, GV, h, tv, h_new, dzInterface, Z_to_H)
     enddo
   enddo
 
-  !$omp target exit data map(from: h_new, dzInterface) map(release: h) map(delete: nom_depth_H)
+  !$omp target exit data map(from: h_new, dzInterface) map(release: h, nom_depth_H)
 
   if (neg_h) call MOM_error(FATAL, "regridding_main: negative thickness encountered.")
 
@@ -1459,7 +1459,7 @@ subroutine nominal_depth_nonBous(G, GV, h, SpV_avg, nom_depth_H)
     endif
   enddo
 
-  !$omp target exit data map(release: SpV_avg) map(delete: tot_h, tot_dz)
+  !$omp target exit data map(release: SpV_avg, tot_h, tot_dz)
 
 end subroutine nominal_depth_nonBous
 
@@ -1745,13 +1745,13 @@ end subroutine filtered_grid_motion
 
 !> Returns the change in interface positions of a block of columns based on the old and new
 !! interface positions, as in filtered_grid_motion, with the interfaces in the last array index.
-subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_col, nk, z_old, z_new, dz_g, bad)
+subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_ij, nk, z_old, z_new, dz_g, bad)
   type(regridding_CS), intent(in) :: CS  !< Regridding control structure
   integer,             intent(in) :: nib !< The first dimension of the block arrays
   integer,             intent(in) :: njb !< The second dimension of the block arrays
   integer,             intent(in) :: iie !< The number of columns of this block in the first dimension
   integer,             intent(in) :: jje !< The number of columns of this block in the second dimension
-  logical, dimension(nib,njb),         intent(in)    :: do_col !< True for the columns to work on
+  logical, dimension(nib,njb),         intent(in)    :: do_ij  !< True for the columns to work on
   integer,                             intent(in)    :: nk    !< Number of cells in source grid
   real,    dimension(nib,njb,nk+1),    intent(in)    :: z_old !< Old grid position [H ~> m or kg m-2]
   real,    dimension(nib,njb,CS%nk+1), intent(in)    :: z_new !< New grid position before filtering
@@ -1789,7 +1789,7 @@ subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_col, nk, z_old,
 
   !$omp target enter data map(alloc: sgn, massless, bad_col)
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     bad_col(ii,jj) = .false. ; massless(ii,jj) = .false. ; sgn(ii,jj) = 1.0
     if ((z_old(ii,jj,nk+1) - z_old(ii,jj,1)) * (z_new(ii,jj,nk_new+1) - z_new(ii,jj,1)) < 0.0) then
       bad_col(ii,jj) = .true. ; massless(ii,jj) = .true.
@@ -1814,7 +1814,7 @@ subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_col, nk, z_old,
   Aq = 0.5*(Iwtd - 1.0)
 
   ! The interfaces of a column are independent, given its sign convention.
-  do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) &
+  do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) &
       DO_LOCALITY(local(z_old_k, dz_tgt, zr1, Int_zs, Int_zd, dz0, z0, F0, Bq))
     if (massless(ii,jj) .or. (k == 1)) then
       dz_g(ii,jj,k) = 0.0
@@ -1872,12 +1872,12 @@ subroutine filtered_grid_motion_block(CS, nib, njb, iie, jje, do_col, nk, z_old,
   enddo
 
   any_bad = .false.
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad))
     any_bad = any_bad .or. bad_col(ii,jj)
   enddo
   bad = any_bad
 
-  !$omp target exit data map(delete: sgn, massless, bad_col)
+  !$omp target exit data map(release: sgn, massless, bad_col)
 
 end subroutine filtered_grid_motion_block
 
@@ -2023,7 +2023,7 @@ subroutine build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, n
   real, dimension(nii,njj,CS%nk+1) :: dz_b  ! The change in interface depth in the block [H ~> m or kg m-2]
   real, dimension(nii,njj) :: nominalDepth  ! The depths of the columns [H ~> m or kg m-2]
   real, dimension(nii,njj) :: totalThickness ! The total thicknesses of the columns [H ~> m or kg m-2]
-  logical, dimension(nii,njj) :: do_col     ! True for the ocean columns of the block
+  logical, dimension(nii,njj) :: do_ij      ! True for the ocean columns of the block
   logical :: bad, bad_roundoff, bad_repeat  ! Error flags from the block routines
   logical :: filter_motion ! If true, filter the grid motion
   integer :: i, j, k, nz, nk_new, is, ie, js, je, isb, ieb, jsb, jeb, iie, jje, ii, jj
@@ -2032,7 +2032,7 @@ subroutine build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, n
   is = G%isc-1 ; ie = G%iec+1 ; js = G%jsc-1 ; je = G%jec+1
   filter_motion = CS%use_depth_based_time_filter .or. (CS%old_grid_weight > 0.)
 
-  !$omp target enter data map(alloc: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_col)
+  !$omp target enter data map(alloc: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_ij)
 
   do jsb=js,je,njj ; do isb=is,ie,nii
     ieb = min(isb + nii - 1, ie) ; jeb = min(jsb + njj - 1, je)
@@ -2040,65 +2040,65 @@ subroutine build_zstar_grid_block(CS, G, GV, h, nom_depth_H, dzInterface, nii, n
 
     do concurrent (jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      do_col(ii,jj) = .not.(G%mask2dT(i,j)==0.)
+      do_ij(ii,jj) = .not.(G%mask2dT(i,j)==0.)
       nominalDepth(ii,jj) = nom_depth_H(i,j)
       totalThickness(ii,jj) = 0.0
     enddo
     do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
-      if (do_col(ii,jj)) then
+      if (do_ij(ii,jj)) then
         dz_b(ii,jj,k) = dzInterface(i,j,k)
       else
         dzInterface(i,j,k) = 0.
       endif
     enddo
-    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (k=1:nz, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       h_b(ii,jj,k) = h(i,j,k)
     enddo
 
-    do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+    do concurrent (jj=1:jje)
       do k = 1,nz
-        do concurrent (ii=1:iie, do_col(ii,jj))
+        do concurrent (ii=1:iie, do_ij(ii,jj))
           totalThickness(ii,jj) = totalThickness(ii,jj) + h_b(ii,jj,k)
         enddo
       enddo
     enddo
 
-    do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+    do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
       zOld(ii,jj,nz+1) = - nominalDepth(ii,jj)
     enddo
-    do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+    do concurrent (jj=1:jje)
       do k = nz,1,-1
-        do concurrent (ii=1:iie, do_col(ii,jj))
+        do concurrent (ii=1:iie, do_ij(ii,jj))
           zOld(ii,jj,k) = zOld(ii,jj,k+1) + h_b(ii,jj,k)
         enddo
       enddo
     enddo
 
-    call build_zstar_block(CS%zlike_CS, nii, njj, iie, jje, do_col, nominalDepth, totalThickness, zNew, &
+    call build_zstar_block(CS%zlike_CS, nii, njj, iie, jje, do_ij, nominalDepth, totalThickness, zNew, &
                            zScale=zScale)
 
     if (filter_motion) then
-      call filtered_grid_motion_block(CS, nii, njj, iie, jje, do_col, nz, zOld, zNew, dz_b, bad)
+      call filtered_grid_motion_block(CS, nii, njj, iie, jje, do_ij, nz, zOld, zNew, dz_b, bad)
       if (bad) call MOM_error(FATAL, "filtered_grid_motion: z_old and z_new use different sign conventions.")
     endif
 
     if (CS%use_adjust_interface_motion) then
-      call adjust_interface_motion_block(CS, nii, njj, iie, jje, do_col, nz, h_b, dz_b, bad_roundoff, bad_repeat)
+      call adjust_interface_motion_block(CS, nii, njj, iie, jje, do_ij, nz, h_b, dz_b, bad_roundoff, bad_repeat)
       if (bad_roundoff) call MOM_error( FATAL, 'MOM_regridding: adjust_interface_motion() - '//&
                                         'implied h<0 is larger than roundoff!')
       if (bad_repeat) call MOM_error( FATAL, 'MOM_regridding: adjust_interface_motion() - '//&
                                       'Repeated adjustment for roundoff h<0 failed!')
     endif
 
-    do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(i, j))
+    do concurrent (k=1:nk_new+1, jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(i, j))
       i = isb + ii - 1 ; j = jsb + jj - 1
       dzInterface(i,j,k) = dz_b(ii,jj,k)
     enddo
   enddo ; enddo
 
-  !$omp target exit data map(delete: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_col)
+  !$omp target exit data map(release: h_b, zOld, zNew, dz_b, nominalDepth, totalThickness, do_ij)
 
 end subroutine build_zstar_grid_block
 
@@ -2602,14 +2602,14 @@ end subroutine adjust_interface_motion
 
 !> Adjusts dz_int of a block of columns to ensure non-zero minimum thicknesses, as in
 !! adjust_interface_motion, with the interfaces in the last array index.
-subroutine adjust_interface_motion_block(CS, nib, njb, iie, jje, do_col, nk, h_old, dz_int, &
+subroutine adjust_interface_motion_block(CS, nib, njb, iie, jje, do_ij, nk, h_old, dz_int, &
                                          bad_roundoff, bad_repeat)
   type(regridding_CS), intent(in) :: CS  !< Regridding control structure
   integer,             intent(in) :: nib !< The first dimension of the block arrays
   integer,             intent(in) :: njb !< The second dimension of the block arrays
   integer,             intent(in) :: iie !< The number of columns of this block in the first dimension
   integer,             intent(in) :: jje !< The number of columns of this block in the second dimension
-  logical, dimension(nib,njb),         intent(in)    :: do_col !< True for the columns to work on
+  logical, dimension(nib,njb),         intent(in)    :: do_ij  !< True for the columns to work on
   integer,                             intent(in)    :: nk     !< Number of layers in h_old
   real,    dimension(nib,njb,nk),      intent(in)    :: h_old  !< Layer thicknesses on the old grid
                                                                !! [H ~> m or kg m-2]
@@ -2636,28 +2636,28 @@ subroutine adjust_interface_motion_block(CS, nib, njb, iie, jje, do_col, nk, h_o
 
   !$omp target enter data map(alloc: h_err, bad_col, rep_col)
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     h_err(ii,jj) = 0. ; bad_col(ii,jj) = .false. ; rep_col(ii,jj) = .false.
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+  do concurrent (jj=1:jje)
     do k = 1, min(nk_new,nk)
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(h_new))
         h_err(ii,jj) = h_err(ii,jj) + max( h_old(ii,jj,k), abs(dz_int(ii,jj,k)), abs(dz_int(ii,jj,k+1)) )*eps
         h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
         if (h_new < -3.0*h_err(ii,jj)) bad_col(ii,jj) = .true.
       enddo
     enddo
     do k = nk+1, nk_new
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(h_new))
         h_err(ii,jj) = h_err(ii,jj) + max( abs(dz_int(ii,jj,k)), abs(dz_int(ii,jj,k+1)) )*eps
         h_new = ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
         if (h_new < -3.0*h_err(ii,jj)) bad_col(ii,jj) = .true.
       enddo
     enddo
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+  do concurrent (jj=1:jje)
     do k = min(nk_new,nk),2,-1
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(h_new))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(h_new))
         h_new = h_old(ii,jj,k) + ( dz_int(ii,jj,k) - dz_int(ii,jj,k+1) )
         if (h_new<min_thickness) & ! Implies next h_new = min_thickness
             dz_int(ii,jj,k) = ( dz_int(ii,jj,k+1) - h_old(ii,jj,k) ) + min_thickness
@@ -2671,13 +2671,13 @@ subroutine adjust_interface_motion_block(CS, nib, njb, iie, jje, do_col, nk, h_o
   enddo
 
   any_bad = .false. ; any_rep = .false.
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad, any_rep))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(reduce(.or.:any_bad, any_rep))
     any_bad = any_bad .or. bad_col(ii,jj)
     any_rep = any_rep .or. rep_col(ii,jj)
   enddo
   bad_roundoff = any_bad ; bad_repeat = any_rep
 
-  !$omp target exit data map(delete: h_err, bad_col, rep_col)
+  !$omp target exit data map(release: h_err, bad_col, rep_col)
 
 end subroutine adjust_interface_motion_block
 
@@ -3573,7 +3573,7 @@ subroutine test_zstar_block(test, nk, niter, use_zScale)
   real :: zI(nib,njb,nk+1)   ! Block interface positions [Z ~> m]
   real :: zI1(nk+1)          ! Column interface positions [Z ~> m]
   real :: zScale             ! A scaling factor for the resolution [nondim]
-  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: do_ij(nib,njb)  ! Columns to work on
   logical :: error           ! Indicates a difference
   integer :: iter, ii, jj
   character(len=64) :: label ! Generated label
@@ -3588,14 +3588,14 @@ subroutine test_zstar_block(test, nk, niter, use_zScale)
     call random_number(depth) ; depth(:,:) = 1.0 + 200.0*depth(:,:) ! Some columns are shallow enough to inflate
     call random_number(rnd) ; tot(:,:) = depth(:,:) * (1.0 + 0.2*(rnd(:,:) - 0.5))
     where (rnd(:,:) < 0.05) tot(:,:) = 0.0 ! Massless columns
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
 
     if (use_zScale) then
-      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_col, depth, tot, zI, zScale=zScale)
+      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_ij, depth, tot, zI, zScale=zScale)
     else
-      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_col, depth, tot, zI)
+      call build_zstar_block(zCS, nib, njb, nib-1, njb, do_ij, depth, tot, zI)
     endif
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       if (use_zScale) then
         call build_zstar_column(zCS, depth(ii,jj), tot(ii,jj), zI1, zScale=zScale)
       else
@@ -3627,7 +3627,7 @@ subroutine test_filtered_block(test, nk, niter, old_grid_weight, zs, zd)
   real :: dz_g1(nk+1)        ! Column interface movements [H ~> m]
   real :: h(nib,njb,nk), rnd(nib,njb,nk+1) ! Thicknesses [H ~> m] and random numbers [nondim]
   real :: rnd2(nib,njb)      ! Random numbers [nondim]
-  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: do_ij(nib,njb)  ! Columns to work on
   logical :: bad             ! True if the block routine found inconsistent sign conventions
   logical :: error           ! Indicates a difference
   integer :: iter, ii, jj, k
@@ -3654,11 +3654,11 @@ subroutine test_filtered_block(test, nk, niter, old_grid_weight, zs, zd)
                          (1.0 - real(k-1)/real(nk) + 0.05*(rnd(ii,jj,k) - 0.5))
       enddo
     enddo ; enddo
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
 
-    call filtered_grid_motion_block(CS, nib, njb, nib-1, njb, do_col, nk, z_old, z_new, dz_g, bad)
+    call filtered_grid_motion_block(CS, nib, njb, nib-1, njb, do_ij, nk, z_old, z_new, dz_g, bad)
     if (bad) error = .true.
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       dz_g1(:) = -999.0
       call filtered_grid_motion(CS, nk, z_old(ii,jj,:), z_new(ii,jj,:), dz_g1)
       if (any(dz_g(ii,jj,:) /= dz_g1(:))) error = .true.
@@ -3686,7 +3686,7 @@ subroutine test_adjust_block(test, nk, niter, min_thickness)
   real :: dz1(nk+1)          ! Column interface movements [H ~> m]
   real :: rnd(nib,njb,nk)    ! Random numbers [nondim]
   real :: rnd2(nib,njb)      ! Random numbers [nondim]
-  logical :: do_col(nib,njb) ! Columns to work on
+  logical :: do_ij(nib,njb)  ! Columns to work on
   logical :: bad_roundoff, bad_repeat ! Error flags from the block routine
   logical :: error           ! Indicates a difference
   integer :: iter, ii, jj, k
@@ -3705,12 +3705,12 @@ subroutine test_adjust_block(test, nk, niter, min_thickness)
       dz(ii,jj,1) = 0.0
       do k=1,nk ; dz(ii,jj,k+1) = dz(ii,jj,k) + (h_old(ii,jj,k) - h_tgt(ii,jj,k)) ; enddo
     enddo ; enddo
-    call random_number(rnd2) ; do_col(:,:) = (rnd2(:,:) > 0.1)
+    call random_number(rnd2) ; do_ij(:,:) = (rnd2(:,:) > 0.1)
 
     dz_in(:,:,:) = dz(:,:,:)
-    call adjust_interface_motion_block(CS, nib, njb, nib-1, njb, do_col, nk, h_old, dz, bad_roundoff, bad_repeat)
+    call adjust_interface_motion_block(CS, nib, njb, nib-1, njb, do_ij, nk, h_old, dz, bad_roundoff, bad_repeat)
     if (bad_roundoff .or. bad_repeat) error = .true.
-    do jj=1,njb ; do ii=1,nib-1 ; if (do_col(ii,jj)) then
+    do jj=1,njb ; do ii=1,nib-1 ; if (do_ij(ii,jj)) then
       dz1(:) = dz_in(ii,jj,:)
       call adjust_interface_motion(CS, nk, h_old(ii,jj,:), dz1)
       if (any(dz(ii,jj,:) /= dz1(:))) error = .true.

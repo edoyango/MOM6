@@ -149,13 +149,13 @@ end subroutine build_zstar_column
 
 !> Builds a z* coordinate with a minimum thickness for each column of a block, as in build_zstar_column
 !! without a rigid top or an original surface height, with the interfaces in the last array index.
-subroutine build_zstar_block(CS, nib, njb, iie, jje, do_col, depth, total_thickness, zInterface, zScale)
+subroutine build_zstar_block(CS, nib, njb, iie, jje, do_ij, depth, total_thickness, zInterface, zScale)
   type(zlike_CS), intent(in) :: CS  !< Coordinate control structure
   integer,        intent(in) :: nib !< The first dimension of the block arrays
   integer,        intent(in) :: njb !< The second dimension of the block arrays
   integer,        intent(in) :: iie !< The number of columns of this block in the first dimension
   integer,        intent(in) :: jje !< The number of columns of this block in the second dimension
-  logical, dimension(nib,njb),         intent(in)    :: do_col !< True for the columns to work on
+  logical, dimension(nib,njb),         intent(in)    :: do_ij  !< True for the columns to work on
   real,    dimension(nib,njb),         intent(in)    :: depth  !< Depth of ocean bottom (positive downward
                                                    !! in the output units), units may be [Z ~> m] or [H ~> m or kg m-2]
   real,    dimension(nib,njb),         intent(in)    :: total_thickness !< Column thickness (positive definite in
@@ -181,7 +181,7 @@ subroutine build_zstar_block(CS, nib, njb, iie, jje, do_col, depth, total_thickn
 
   !$omp target enter data map(to: resolution) map(alloc: stretching, min_thickness)
 
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(eta))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(eta))
     min_thickness(ii,jj) = min( CS_min_thickness, total_thickness(ii,jj)/real(nk) )
 
     ! Position of free-surface
@@ -196,9 +196,9 @@ subroutine build_zstar_block(CS, nib, njb, iie, jje, do_col, depth, total_thickn
     ! Integrate down from the top for a notional new grid, ignoring topography
     zInterface(ii,jj,1) = eta
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+  do concurrent (jj=1:jje)
     do k = 1,nk
-      do concurrent (ii=1:iie, do_col(ii,jj)) DO_LOCALITY(local(dh))
+      do concurrent (ii=1:iie, do_ij(ii,jj)) DO_LOCALITY(local(dh))
         dh = stretching(ii,jj) * resolution(k)*z_scale ! Notional grid spacing
         zInterface(ii,jj,k+1) = zInterface(ii,jj,k) - dh
       enddo
@@ -207,12 +207,12 @@ subroutine build_zstar_block(CS, nib, njb, iie, jje, do_col, depth, total_thickn
 
   ! Integrating up from the bottom adjusting interface position to accommodate
   ! inflating layers without disturbing the interface above
-  do concurrent (jj=1:jje, ii=1:iie, do_col(ii,jj))
+  do concurrent (jj=1:jje, ii=1:iie, do_ij(ii,jj))
     zInterface(ii,jj,nk+1) = -depth(ii,jj)
   enddo
-  do concurrent (jj=1:jje) DO_LOCALITY(local(k))
+  do concurrent (jj=1:jje)
     do k = nk,1,-1
-      do concurrent (ii=1:iie, do_col(ii,jj))
+      do concurrent (ii=1:iie, do_ij(ii,jj))
         if ( zInterface(ii,jj,k) < (zInterface(ii,jj,k+1) + min_thickness(ii,jj)) ) then
           zInterface(ii,jj,k) = zInterface(ii,jj,k+1) + min_thickness(ii,jj)
         endif
@@ -220,7 +220,7 @@ subroutine build_zstar_block(CS, nib, njb, iie, jje, do_col, depth, total_thickn
     enddo
   enddo
 
-  !$omp target exit data map(delete: resolution, stretching, min_thickness)
+  !$omp target exit data map(release: resolution, stretching, min_thickness)
 
 end subroutine build_zstar_block
 
